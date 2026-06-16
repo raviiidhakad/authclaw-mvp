@@ -1,0 +1,41 @@
+# Web Framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-multipart==0.0.20
+
+# Database
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
+alembic==1.15.2
+
+# Validation & Settings
+pydantic==2.11.3
+pydantic-settings==2.9.1
+email-validator==2.2.0
+
+# Authentication
+PyJWT==2.10.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.3.0
+cryptography==44.0.3
+
+# Redis
+redis[hiredis]==6.2.0
+
+# HTTP Client
+httpx==0.28.1
+
+# AI Providers
+openai==1.82.1
+
+# Logging
+structlog==25.4.0
+
+# Testing
+pytest==8.4.1
+pytest-asyncio==1.0.0
+pytest-cov==6.2.1
+httpx==0.28.1
+
+# Utilities
+python-slugify==8.0.4

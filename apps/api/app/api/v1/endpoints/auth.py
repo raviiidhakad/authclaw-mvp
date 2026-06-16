@@ -1,0 +1,269 @@
+import secrets
+import hashlib
+import logging
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from slugify import slugify
+
+from app.api.dependencies import get_db, get_current_user
+from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core.exceptions import UnauthorizedException, BadRequestException
+from app.models.user import User
+from app.models.tenant import Tenant
+from app.models.role import Role, UserRole
+from app.models.token import RefreshToken
+from app.schemas.auth import (
+    LoginRequest,
+    Token,
+    UserCreate,
+    UserResponse,
+    RefreshRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+)
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+@router.post("/login", response_model=Token)
+async def login(
+    request: LoginRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    OAuth2 compatible token login, get access and refresh tokens
+    """
+    result = await db.execute(select(User).where(User.email == request.email))
+    user = result.scalars().first()
+    
+    if not user or not verify_password(request.password, user.password_hash):
+        raise UnauthorizedException(detail="Incorrect email or password")
+    
+    if not user.is_active:
+        raise UnauthorizedException(detail="Inactive user")
+
+    # Generate access token
+    access_token = create_access_token(subject=str(user.id))
+
+    # Generate refresh token
+    raw_refresh = secrets.token_hex(32)
+    refresh_hash = hashlib.sha256(raw_refresh.encode()).hexdigest()
+    family = str(secrets.token_hex(16))
+    
+    db_refresh = RefreshToken(
+        user_id=user.id,
+        token_hash=refresh_hash,
+        family=family,
+        is_revoked=False,
+        expires_at=datetime.utcnow() + timedelta(days=14)
+    )
+    db.add(db_refresh)
+    
+    # Update last login
+    user.last_login_at = datetime.utcnow()
+    
+    await db.commit()
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token": raw_refresh
+    }
+
+
+@router.post("/signup", response_model=UserResponse, status_code=201)
+async def signup(
+    request: UserCreate, db: AsyncSession = Depends(get_db)
+) -> User:
+    """
+    Create new tenant and user.
+    """
+    # Check if user exists
+    result = await db.execute(select(User).where(User.email == request.email))
+    if result.scalars().first():
+        raise BadRequestException(detail="A user with this email already exists.")
+        
+    # Create tenant
+    company_name = request.company_name or f"{request.first_name}'s Organization"
+    tenant_slug = slugify(company_name)
+    
+    # Check if tenant slug already exists
+    tenant_result = await db.execute(select(Tenant).where(Tenant.slug == tenant_slug))
+    if tenant_result.scalars().first():
+        raise BadRequestException(detail="An organization with this name already exists. Please choose a different name.")
+        
+    tenant = Tenant(
+        name=company_name,
+        slug=tenant_slug
+    )
+    db.add(tenant)
+    await db.flush()
+    
+    # Create user
+    user = User(
+        email=request.email,
+        password_hash=get_password_hash(request.password),
+        first_name=request.first_name,
+        last_name=request.last_name,
+        tenant_id=tenant.id,
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()  # get user.id
+
+    # Assign owner role to the first user in the new tenant
+    role_result = await db.execute(select(Role).where(Role.name == "owner"))
+    owner_role = role_result.scalars().first()
+    if owner_role:
+        user_role = UserRole(user_id=user.id, role_id=owner_role.id, tenant_id=tenant.id)
+        db.add(user_role)
+
+    await db.commit()
+    await db.refresh(user)
+
+    return user
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    Get current user information.
+    """
+    return current_user
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_tokens(
+    request: RefreshRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Refresh access token and rotate the refresh token
+    """
+    incoming_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
+    
+    # Query database for matching token
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == incoming_hash)
+    )
+    db_token = result.scalars().first()
+    
+    if not db_token:
+        raise UnauthorizedException(detail="Invalid refresh token")
+        
+    # Check if token is revoked (indicates reuse/leak)
+    if db_token.is_revoked:
+        # Revoke all active tokens in the same family
+        fam_result = await db.execute(
+            select(RefreshToken).where(RefreshToken.family == db_token.family)
+        )
+        tokens_to_revoke = fam_result.scalars().all()
+        for tok in tokens_to_revoke:
+            tok.is_revoked = True
+        await db.commit()
+        raise UnauthorizedException(detail="Token reuse detected. All tokens revoked.")
+        
+    # Check expiration
+    if db_token.expires_at < datetime.utcnow():
+        raise UnauthorizedException(detail="Refresh token expired")
+        
+    # Mark old token as revoked
+    db_token.is_revoked = True
+    
+    # Generate new pair
+    access_token = create_access_token(subject=str(db_token.user_id))
+    raw_refresh = secrets.token_hex(32)
+    refresh_hash = hashlib.sha256(raw_refresh.encode()).hexdigest()
+    
+    new_db_token = RefreshToken(
+        user_id=db_token.user_id,
+        token_hash=refresh_hash,
+        family=db_token.family,
+        is_revoked=False,
+        expires_at=datetime.utcnow() + timedelta(days=14)
+    )
+    db.add(new_db_token)
+    await db.commit()
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token": raw_refresh
+    }
+
+
+@router.post("/logout")
+async def logout(
+    request: RefreshRequest, db: AsyncSession = Depends(get_db)
+):
+    """
+    Revoke current refresh token family
+    """
+    incoming_hash = hashlib.sha256(request.refresh_token.encode()).hexdigest()
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == incoming_hash)
+    )
+    db_token = result.scalars().first()
+    
+    if db_token:
+        # Revoke all tokens in family
+        fam_result = await db.execute(
+            select(RefreshToken).where(RefreshToken.family == db_token.family)
+        )
+        tokens_to_revoke = fam_result.scalars().all()
+        for tok in tokens_to_revoke:
+            tok.is_revoked = True
+        await db.commit()
+        
+    return {"detail": "Successfully logged out"}
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    request: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate password reset token and log it in development mode
+    """
+    result = await db.execute(select(User).where(User.email == request.email))
+    user = result.scalars().first()
+    
+    if user:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        
+        user.reset_token_hash = token_hash
+        user.reset_token_expires_at = datetime.utcnow() + timedelta(hours=1)
+        await db.commit()
+
+        
+    return {"detail": "If the email exists, a password reset link has been generated."}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest, db: AsyncSession = Depends(get_db)
+):
+    """
+    Reset user password using token
+    """
+    incoming_hash = hashlib.sha256(request.token.encode()).hexdigest()
+    result = await db.execute(
+        select(User).where(
+            User.reset_token_hash == incoming_hash,
+            User.reset_token_expires_at > datetime.utcnow()
+        )
+    )
+    user = result.scalars().first()
+    
+    if not user:
+        raise BadRequestException(detail="Invalid or expired reset token")
+        
+    user.password_hash = get_password_hash(request.new_password)
+    user.reset_token_hash = None
+    user.reset_token_expires_at = None
+    await db.commit()
+    
+    return {"detail": "Password has been reset successfully."}

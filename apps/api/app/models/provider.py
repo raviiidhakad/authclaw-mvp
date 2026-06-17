@@ -13,6 +13,7 @@ class ProviderType(str, enum.Enum):
     gemini = "gemini"
     cohere = "cohere"
     azure_openai = "azure_openai"
+    groq = "groq"
 
 class Provider(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "providers"

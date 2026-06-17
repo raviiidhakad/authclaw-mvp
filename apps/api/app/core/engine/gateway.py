@@ -87,6 +87,7 @@ def _get_provider_url(provider: Provider) -> str:
         ProviderType.gemini:      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         ProviderType.cohere:      "https://api.cohere.ai/v1/chat",
         ProviderType.azure_openai: "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/chat/completions?api-version=2024-02-01",
+        ProviderType.groq:        "https://api.groq.com/openai/v1/chat/completions",
     }
     return routes.get(provider.type, "https://api.openai.com/v1/chat/completions")
 

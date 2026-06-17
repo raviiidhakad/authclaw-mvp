@@ -281,3 +281,55 @@ export function useRevokeApiKey() {
     },
   });
 }
+
+// ── Agent & Approvals (HITL) ──
+export function useApprovals() {
+  return useQuery({
+    queryKey: ['approvals'],
+    queryFn: async () => {
+      const res = await apiClient.get('/approvals');
+      return res.data;
+    },
+    refetchInterval: 5000,
+  });
+}
+
+export function useApproveAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, code }: { id: string; code: string }) => {
+      const res = await apiClient.post(`/approvals/${id}/approve`, { code });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approvals'] });
+    },
+  });
+}
+
+export function useRejectAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiClient.post(`/approvals/${id}/reject`);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approvals'] });
+    },
+  });
+}
+
+export function useRunAgentScan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (target: string) => {
+      const res = await apiClient.post('/agent/scan', { target });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approvals'] });
+    },
+  });
+}
+

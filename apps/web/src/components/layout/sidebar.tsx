@@ -6,16 +6,20 @@ import {
   ShieldCheck, 
   Activity, 
   Settings,
-  AlertTriangle
+  AlertTriangle,
+  CheckSquare,
+  Bot
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
 const NAV_ITEMS = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Gateway', href: '/gateway', icon: Network },
+  { name: 'Action Center', href: '/approvals', icon: CheckSquare },
   { name: 'Policies', href: '/policies', icon: ShieldCheck },
   { name: 'Violations', href: '/policies/violations', icon: AlertTriangle },
   { name: 'Compliance', href: '/compliance', icon: ShieldCheck },
+  { name: 'Agent Assistant', href: '/agent', icon: Bot },
   { name: 'Audit Logs', href: '/audit', icon: Activity },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

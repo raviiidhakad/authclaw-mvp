@@ -22,7 +22,11 @@ from app.schemas.auth import (
     RefreshRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    MFASetupResponse,
+    MFAVerifyRequest,
 )
+
+import pyotp
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -267,3 +271,49 @@ async def reset_password(
     await db.commit()
     
     return {"detail": "Password has been reset successfully."}
+
+@router.post("/mfa/setup", response_model=MFASetupResponse)
+async def setup_mfa(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate a new MFA secret for the current user. 
+    Does NOT enable MFA until verified.
+    """
+    # Generate new base32 secret
+    secret = pyotp.random_base32()
+    uri = pyotp.totp.TOTP(secret).provisioning_uri(
+        name=current_user.email,
+        issuer_name="AuthClaw"
+    )
+    
+    # Store secret temporarily or permanently, but keep mfa_enabled=False
+    current_user.mfa_secret = secret
+    await db.commit()
+    
+    return {
+        "secret": secret,
+        "uri": uri
+    }
+
+@router.post("/mfa/verify")
+async def verify_mfa(
+    request: MFAVerifyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Verify the TOTP code and enable MFA for the user.
+    """
+    if not current_user.mfa_secret:
+        raise BadRequestException(detail="MFA secret not set. Please setup MFA first.")
+        
+    totp = pyotp.TOTP(current_user.mfa_secret)
+    if not totp.verify(request.code):
+        raise UnauthorizedException(detail="Invalid MFA code")
+        
+    current_user.mfa_enabled = True
+    await db.commit()
+    
+    return {"detail": "MFA enabled successfully."}

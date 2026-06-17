@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     first_name: str
     last_name: str
     tenant_id: uuid.UUID
+    mfa_enabled: bool
 
     class Config:
         from_attributes = True
@@ -46,3 +47,9 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+class MFASetupResponse(BaseModel):
+    secret: str
+    uri: str
+
+class MFAVerifyRequest(BaseModel):
+    code: str

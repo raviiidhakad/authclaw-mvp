@@ -10,6 +10,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { useProviders, useCreateProvider, useDeleteProvider, useApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks/use-data';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/use-auth';
+import { apiClient } from '@/lib/api-client';
+import { QRCodeSVG } from 'qrcode.react';
+
 export default function SettingsPage() {
   const { user } = useAuth();
   
@@ -39,6 +42,42 @@ export default function SettingsPage() {
     name: '',
     expires_in_days: 0,
   });
+
+  // MFA
+  const [showMfaSetup, setShowMfaSetup] = useState(false);
+  const [mfaSecret, setMfaSecret] = useState('');
+  const [mfaUri, setMfaUri] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaSetupLoading, setMfaSetupLoading] = useState(false);
+
+  const startMfaSetup = async () => {
+    try {
+      setMfaSetupLoading(true);
+      const res = await apiClient.post('/auth/mfa/setup');
+      setMfaSecret(res.data.secret);
+      setMfaUri(res.data.uri);
+      setShowMfaSetup(true);
+    } catch (err: any) {
+      toast.error('Failed to start MFA setup');
+    } finally {
+      setMfaSetupLoading(false);
+    }
+  };
+
+  const verifyMfa = async () => {
+    try {
+      setMfaSetupLoading(true);
+      await apiClient.post('/auth/mfa/verify', { code: mfaCode });
+      toast.success('MFA successfully enabled!');
+      setShowMfaSetup(false);
+      // Ideally we would refresh the user context here, but reloading works
+      window.location.reload();
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Invalid MFA code');
+    } finally {
+      setMfaSetupLoading(false);
+    }
+  };
 
   const createApiKey = async () => {
     try {
@@ -93,6 +132,7 @@ export default function SettingsPage() {
       openai: 'bg-green-600/10 text-green-500',
       anthropic: 'bg-orange-600/10 text-orange-500',
       azure_openai: 'bg-blue-600/10 text-blue-500',
+      groq: 'bg-pink-600/10 text-pink-500',
     };
     return colors[type] || 'bg-neutral-800 text-neutral-400';
   };
@@ -123,9 +163,59 @@ export default function SettingsPage() {
               <label className="text-xs text-neutral-500 block mb-1">Tenant ID</label>
               <p className="text-sm text-neutral-400 font-mono">{user?.tenant_id}</p>
             </div>
+            <div>
+              <label className="text-xs text-neutral-500 block mb-1">Security</label>
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-neutral-200">
+                  MFA Status: <Badge className={user?.mfa_enabled ? "bg-green-500/10 text-green-500 border-green-500/20" : "bg-neutral-800 text-neutral-400"}>
+                    {user?.mfa_enabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                </p>
+                {!user?.mfa_enabled && (
+                  <Button size="sm" variant="outline" onClick={startMfaSetup} disabled={mfaSetupLoading} className="border-blue-600/50 text-blue-500 hover:bg-blue-600/10">
+                    <ShieldCheck className="w-4 h-4 mr-2" />
+                    Setup MFA
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={showMfaSetup} onOpenChange={setShowMfaSetup}>
+        <DialogContent className="sm:max-w-md bg-neutral-900 border-neutral-800 text-neutral-100">
+          <DialogHeader>
+            <DialogTitle>Setup Multi-Factor Authentication</DialogTitle>
+            <DialogDescription className="text-neutral-400">
+              Scan this QR code with Google Authenticator, Authy, or your preferred authenticator app.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center justify-center space-y-4 py-4">
+            <div className="bg-white p-2 rounded-lg">
+              <QRCodeSVG value={mfaUri} size={200} />
+            </div>
+            <div className="text-center w-full">
+              <p className="text-xs text-neutral-500 mb-1">Manual Entry Secret</p>
+              <p className="text-sm font-mono text-neutral-300 bg-neutral-950 p-2 rounded border border-neutral-800">{mfaSecret}</p>
+            </div>
+            <div className="w-full pt-4">
+              <p className="text-sm text-neutral-400 mb-2">Enter the 6-digit code to verify:</p>
+              <Input
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="123456"
+                className="bg-neutral-950 border-neutral-800 text-neutral-100 text-center tracking-[0.5em] font-mono text-lg"
+                maxLength={6}
+              />
+            </div>
+          </div>
+          <DialogFooter className="bg-transparent border-t-0 p-0">
+            <Button variant="ghost" onClick={() => setShowMfaSetup(false)}>Cancel</Button>
+            <Button onClick={verifyMfa} disabled={mfaCode.length !== 6 || mfaSetupLoading} className="bg-blue-600 hover:bg-blue-700">Verify & Enable</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* AI Providers */}
       <div className="space-y-4">
@@ -157,6 +247,7 @@ export default function SettingsPage() {
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="azure_openai">Azure OpenAI</option>
+                <option value="groq">Groq</option>
               </select>
               <Input
                 type="password"

@@ -29,6 +29,7 @@ class UserResponseWithRoles(BaseModel):
     last_login_at: Optional[datetime]
     created_at: datetime
     roles: List[str] = []
+    mfa_enabled: bool = False
 
     class Config:
         from_attributes = True

@@ -16,7 +16,7 @@ email-validator==2.2.0
 # Authentication
 PyJWT==2.10.1
 passlib[bcrypt]==1.7.4
-bcrypt==4.3.0
+bcrypt==4.0.1
 cryptography==44.0.3
 
 # Redis
@@ -38,4 +38,12 @@ pytest-cov==6.2.1
 httpx==0.28.1
 
 # Utilities
+python-jose[cryptography]==3.3.0
+pyotp==2.9.0
 python-slugify==8.0.4
+
+# AI Agents & LangGraph
+langgraph==0.2.22
+langchain==0.2.14
+langchain-openai==0.1.22
+langchain-groq==0.1.9

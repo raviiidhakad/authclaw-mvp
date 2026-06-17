@@ -29,6 +29,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=production
       - CORS_ORIGINS=["http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001"]
+      - GROQ_API_KEY=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
     depends_on:
       db:
         condition: service_healthy

@@ -6,6 +6,7 @@ interface User {
   first_name: string;
   last_name: string;
   tenant_id: string;
+  mfa_enabled?: boolean;
 }
 
 interface AuthState {

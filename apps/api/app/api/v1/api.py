@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, providers, policies, gateway, audit, settings, tenants, users, api_keys, compliance
+from app.api.v1.endpoints import auth, providers, policies, gateway, audit, settings, tenants, users, api_keys, compliance, agent, approvals
 
 api_router = APIRouter()
 
@@ -13,5 +13,6 @@ api_router.include_router(tenants.router, prefix="/tenants", tags=["Tenants"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(compliance.router, prefix="/compliance", tags=["Compliance"])
-
+api_router.include_router(agent.router, prefix="/agent", tags=["Agent"])
+api_router.include_router(approvals.router, prefix="/approvals", tags=["Approvals"])
 

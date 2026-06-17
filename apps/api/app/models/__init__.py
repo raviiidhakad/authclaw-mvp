@@ -10,6 +10,7 @@ from app.models.audit import AuditLog
 from app.models.compliance import ComplianceScore
 from app.models.setting import Setting
 from app.models.token import RefreshToken
+from app.models.approval import Approval, ApprovalStatus, ApprovalActionType
 
 __all__ = [
     "Base",
@@ -28,6 +29,7 @@ __all__ = [
     "AuditLog",
     "ComplianceScore",
     "Setting",
-    "RefreshToken"
+    "RefreshToken",
+    "Approval"
 ]
 

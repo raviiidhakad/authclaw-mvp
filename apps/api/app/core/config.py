@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
 
-    # OpenAI (Default provider)
+    # AI Providers
     OPENAI_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
 
     # Logging
     LOG_LEVEL: str = "INFO"

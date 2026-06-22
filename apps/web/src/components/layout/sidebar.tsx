@@ -11,7 +11,8 @@ import {
   Bot,
   Cloud,
   ShieldAlert,
-  Wrench
+  Wrench,
+  FileText
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
@@ -23,6 +24,8 @@ const NAV_ITEMS = [
   { name: 'Integrations', href: '/integrations', icon: Cloud },
   { name: 'Findings', href: '/findings', icon: ShieldAlert },
   { name: 'Remediation', href: '/remediation', icon: Wrench },
+  { name: 'Trust Center', href: '/trust', icon: ShieldCheck },
+  { name: 'Report Center', href: '/reports', icon: FileText },
   { name: 'Policies', href: '/policies', icon: ShieldCheck },
   { name: 'Violations', href: '/policies/violations', icon: AlertTriangle },
   { name: 'Compliance', href: '/compliance', icon: ShieldCheck },

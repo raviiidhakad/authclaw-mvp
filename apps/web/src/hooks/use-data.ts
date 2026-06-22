@@ -1048,6 +1048,304 @@ export function useComplianceAskSessions(params: Record<string, unknown> = {}) {
   return useQuery({ queryKey: ['compliance-ask-sessions', params], queryFn: () => listComplianceAskSessions(params) });
 }
 
+// -- Sprint 5 Phase 4: Trust Center and Report Center --
+export interface TrustPosture {
+  tenant_id: string;
+  generated_at: string;
+  language: string;
+  posture: string;
+  counts: Record<string, unknown>;
+  status_counts: Record<string, number>;
+  severity_counts: Record<string, number>;
+  freshness: Record<string, unknown>;
+}
+
+export interface TrustOverview {
+  tenant_id: string;
+  generated_at: string;
+  language: string;
+  security_posture: TrustPosture;
+  compliance_posture: TrustPosture;
+  remediation_posture: TrustPosture;
+  integration_health: TrustPosture;
+}
+
+export interface ReportTemplate {
+  id: string;
+  tenant_id: string;
+  name: string;
+  type: string;
+  format: 'json' | string;
+  filters_schema: Record<string, unknown>;
+  default_sections: unknown[];
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+  is_system: boolean;
+}
+
+export interface ReportTemplatePayload {
+  name: string;
+  type: string;
+  format?: 'json';
+  filters_schema?: Record<string, unknown>;
+  default_sections?: unknown[];
+  is_system?: boolean;
+}
+
+export interface ReportArtifactMetadata {
+  id: string;
+  tenant_id: string;
+  run_id: string;
+  artifact_type: string;
+  content_hash: string;
+  size_bytes: number;
+  sanitization_version: string;
+  created_at: string;
+  expires_at?: string | null;
+  manifest_hash?: string | null;
+}
+
+export interface ExportManifest {
+  id: string;
+  tenant_id: string;
+  artifact_id: string;
+  manifest_json: Record<string, unknown>;
+  manifest_hash: string;
+  hash_algorithm: string;
+  created_at: string;
+}
+
+export interface ReportRun {
+  id: string;
+  tenant_id: string;
+  template_id?: string | null;
+  requested_by?: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'expired' | string;
+  filters: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failed_reason?: string | null;
+  expires_at?: string | null;
+  artifacts: ReportArtifactMetadata[];
+  manifest_hash?: string | null;
+}
+
+export interface ReportRunPayload {
+  template_id?: string | null;
+  report_type?: string;
+  filters?: Record<string, unknown>;
+  retention_days?: number;
+}
+
+export interface EvidencePackagePayload {
+  framework_id?: string | null;
+  control_ids?: string[] | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  evidence_freshness_days?: number | null;
+  include_findings: boolean;
+  include_remediation: boolean;
+  output_format: 'json';
+  template_id?: string | null;
+  retention_days?: number;
+}
+
+export interface EvidencePackageResponse {
+  run: ReportRun;
+  artifact?: ReportArtifactMetadata | null;
+  manifest?: ExportManifest | null;
+}
+
+export interface ReportAccessLog {
+  id: string;
+  tenant_id: string;
+  artifact_id: string;
+  actor_user_id?: string | null;
+  external_share_id?: string | null;
+  action: string;
+  ip_hash?: string | null;
+  user_agent_hash?: string | null;
+  created_at: string;
+}
+
+export type TrustReportListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
+
+export async function getTrustOverview() {
+  const res = await apiClient.get('/trust/overview');
+  return res.data as TrustOverview;
+}
+
+export async function getTrustPosture(kind: 'security' | 'compliance' | 'remediation' | 'integrations') {
+  const pathByKind = {
+    security: '/trust/security-posture',
+    compliance: '/trust/compliance-posture',
+    remediation: '/trust/remediation-posture',
+    integrations: '/trust/integration-health',
+  } satisfies Record<string, string>;
+  const res = await apiClient.get(pathByKind[kind]);
+  return res.data as TrustPosture;
+}
+
+export async function listReportTemplates(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/reports/templates', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ReportTemplate>;
+}
+
+export async function createReportTemplate(data: ReportTemplatePayload) {
+  const res = await apiClient.post('/reports/templates', { format: 'json', ...data });
+  return res.data as ReportTemplate;
+}
+
+export async function updateReportTemplate({ id, data }: { id: string; data: Partial<ReportTemplatePayload> }) {
+  const res = await apiClient.patch(`/reports/templates/${id}`, data);
+  return res.data as ReportTemplate;
+}
+
+export async function deleteReportTemplate(id: string) {
+  await apiClient.delete(`/reports/templates/${id}`);
+}
+
+export async function createReportRun(data: ReportRunPayload) {
+  const res = await apiClient.post('/reports/run', data);
+  return res.data as ReportRun;
+}
+
+export async function listReportRuns(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/reports/runs', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ReportRun>;
+}
+
+export async function getReportRun(id: string) {
+  const res = await apiClient.get(`/reports/runs/${id}`);
+  return res.data as ReportRun;
+}
+
+export async function listReportArtifacts(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/reports/artifacts', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ReportArtifactMetadata>;
+}
+
+export async function getReportArtifact(id: string) {
+  const res = await apiClient.get(`/reports/artifacts/${id}`);
+  return res.data as ReportArtifactMetadata;
+}
+
+export async function getReportArtifactManifest(id: string) {
+  const res = await apiClient.get(`/reports/artifacts/${id}/manifest`);
+  return res.data as ExportManifest;
+}
+
+export async function createEvidencePackage(data: EvidencePackagePayload) {
+  const res = await apiClient.post('/evidence-packages', data);
+  return res.data as EvidencePackageResponse;
+}
+
+export async function listEvidencePackages(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/evidence-packages', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ReportRun>;
+}
+
+export async function getEvidencePackage(id: string) {
+  const res = await apiClient.get(`/evidence-packages/${id}`);
+  return res.data as EvidencePackageResponse;
+}
+
+export async function listReportAccessLogs(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/reports/access-logs', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ReportAccessLog>;
+}
+
+export function useTrustOverview() {
+  return useQuery({ queryKey: ['trust-overview'], queryFn: getTrustOverview, refetchInterval: 15000 });
+}
+
+export function useTrustPosture(kind: 'security' | 'compliance' | 'remediation' | 'integrations') {
+  return useQuery({ queryKey: ['trust-posture', kind], queryFn: () => getTrustPosture(kind), refetchInterval: 15000 });
+}
+
+export function useReportTemplates(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['report-templates', params], queryFn: () => listReportTemplates(params) });
+}
+
+export function useCreateReportTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createReportTemplate,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-templates'] }),
+  });
+}
+
+export function useUpdateReportTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateReportTemplate,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['report-templates'] });
+      queryClient.invalidateQueries({ queryKey: ['report-template', variables.id] });
+    },
+  });
+}
+
+export function useDeleteReportTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteReportTemplate,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-templates'] }),
+  });
+}
+
+export function useCreateReportRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createReportRun,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['report-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
+    },
+  });
+}
+
+export function useReportRuns(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['report-runs', params], queryFn: () => listReportRuns(params), refetchInterval: 10000 });
+}
+
+export function useReportRun(id?: string) {
+  return useQuery({ queryKey: ['report-run', id], queryFn: () => (id ? getReportRun(id) : null), enabled: !!id });
+}
+
+export function useReportArtifacts(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['report-artifacts', params], queryFn: () => listReportArtifacts(params), refetchInterval: 10000 });
+}
+
+export function useReportArtifactManifest(id?: string) {
+  return useQuery({ queryKey: ['report-artifact-manifest', id], queryFn: () => (id ? getReportArtifactManifest(id) : null), enabled: !!id });
+}
+
+export function useCreateEvidencePackage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createEvidencePackage,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['evidence-packages'] });
+      queryClient.invalidateQueries({ queryKey: ['report-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
+    },
+  });
+}
+
+export function useEvidencePackages(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['evidence-packages', params], queryFn: () => listEvidencePackages(params), refetchInterval: 10000 });
+}
+
+export function useEvidencePackage(id?: string) {
+  return useQuery({ queryKey: ['evidence-package', id], queryFn: () => (id ? getEvidencePackage(id) : null), enabled: !!id });
+}
+
+export function useReportAccessLogs(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['report-access-logs', params], queryFn: () => listReportAccessLogs(params), refetchInterval: 15000 });
+}
+
 // -- Sprint 4 Phase 6: Remediation Approval Console --
 export type RemediationRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type RemediationPlanStatus =

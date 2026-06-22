@@ -923,3 +923,266 @@ test('read-only remediation role cannot see enabled mutation actions', async ({ 
   await expect(page.getByText('approval decisions are disabled')).toBeVisible();
   await expect(page.getByRole('button', { name: /^approve$/i })).toBeDisabled();
 });
+
+const trustPostureBase = {
+  tenant_id: 'tenant-1',
+  generated_at: '2026-06-22T10:00:00Z',
+  language: 'Evidence-supported posture summary for review.',
+  posture: 'evidence-supported posture',
+  counts: {},
+  status_counts: {},
+  severity_counts: {},
+  freshness: {},
+};
+
+const trustSecurityPosture = {
+  ...trustPostureBase,
+  posture: 'at risk',
+  counts: { findings: 4 },
+  status_counts: { active: 3, resolved: 1 },
+  severity_counts: { critical: 1, high: 2, medium: 1 },
+};
+
+const trustCompliancePosture = {
+  ...trustPostureBase,
+  posture: 'gap detected',
+  counts: { mapped_controls: 7, gaps: 2, evidence_items: 8 },
+  status_counts: { needs_review: 2, active: 5 },
+  freshness: { stale_evidence: 1, fresh_evidence: 7 },
+};
+
+const trustRemediationPosture = {
+  ...trustPostureBase,
+  posture: 'needs review',
+  counts: { plans: 3, approvals: 1, verification_results: 2 },
+  status_counts: { plan_validated: 1, approval_requested: 1, verified: 1 },
+};
+
+const trustIntegrationPosture = {
+  ...trustPostureBase,
+  counts: { integrations: 2, providers: 3 },
+  status_counts: { active: 2 },
+  freshness: { last_sync_at: '2026-06-22T09:45:00Z' },
+};
+
+const reportTemplate = {
+  id: '11111111-aaaa-4444-8888-111111111111',
+  tenant_id: 'tenant-1',
+  name: 'Quarterly posture package',
+  type: 'trust_overview',
+  format: 'json',
+  filters_schema: { scope: 'executive' },
+  default_sections: ['summary', 'posture', 'evidence'],
+  created_by: 'user-1',
+  created_at: '2026-06-22T10:00:00Z',
+  updated_at: '2026-06-22T10:00:00Z',
+  is_system: false,
+};
+
+const reportArtifact = {
+  id: '22222222-aaaa-4444-8888-222222222222',
+  tenant_id: 'tenant-1',
+  run_id: '33333333-aaaa-4444-8888-333333333333',
+  artifact_type: 'trust_report_json',
+  content_hash: 'sha256-content-hash-abcdef1234567890',
+  size_bytes: 2048,
+  sanitization_version: 'export-sanitizer-v1',
+  created_at: '2026-06-22T10:01:00Z',
+  expires_at: '2026-09-20T10:01:00Z',
+  manifest_hash: 'sha256-manifest-hash-abcdef1234567890',
+};
+
+const reportManifest = {
+  id: '44444444-aaaa-4444-8888-444444444444',
+  tenant_id: 'tenant-1',
+  artifact_id: reportArtifact.id,
+  manifest_json: {
+    report_type: 'trust_overview',
+    fields: ['posture', 'mapped_controls', 'evidence_freshness'],
+    sanitizer: 'export-sanitizer-v1',
+  },
+  manifest_hash: reportArtifact.manifest_hash,
+  hash_algorithm: 'sha256',
+  created_at: '2026-06-22T10:01:00Z',
+};
+
+const reportRun = {
+  id: reportArtifact.run_id,
+  tenant_id: 'tenant-1',
+  template_id: reportTemplate.id,
+  requested_by: 'user-1',
+  status: 'completed',
+  filters: { report_type: 'trust_overview', scope: 'executive' },
+  started_at: '2026-06-22T10:00:00Z',
+  completed_at: '2026-06-22T10:01:00Z',
+  failed_reason: null,
+  expires_at: '2026-09-20T10:01:00Z',
+  artifacts: [reportArtifact],
+  manifest_hash: reportArtifact.manifest_hash,
+};
+
+const evidencePackageRun = {
+  ...reportRun,
+  id: '55555555-aaaa-4444-8888-555555555555',
+  template_id: null,
+  filters: { report_type: 'evidence_package', filters: { include_findings: true, include_remediation: true } },
+};
+
+const reportAccessLog = {
+  id: '66666666-aaaa-4444-8888-666666666666',
+  tenant_id: 'tenant-1',
+  artifact_id: reportArtifact.id,
+  actor_user_id: 'user-1',
+  external_share_id: null,
+  action: 'viewed',
+  ip_hash: 'ip_hash_abc123',
+  user_agent_hash: 'ua_hash_def456',
+  created_at: '2026-06-22T10:03:00Z',
+};
+
+async function mockTrustReportApi(page: Page) {
+  await page.route(/\/api\/v1\/trust\/overview$/, async (route) => fulfillJson(route, {
+    tenant_id: 'tenant-1',
+    generated_at: '2026-06-22T10:00:00Z',
+    language: 'Evidence-supported posture summary for review.',
+    security_posture: trustSecurityPosture,
+    compliance_posture: trustCompliancePosture,
+    remediation_posture: trustRemediationPosture,
+    integration_health: trustIntegrationPosture,
+  }));
+  await page.route(/\/api\/v1\/trust\/security-posture$/, async (route) => fulfillJson(route, trustSecurityPosture));
+  await page.route(/\/api\/v1\/trust\/compliance-posture$/, async (route) => fulfillJson(route, trustCompliancePosture));
+  await page.route(/\/api\/v1\/trust\/remediation-posture$/, async (route) => fulfillJson(route, trustRemediationPosture));
+  await page.route(/\/api\/v1\/trust\/integration-health$/, async (route) => fulfillJson(route, trustIntegrationPosture));
+  await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}/manifest`, async (route) => fulfillJson(route, reportManifest));
+  await page.route(/\/api\/v1\/reports\/templates(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await fulfillJson(route, { ...reportTemplate, id: '77777777-aaaa-4444-8888-777777777777', name: 'Board posture review' }, 201);
+      return;
+    }
+    await fulfillJson(route, { items: [reportTemplate], total: 1, skip: 0, limit: 50 });
+  });
+  await page.route(`**/api/v1/reports/templates/${reportTemplate.id}`, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      await fulfillJson(route, { ...reportTemplate, name: 'Updated posture package' });
+      return;
+    }
+    if (route.request().method() === 'DELETE') {
+      await fulfillJson(route, {}, 204);
+      return;
+    }
+    await fulfillJson(route, reportTemplate);
+  });
+  await page.route(/\/api\/v1\/reports\/run$/, async (route) => fulfillJson(route, reportRun, 201));
+  await page.route(/\/api\/v1\/reports\/runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [reportRun], total: 1, skip: 0, limit: 50 }));
+  await page.route(`**/api/v1/reports/runs/${reportRun.id}`, async (route) => fulfillJson(route, reportRun));
+  await page.route(/\/api\/v1\/reports\/artifacts(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [reportArtifact], total: 1, skip: 0, limit: 50 }));
+  await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}`, async (route) => fulfillJson(route, reportArtifact));
+  await page.route(/\/api\/v1\/evidence-packages(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await fulfillJson(route, { run: evidencePackageRun, artifact: reportArtifact, manifest: reportManifest }, 201);
+      return;
+    }
+    await fulfillJson(route, { items: [evidencePackageRun], total: 1, skip: 0, limit: 50 });
+  });
+  await page.route(`**/api/v1/evidence-packages/${evidencePackageRun.id}`, async (route) => fulfillJson(route, { run: evidencePackageRun, artifact: reportArtifact, manifest: reportManifest }));
+  await page.route(/\/api\/v1\/reports\/access-logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [reportAccessLog], total: 1, skip: 0, limit: 50 }));
+}
+
+test('trust center pages render posture summaries without legal overclaim copy or secrets', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'viewer');
+  await mockTrustReportApi(page);
+
+  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
+  await expect(page.getByText('evidence-supported posture').first()).toBeVisible();
+  await expect(page.getByText('Mapped controls', { exact: true })).toBeVisible();
+  await expect(page.getByText('needs review').first()).toBeVisible();
+
+  for (const path of ['/trust/security', '/trust/compliance', '/trust/remediation', '/trust/integrations']) {
+    await page.goto(path, { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText(/last updated/i).first()).toBeVisible();
+    await expect(page.getByText(/Status counts|Evidence freshness|Severity counts/).first()).toBeVisible();
+  }
+
+  await expect(page.getByText(/legally compliant|certified|guaranteed|audit-ready guaranteed|AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+});
+
+test('report templates page supports admin create and edit while avoiding share and file actions', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'admin');
+  await mockTrustReportApi(page);
+
+  await page.goto('/reports/templates', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Quarterly posture package')).toBeVisible();
+  await page.getByRole('button', { name: /new template/i }).click();
+  await page.getByLabel(/template name/i).fill('Board posture review');
+  await page.getByLabel(/default sections/i).fill('summary,posture,evidence');
+  await page.getByRole('button', { name: /create template/i }).click();
+  await expect(page.getByText('Template created')).toBeVisible();
+
+  await page.getByRole('row', { name: /Quarterly posture package/ }).getByRole('button', { name: /^edit$/i }).click();
+  await page.getByLabel(/template name/i).fill('Updated posture package');
+  await page.getByRole('button', { name: /save template/i }).click();
+  await expect(page.getByText('Template updated')).toBeVisible();
+  await expect(page.getByRole('button', { name: /download|share|public/i })).toHaveCount(0);
+});
+
+test('report run creation and detail show metadata, artifact hashes, and no raw body', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'auditor');
+  await mockTrustReportApi(page);
+
+  await page.goto('/reports/runs', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /create run/i }).click();
+  await page.getByLabel(/template/i).selectOption(reportTemplate.id);
+  await page.getByLabel(/scope/i).fill('executive');
+  await page.getByRole('dialog').getByRole('button', { name: /create run/i }).click();
+  await expect(page.getByText('Report run created')).toBeVisible();
+  await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
+  await expect(page.getByText('metadata only', { exact: true })).toBeVisible();
+  await expect(page.getByText(/raw report body|super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
+});
+
+test('artifact manifest page displays metadata hash and no export file controls', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'auditor');
+  await mockTrustReportApi(page);
+
+  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('sha256-content-hash-abcdef1234567890')).toBeVisible();
+  await page.getByRole('button', { name: /manifest/i }).click();
+  await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
+  await expect(page.getByText('export-sanitizer-v1').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /download|share|public/i })).toHaveCount(0);
+});
+
+test('evidence package builder creates JSON package metadata only', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'auditor');
+  await mockTrustReportApi(page);
+
+  await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Evidence package builder')).toBeVisible();
+  await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  await page.getByLabel(/include findings/i).check();
+  await page.getByLabel(/include remediation/i).check();
+  await page.getByRole('button', { name: /create evidence package/i }).click();
+  await expect(page.getByText('Evidence package created')).toBeVisible();
+  await expect(page.getByText('metadata only', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /zip|pdf|download|share/i })).toHaveCount(0);
+});
+
+test('access logs display hashed network metadata and RBAC gates viewer report actions', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'auditor');
+  await mockTrustReportApi(page);
+
+  await page.goto('/reports/access-logs', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('ip_hash_abc123')).toBeVisible();
+  await expect(page.getByText('ua_hash_def456')).toBeVisible();
+  await expect(page.getByText(/192\.168\.|Mozilla\/5\.0/)).toHaveCount(0);
+
+  await mockAuthenticatedUser(page, 'viewer');
+  await mockTrustReportApi(page);
+  await page.goto('/reports', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Report Center access requires analyst, auditor, admin, or owner role.')).toBeVisible();
+  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
+});

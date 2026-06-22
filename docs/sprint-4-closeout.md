@@ -34,16 +34,20 @@ Completed in the local workspace:
 
 - Backend Phase 9 tests: `5 passed`.
 - Sprint 4 Phase 1-9 regression: `76 passed`.
+- Focused Sprint 2/3/4 regression: `331 passed`.
+- Backend collection: `485 tests collected`.
+- Full backend suite: `468 passed, 17 skipped`.
 - Sprint 4 demo seed: succeeded for `authclaw-sprint4-demo`.
 - Frontend lint: passed.
 - Frontend typecheck: passed.
 - Frontend build: passed.
-- Lightweight safety scan: no real provider credentials found; hits were expected test fixtures, redaction patterns, local compose defaults, or generated Playwright report content.
+- Playwright E2E: `23 passed`.
+- Docker compose config: passed.
+- Lightweight safety scan: no high-risk credential, provider-client, Terraform apply/destroy, or subprocess execution matches in the checked source paths.
 
-Attempted but not completed in this run:
+Environment note:
 
-- Playwright E2E: first run started a local server but Chromium launch failed with Windows `spawn EPERM`; rerun with browser-process permission is required.
-- Full backend suite and broader Sprint 2/3/4 regression: not rerun during this push handoff; last known prior status was green before Phase 9.
+- A first broad regression attempt failed while Docker/Postgres was stopped. After Docker Desktop was started and local `db`/`redis` services were running, the focused regression and full backend suite passed.
 
 ## Remaining Follow-Ups
 
@@ -56,6 +60,6 @@ Attempted but not completed in this run:
 
 READY WITH MINOR FOLLOW-UPS.
 
-The safe remediation lifecycle is implemented and backend/frontend build checks pass. Remaining follow-up is rerunning Playwright with browser launch permission and periodically addressing dependency deprecation warnings.
+The safe remediation lifecycle is implemented and backend/frontend checks pass. Remaining follow-ups are dependency deprecation hygiene and future production-readiness work that must stay behind explicit architecture approval.
 
 Recommended next track after verification: Sprint 5 architecture planning only, with no deployment or real mutation until a separate guarded implementation phase is approved.

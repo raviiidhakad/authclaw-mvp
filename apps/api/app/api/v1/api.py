@@ -3,7 +3,7 @@ from app.api.v1.endpoints import (
     auth, providers, policies, gateway, gateway_routes,
     audit, settings, tenants, users, api_keys, compliance,
     agent, approvals, oidc, health_security, integrations, findings,
-    remediation,
+    remediation, trust, reports, evidence_packages,
 )
 
 api_router = APIRouter()
@@ -25,5 +25,8 @@ api_router.include_router(approvals.router, prefix="/approvals", tags=["Approval
 api_router.include_router(integrations.router, prefix="/integrations", tags=["Cloud Integrations"])
 api_router.include_router(findings.router, prefix="/findings", tags=["Security Findings"])
 api_router.include_router(remediation.router, prefix="/remediation", tags=["Remediation"])
+api_router.include_router(trust.router, prefix="/trust", tags=["Trust Center"])
+api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+api_router.include_router(evidence_packages.router, prefix="/evidence-packages", tags=["Evidence Packages"])
 # Sprint 1: Security pipeline health endpoint (no auth required — used by load balancers)
 api_router.include_router(health_security.router, prefix="", tags=["Health"])

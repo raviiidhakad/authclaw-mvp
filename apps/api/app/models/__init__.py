@@ -59,6 +59,16 @@ from app.models.remediation import (
     RemediationVerificationResult,
     RemediationVerificationStatus,
 )
+from app.models.trust import (
+    ExportManifest,
+    ExternalShareLink,
+    ReportAccessLog,
+    ReportArtifact,
+    ReportRun,
+    ReportRunStatus,
+    ReportTemplate,
+    TrustNotification,
+)
 
 __all__ = [
     "Base",
@@ -128,4 +138,12 @@ __all__ = [
     "RemediationVerificationResult",
     "RemediationVerificationStatus",
     "RemediationAuditLink",
+    "ReportTemplate",
+    "ReportRun",
+    "ReportRunStatus",
+    "ReportArtifact",
+    "ExportManifest",
+    "ExternalShareLink",
+    "ReportAccessLog",
+    "TrustNotification",
 ]

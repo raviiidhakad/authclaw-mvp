@@ -543,6 +543,71 @@ class RemediationSandboxRejectedArtifactEvent(RemediationEvent):
     blocking_reason_count: int
 
 
+class TrustReportEvent(BaseEvent):
+    event_type: str
+    artifact_id: Optional[uuid.UUID] = None
+    report_run_id: Optional[uuid.UUID] = None
+    share_link_id: Optional[uuid.UUID] = None
+    notification_id: Optional[uuid.UUID] = None
+    status: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportRunStartedEvent(TrustReportEvent):
+    event_type: str = "trust.report_run.started"
+    report_run_id: uuid.UUID
+    status: str = "running"
+
+
+class ReportRunCompletedEvent(TrustReportEvent):
+    event_type: str = "trust.report_run.completed"
+    report_run_id: uuid.UUID
+    artifact_id: Optional[uuid.UUID] = None
+    status: str = "completed"
+
+
+class ReportRunFailedEvent(TrustReportEvent):
+    event_type: str = "trust.report_run.failed"
+    report_run_id: uuid.UUID
+    status: str = "failed"
+    reason_category: Optional[str] = None
+
+
+class EvidencePackageCreatedEvent(TrustReportEvent):
+    event_type: str = "trust.evidence_package.created"
+    report_run_id: uuid.UUID
+    artifact_id: uuid.UUID
+    manifest_hash: str
+
+
+class ReportDownloadedEvent(TrustReportEvent):
+    event_type: str = "trust.report.downloaded"
+    artifact_id: uuid.UUID
+    access_log_id: Optional[uuid.UUID] = None
+
+
+class ShareLinkCreatedEvent(TrustReportEvent):
+    event_type: str = "trust.share_link.created"
+    artifact_id: uuid.UUID
+    share_link_id: uuid.UUID
+    expires_at: datetime
+
+
+class ShareLinkRevokedEvent(TrustReportEvent):
+    event_type: str = "trust.share_link.revoked"
+    artifact_id: uuid.UUID
+    share_link_id: uuid.UUID
+
+
+class TrustCenterViewedEvent(TrustReportEvent):
+    event_type: str = "trust.center.viewed"
+
+
+class NotificationCreatedEvent(TrustReportEvent):
+    event_type: str = "trust.notification.created"
+    notification_id: uuid.UUID
+
+
 class FindingControlMappingEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str

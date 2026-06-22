@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # When True:  agent.py uses FindingInventoryService.get_prioritized().
     FF_USE_REAL_CONNECTORS: bool = False
 
+    # Sprint 5: external trust sharing is disabled by default. Phase 5 only
+    # exposes owner-gated create/list/revoke foundations when explicitly enabled.
+    ENABLE_EXTERNAL_TRUST_SHARING: bool = False
+    EXTERNAL_TRUST_SHARING_MAX_EXPIRY_DAYS: int = 30
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

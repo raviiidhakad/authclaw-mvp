@@ -169,3 +169,43 @@ class ReportAccessLogListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class ReportArtifactDownloadResponse(BaseModel):
+    artifact_id: uuid.UUID
+    tenant_id: uuid.UUID
+    requester_id: uuid.UUID | None = None
+    external_share_id: uuid.UUID | None = None
+    downloaded_at: datetime
+    manifest_hash: str | None = None
+    content_type: Literal["application/json"] = "application/json"
+    watermark: dict[str, Any]
+    artifact: dict[str, Any]
+
+
+class ShareLinkCreateRequest(BaseModel):
+    artifact_id: uuid.UUID
+    expires_at: datetime
+    max_downloads: int = Field(1, ge=1, le=25)
+
+
+class ShareLinkResponse(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    artifact_id: uuid.UUID
+    scope: dict[str, Any]
+    created_by: uuid.UUID | None = None
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    max_downloads: int
+
+
+class ShareLinkCreateResponse(ShareLinkResponse):
+    token: str
+
+
+class ShareLinkListResponse(BaseModel):
+    items: list[ShareLinkResponse]
+    total: int
+    skip: int
+    limit: int

@@ -1169,6 +1169,18 @@ export interface ReportAccessLog {
   created_at: string;
 }
 
+export interface ReportArtifactDownload {
+  artifact_id: string;
+  tenant_id: string;
+  requester_id?: string | null;
+  external_share_id?: string | null;
+  downloaded_at: string;
+  manifest_hash?: string | null;
+  content_type: 'application/json';
+  watermark: Record<string, unknown>;
+  artifact: Record<string, unknown>;
+}
+
 export type TrustReportListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
 
 export async function getTrustOverview() {
@@ -1234,6 +1246,11 @@ export async function getReportArtifact(id: string) {
 export async function getReportArtifactManifest(id: string) {
   const res = await apiClient.get(`/reports/artifacts/${id}/manifest`);
   return res.data as ExportManifest;
+}
+
+export async function downloadReportArtifact(id: string) {
+  const res = await apiClient.get(`/reports/artifacts/${id}/download`);
+  return res.data as ReportArtifactDownload;
 }
 
 export async function createEvidencePackage(data: EvidencePackagePayload) {
@@ -1320,6 +1337,14 @@ export function useReportArtifacts(params: Record<string, unknown> = {}) {
 
 export function useReportArtifactManifest(id?: string) {
   return useQuery({ queryKey: ['report-artifact-manifest', id], queryFn: () => (id ? getReportArtifactManifest(id) : null), enabled: !!id });
+}
+
+export function useDownloadReportArtifact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: downloadReportArtifact,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-access-logs'] }),
+  });
 }
 
 export function useCreateEvidencePackage() {

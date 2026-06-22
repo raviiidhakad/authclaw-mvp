@@ -11,7 +11,7 @@ from app.api.dependencies import get_current_tenant, get_current_user, get_db
 from app.core.exceptions import ForbiddenException, NotFoundException
 from app.models.role import Role, UserRole
 from app.models.tenant import Tenant
-from app.models.trust import ExportManifest, ReportAccessLog, ReportArtifact, ReportRun, ReportTemplate
+from app.models.trust import ExportManifest, ExternalShareLink, ReportAccessLog, ReportArtifact, ReportRun, ReportTemplate
 from app.models.user import User
 from app.schemas.trust import (
     ExportManifestResponse,
@@ -19,6 +19,7 @@ from app.schemas.trust import (
     ReportArtifactMetadataResponse,
     ReportRunResponse,
     ReportTemplateResponse,
+    ShareLinkResponse,
 )
 from app.services.trust_reporting import ExportSanitizer, has_permission
 
@@ -168,6 +169,23 @@ def access_log_response(row: ReportAccessLog) -> ReportAccessLogResponse:
     return ReportAccessLogResponse(**payload)
 
 
+def share_link_response(row: ExternalShareLink) -> ShareLinkResponse:
+    payload = sanitizer.sanitize_payload(
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "artifact_id": row.artifact_id,
+            "scope": row.scope or {},
+            "created_by": row.created_by,
+            "expires_at": row.expires_at,
+            "revoked_at": row.revoked_at,
+            "max_downloads": row.max_downloads,
+        }
+    )
+    payload.pop("sanitization_version", None)
+    return ShareLinkResponse(**payload)
+
+
 async def template_or_404(db: AsyncSession, tenant_id: uuid.UUID, template_id: uuid.UUID) -> ReportTemplate:
     row = (
         await db.execute(select(ReportTemplate).where(ReportTemplate.tenant_id == tenant_id, ReportTemplate.id == template_id))
@@ -201,4 +219,13 @@ async def manifest_for_artifact_or_404(db: AsyncSession, tenant_id: uuid.UUID, a
     ).scalars().first()
     if row is None:
         raise NotFoundException(detail="Export manifest not found")
+    return row
+
+
+async def share_link_or_404(db: AsyncSession, tenant_id: uuid.UUID, share_id: uuid.UUID) -> ExternalShareLink:
+    row = (
+        await db.execute(select(ExternalShareLink).where(ExternalShareLink.tenant_id == tenant_id, ExternalShareLink.id == share_id))
+    ).scalars().first()
+    if row is None:
+        raise NotFoundException(detail="Share link not found")
     return row

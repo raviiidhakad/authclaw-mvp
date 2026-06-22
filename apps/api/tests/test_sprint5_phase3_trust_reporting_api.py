@@ -49,7 +49,7 @@ def _json(value) -> dict | list:
     return value
 
 
-def test_sprint5_phase3_routes_registered_without_public_share_or_download():
+def test_sprint5_phase3_routes_registered_without_public_share_surface():
     expected = {
         ("GET", "/trust/overview"),
         ("GET", "/trust/security-posture"),
@@ -72,7 +72,7 @@ def test_sprint5_phase3_routes_registered_without_public_share_or_download():
     }
     registered = {(method, route.path) for route in api_router.routes for method in getattr(route, "methods", set())}
     assert expected <= registered
-    forbidden_fragments = ("/trust/share-links", "/download", "/public", "/share/")
+    forbidden_fragments = ("/public", "/share/")
     for _, path in registered:
         assert not any(fragment in path for fragment in forbidden_fragments)
 
@@ -285,7 +285,6 @@ def test_phase3_api_source_has_no_public_share_download_or_execution_clients():
         "terraform destroy",
         "os.system",
         "@router.get(\"/download",
-        "share-links",
         "public",
     )
     for token in forbidden:

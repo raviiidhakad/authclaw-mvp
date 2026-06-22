@@ -1055,6 +1055,27 @@ async function mockTrustReportApi(page: Page) {
   await page.route(/\/api\/v1\/trust\/remediation-posture$/, async (route) => fulfillJson(route, trustRemediationPosture));
   await page.route(/\/api\/v1\/trust\/integration-health$/, async (route) => fulfillJson(route, trustIntegrationPosture));
   await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}/manifest`, async (route) => fulfillJson(route, reportManifest));
+  await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}/download`, async (route) => fulfillJson(route, {
+    artifact_id: reportArtifact.id,
+    tenant_id: 'tenant-1',
+    requester_id: 'user-1',
+    external_share_id: null,
+    downloaded_at: '2026-06-22T10:04:00Z',
+    manifest_hash: reportArtifact.manifest_hash,
+    content_type: 'application/json',
+    watermark: {
+      tenant_id: 'tenant-1',
+      requester_id: 'user-1',
+      artifact_id: reportArtifact.id,
+      downloaded_at: '2026-06-22T10:04:00Z',
+      manifest_hash: reportArtifact.manifest_hash,
+      language: 'evidence-supported posture; needs review',
+    },
+    artifact: {
+      metadata: { report_type: 'trust_overview' },
+      hidden_from_preview: 'token=super-secret-value raw_provider_payload AKIAIOSFODNN7EXAMPLE ghp_supersecretsecretsecretsecret',
+    },
+  }));
   await page.route(/\/api\/v1\/reports\/templates(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
       await fulfillJson(route, { ...reportTemplate, id: '77777777-aaaa-4444-8888-777777777777', name: 'Board posture review' }, 201);
@@ -1142,7 +1163,7 @@ test('report run creation and detail show metadata, artifact hashes, and no raw 
   await expect(page.getByText(/raw report body|super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
 });
 
-test('artifact manifest page displays metadata hash and no export file controls', async ({ page }) => {
+test('artifact manifest and download flow display safe metadata without share controls', async ({ page }) => {
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
@@ -1151,7 +1172,13 @@ test('artifact manifest page displays metadata hash and no export file controls'
   await page.getByRole('button', { name: /manifest/i }).click();
   await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
   await expect(page.getByText('export-sanitizer-v1').first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /download|share|public/i })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /^download$/i }).click();
+  await expect(page.getByText('Sanitized download metadata')).toBeVisible();
+  await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
+  await expect(page.getByText('Raw report body preview remains hidden', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
+  await expect(page.getByText(/super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
 });
 
 test('evidence package builder creates JSON package metadata only', async ({ page }) => {
@@ -1185,4 +1212,11 @@ test('access logs display hashed network metadata and RBAC gates viewer report a
   await expect(page.getByText('Report Center access requires analyst, auditor, admin, or owner role.')).toBeVisible();
   await page.goto('/trust', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
+
+  await mockAuthenticatedUser(page, 'analyst');
+  await mockTrustReportApi(page);
+  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Artifact download controls are hidden for this role.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^download$/i })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
 });

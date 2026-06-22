@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +28,11 @@ from app.core.exceptions import BadRequestException
 from app.models.tenant import Tenant
 from app.models.trust import ExportManifest, ReportAccessLog, ReportArtifact, ReportRun, ReportRunStatus, ReportTemplate
 from app.models.user import User
+from app.schemas.events import ReportDownloadedEvent
 from app.schemas.trust import (
     ExportManifestResponse,
     ReportAccessLogListResponse,
+    ReportArtifactDownloadResponse,
     ReportArtifactListResponse,
     ReportArtifactMetadataResponse,
     ReportRunCreateRequest,
@@ -46,8 +48,12 @@ from app.services.trust_reporting import (
     GENERATE_REPORT,
     MANAGE_REPORT_TEMPLATES,
     VIEW_REPORT_ACCESS_LOGS,
+    LocalReportArtifactStore,
     ReportGenerationRequest,
     ReportGenerationService,
+    TRUST_EVENTS_TOPIC,
+    hash_access_metadata,
+    sanitized_event_payload,
 )
 
 router = APIRouter()
@@ -272,6 +278,79 @@ async def get_artifact_manifest(
     await ensure_permission(db, tenant.id, _user.id, DOWNLOAD_REPORT)
     await artifact_or_404(db, tenant.id, artifact_id)
     return manifest_response(await manifest_for_artifact_or_404(db, tenant.id, artifact_id))
+
+
+@router.get("/artifacts/{artifact_id}/download", response_model=ReportArtifactDownloadResponse)
+async def download_artifact(
+    artifact_id: uuid.UUID,
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(DOWNLOAD_REPORT)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, DOWNLOAD_REPORT)
+    artifact = await artifact_or_404(db, tenant.id, artifact_id)
+    run = await run_or_404(db, tenant.id, artifact.run_id)
+    if run.status != ReportRunStatus.completed:
+        raise BadRequestException(detail="Report artifact is not ready for download")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if artifact.expires_at is not None and artifact.expires_at <= now:
+        raise BadRequestException(detail="Report artifact has expired")
+    manifest = await manifest_for_artifact_or_404(db, tenant.id, artifact.id)
+    stored_payload = LocalReportArtifactStore().read_json(artifact.storage_key)
+    safe_artifact = sanitizer.sanitize_payload(stored_payload)
+    watermark = sanitizer.sanitize_payload(
+        {
+            "tenant_id": tenant.id,
+            "requester_id": current_user.id,
+            "artifact_id": artifact.id,
+            "generated_at": artifact.created_at,
+            "downloaded_at": datetime.now(timezone.utc),
+            "manifest_hash": manifest.manifest_hash,
+            "language": "evidence-supported posture; needs review",
+        }
+    )
+    watermark.pop("sanitization_version", None)
+    access_log = ReportAccessLog(
+        tenant_id=tenant.id,
+        artifact_id=artifact.id,
+        actor_user_id=current_user.id,
+        action="download",
+        ip_hash=hash_access_metadata(request.client.host if request.client else None),
+        user_agent_hash=hash_access_metadata(request.headers.get("user-agent")),
+    )
+    db.add(access_log)
+    await db.flush()
+    if event_producer is not None:
+        await event_producer.publish(
+            TRUST_EVENTS_TOPIC,
+            ReportDownloadedEvent(
+                tenant_id=tenant.id,
+                actor_id=current_user.id,
+                artifact_id=artifact.id,
+                access_log_id=access_log.id,
+                payload=sanitized_event_payload(
+                    {
+                        "artifact_id": artifact.id,
+                        "content_hash": artifact.content_hash,
+                        "manifest_hash": manifest.manifest_hash,
+                        "size_bytes": artifact.size_bytes,
+                        "content_type": "application/json",
+                    }
+                ),
+            ),
+        )
+    await db.commit()
+    await set_tenant_context(db, tenant.id)
+    return ReportArtifactDownloadResponse(
+        artifact_id=artifact.id,
+        tenant_id=tenant.id,
+        requester_id=current_user.id,
+        downloaded_at=watermark["downloaded_at"],
+        manifest_hash=manifest.manifest_hash,
+        watermark=watermark,
+        artifact=safe_artifact,
+    )
 
 
 @router.get("/access-logs", response_model=ReportAccessLogListResponse)

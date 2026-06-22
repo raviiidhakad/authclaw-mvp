@@ -29,6 +29,7 @@ import { useAuth } from '@/hooks/use-auth';
 import {
   ExportManifest,
   ReportAccessLog,
+  ReportArtifactDownload,
   ReportArtifactMetadata,
   ReportRun,
   ReportTemplate,
@@ -37,6 +38,7 @@ import {
   useCreateReportRun,
   useCreateReportTemplate,
   useDeleteReportTemplate,
+  useDownloadReportArtifact,
   useEvidencePackages,
   useReportAccessLogs,
   useReportArtifactManifest,
@@ -91,6 +93,7 @@ function permissionsFor(user: unknown) {
     canViewTrust: true,
     canViewReports: hasAnyRole(user, ['owner', 'admin', 'auditor', 'analyst']),
     canGenerate: hasAnyRole(user, ['owner', 'admin', 'auditor']),
+    canDownload: hasAnyRole(user, ['owner', 'admin', 'auditor']),
     canManageTemplates: hasAnyRole(user, ['owner', 'admin']),
     canViewAccessLogs: hasAnyRole(user, ['owner', 'admin', 'auditor']),
   };
@@ -418,7 +421,7 @@ function TrustOverviewView() {
   );
 }
 
-function ReportOverviewView({ canGenerate }: { canGenerate: boolean }) {
+function ReportOverviewView({ canGenerate, canDownload }: { canGenerate: boolean; canDownload: boolean }) {
   const templatesQuery = useReportTemplates({ skip: 0, limit: PAGE_SIZE });
   const runsQuery = useReportRuns({ skip: 0, limit: PAGE_SIZE });
   const artifactsQuery = useReportArtifacts({ skip: 0, limit: PAGE_SIZE });
@@ -435,7 +438,7 @@ function ReportOverviewView({ canGenerate }: { canGenerate: boolean }) {
       </div>
       <div className="grid gap-6 xl:grid-cols-2">
         <RunsTable runs={(runsQuery.data?.items || []).slice(0, 8)} loading={runsQuery.isLoading} compact />
-        <ArtifactsTable artifacts={(artifactsQuery.data?.items || []).slice(0, 8)} loading={artifactsQuery.isLoading} />
+        <ArtifactsTable artifacts={(artifactsQuery.data?.items || []).slice(0, 8)} loading={artifactsQuery.isLoading} canDownload={canDownload} />
       </div>
       <Card className="glass-card overflow-hidden">
         <div className="p-4 border-b border-white/5 bg-black/20 flex items-center justify-between">
@@ -692,12 +695,24 @@ function ArtifactMiniList({ artifacts }: { artifacts: ReportArtifactMetadata[] }
   );
 }
 
-function ArtifactsView() {
+function ArtifactsView({ canDownload }: { canDownload: boolean }) {
   const [selected, setSelected] = useState<ReportArtifactMetadata | null>(null);
+  const [downloaded, setDownloaded] = useState<ReportArtifactDownload | null>(null);
   const [filters, setFilters] = useState({ artifact_type: '', run_id: '' });
   const artifactsQuery = useReportArtifacts({ ...filters, skip: 0, limit: PAGE_SIZE });
+  const downloadArtifact = useDownloadReportArtifact();
+  const handleDownload = async (artifact: ReportArtifactMetadata) => {
+    try {
+      const result = await downloadArtifact.mutateAsync(artifact.id);
+      setDownloaded(result);
+      toast.success('Sanitized artifact metadata loaded');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
   return (
     <ReportShell view="artifacts">
+      {!canDownload && <RoleNotice text="Artifact download controls are hidden for this role. Metadata remains visible where permitted." />}
       <Card className="glass-card">
         <CardContent className="p-4">
           <div className="grid md:grid-cols-2 gap-3">
@@ -706,13 +721,26 @@ function ArtifactsView() {
           </div>
         </CardContent>
       </Card>
-      <ArtifactsTable artifacts={artifactsQuery.data?.items || []} loading={artifactsQuery.isLoading} onSelect={setSelected} />
+      <ArtifactsTable artifacts={artifactsQuery.data?.items || []} loading={artifactsQuery.isLoading} onSelect={setSelected} onDownload={handleDownload} canDownload={canDownload} />
       <ArtifactDetailSheet artifact={selected} onClose={() => setSelected(null)} />
+      <DownloadMetadataSheet result={downloaded} onClose={() => setDownloaded(null)} />
     </ReportShell>
   );
 }
 
-function ArtifactsTable({ artifacts, loading, onSelect }: { artifacts: ReportArtifactMetadata[]; loading?: boolean; onSelect?: (artifact: ReportArtifactMetadata) => void }) {
+function ArtifactsTable({
+  artifacts,
+  loading,
+  onSelect,
+  onDownload,
+  canDownload = false,
+}: {
+  artifacts: ReportArtifactMetadata[];
+  loading?: boolean;
+  onSelect?: (artifact: ReportArtifactMetadata) => void;
+  onDownload?: (artifact: ReportArtifactMetadata) => void;
+  canDownload?: boolean;
+}) {
   return (
     <Card className="glass-card overflow-hidden">
       <div className="p-4 border-b border-white/5 bg-black/20"><CardTitle className="text-neutral-100 text-base">Artifact metadata</CardTitle></div>
@@ -725,7 +753,12 @@ function ArtifactsTable({ artifacts, loading, onSelect }: { artifacts: ReportArt
             <td className="p-4 text-neutral-300">{artifact.size_bytes.toLocaleString()} bytes</td>
             <td className="p-4"><LabelBadge value={artifact.sanitization_version} /></td>
             <td className="p-4 text-neutral-400 text-xs">{dateText(artifact.expires_at)}</td>
-            <td className="p-4">{onSelect && <Button size="sm" variant="outline" onClick={() => onSelect(artifact)}>Manifest</Button>}</td>
+            <td className="p-4">
+              <div className="flex flex-wrap gap-2">
+                {onSelect && <Button size="sm" variant="outline" onClick={() => onSelect(artifact)}>Manifest</Button>}
+                {onDownload && canDownload && <Button size="sm" variant="outline" onClick={() => onDownload(artifact)}>Download</Button>}
+              </div>
+            </td>
           </tr>
         ))}
       </DataTable>
@@ -770,6 +803,37 @@ function ManifestBlock({ manifest, loading }: { manifest?: ExportManifest | null
       <Info label="Manifest hash" value={manifest.manifest_hash} mono />
       <pre className="max-h-80 overflow-auto rounded-md border border-white/10 bg-black/50 p-3 text-xs text-neutral-300 whitespace-pre-wrap break-words">{safeExportText(JSON.stringify(manifest.manifest_json || {}, null, 2))}</pre>
     </div>
+  );
+}
+
+function DownloadMetadataSheet({ result, onClose }: { result: ReportArtifactDownload | null; onClose: () => void }) {
+  return (
+    <Sheet open={!!result} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="w-full sm:max-w-2xl bg-[#0a0a0a] border-white/10 text-neutral-100 overflow-y-auto">
+        {result && (
+          <>
+            <SheetHeader className="border-b border-white/5">
+              <SheetTitle>Sanitized download metadata</SheetTitle>
+              <SheetDescription className="font-mono text-xs">{result.artifact_id}</SheetDescription>
+            </SheetHeader>
+            <div className="p-4 space-y-4">
+              <div className="rounded-md border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm text-blue-200">
+                Download response received. The UI displays watermark and manifest metadata only; raw report body preview remains hidden.
+              </div>
+              <div className="grid md:grid-cols-2 gap-3">
+                <Info label="Artifact" value={result.artifact_id} mono />
+                <Info label="Tenant" value={result.tenant_id} mono />
+                <Info label="Requester" value={result.requester_id || result.external_share_id || '-'} mono />
+                <Info label="Downloaded" value={dateText(result.downloaded_at)} />
+                <Info label="Manifest hash" value={result.manifest_hash || '-'} mono />
+                <Info label="Content type" value={result.content_type} />
+              </div>
+              <pre className="max-h-80 overflow-auto rounded-md border border-white/10 bg-black/50 p-3 text-xs text-neutral-300 whitespace-pre-wrap break-words">{safeExportText(JSON.stringify(result.watermark || {}, null, 2))}</pre>
+            </div>
+          </>
+        )}
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -890,8 +954,8 @@ export function ReportConsole({ view = 'overview' }: { view?: ReportView }) {
   if (!permissions.canViewReports) return <NoReportAccess />;
   if (view === 'templates') return <TemplatesView canManageTemplates={permissions.canManageTemplates} />;
   if (view === 'runs') return <RunsView canGenerate={permissions.canGenerate} />;
-  if (view === 'artifacts') return <ArtifactsView />;
+  if (view === 'artifacts') return <ArtifactsView canDownload={permissions.canDownload} />;
   if (view === 'evidence-packages') return <EvidencePackagesView canGenerate={permissions.canGenerate} />;
   if (view === 'access-logs') return <AccessLogsView canViewAccessLogs={permissions.canViewAccessLogs} />;
-  return <ReportOverviewView canGenerate={permissions.canGenerate} />;
+  return <ReportOverviewView canGenerate={permissions.canGenerate} canDownload={permissions.canDownload} />;
 }

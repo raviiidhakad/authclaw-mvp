@@ -85,7 +85,7 @@ class AuditEngine:
             model=model,
             prompt_original=prompt_original,
             prompt_redacted=prompt_redacted,
-            pii_detections=[],
+            security_event_count=0,  # incremented by security pipeline
             status=status,
             token_count_prompt=tokens_prompt,
             latency_ms=latency_ms,
@@ -95,6 +95,8 @@ class AuditEngine:
             error_message=error_message,
         )
         self.db.add(gw_request)
+
+        
         await self.db.flush()   # get gw_request.id without committing
 
         # ── 2. Gateway Response record ───────────────────────────────────
@@ -111,8 +113,7 @@ class AuditEngine:
         gw_response = GatewayResponse(
             request_id=gw_request.id,
             response_original=response_original,
-            response_redacted=None,
-            pii_detections=[],
+            security_event_count=0,  # incremented by security pipeline
             token_count_completion=tokens_completion,
             latency_ms=latency_ms,
         )
@@ -183,3 +184,123 @@ class AuditEngine:
             raise
 
         return gw_request
+
+    async def log_rate_limit_exceeded(self, tenant_id: uuid.UUID, api_key_id: uuid.UUID, limit_key: str):
+        """Log a rate limit violation event."""
+        log_entry = AuditLog(
+            tenant_id=tenant_id,
+            user_id=None,
+            action=AuditAction.update,
+            event_type=EventType.gateway_rate_limit_exceeded,
+            resource_type="gateway",
+            resource_id=str(api_key_id),
+            details={"reason": "Rate limit exceeded", "limit_key": limit_key},
+            ip_address=None,
+            user_agent=None,
+        )
+        self.db.add(log_entry)
+        await self.db.commit()
+
+    async def publish_stream_started(self, stream_id: str, tenant_id: uuid.UUID, api_key_id: uuid.UUID, provider_id: Optional[uuid.UUID], security_mode: str, prompt_hash: str):
+        from app.core.events.producer import producer
+        from pydantic import BaseModel
+        from datetime import datetime
+        import time
+        
+        class StreamEvent(BaseModel):
+            event_type: str
+            stream_id: str
+            tenant_id: str
+            api_key_id: str
+            provider_id: Optional[str]
+            security_mode: str
+            prompt_hash: str
+            timestamp: str
+            event_id: str
+            
+        import uuid
+        event = StreamEvent(
+            event_type="gateway.stream.started",
+            stream_id=stream_id,
+            tenant_id=str(tenant_id),
+            api_key_id=str(api_key_id),
+            provider_id=str(provider_id) if provider_id else None,
+            security_mode=security_mode,
+            prompt_hash=prompt_hash,
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            event_id=str(uuid.uuid4())
+        )
+        await producer.publish("authclaw.audit.events", event)
+        
+        # Also log to postgres
+        from sqlalchemy import text
+        await self.db.execute(text("SELECT set_config('app.current_tenant_id', :tid, true)"), {"tid": str(tenant_id)})
+        
+        log_entry = AuditLog(
+            tenant_id=tenant_id,
+            user_id=None,
+            action=AuditAction.create,
+            event_type=EventType.gateway_stream_started,
+            resource="gateway.stream",
+            resource_id=stream_id,
+            metadata_={"security_mode": security_mode, "prompt_hash": prompt_hash},
+            ip_address=None,
+            user_agent=None,
+        )
+        self.db.add(log_entry)
+        await self.db.commit()
+
+    async def publish_stream_completed(self, stream_id: str, response_hash: str, prompt_tokens: int, completion_tokens: int, latency_ms: int):
+        from app.core.events.producer import producer
+        from pydantic import BaseModel
+        from datetime import datetime
+        
+        class StreamEvent(BaseModel):
+            event_type: str
+            stream_id: str
+            response_hash: str
+            prompt_tokens: int
+            completion_tokens: int
+            latency_ms: int
+            timestamp: str
+            event_id: str
+            
+        import uuid
+        event = StreamEvent(
+            event_type="gateway.stream.completed",
+            stream_id=stream_id,
+            response_hash=response_hash,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=latency_ms,
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            event_id=str(uuid.uuid4())
+        )
+        await producer.publish("authclaw.audit.events", event)
+
+    async def publish_stream_failed(self, stream_id: str, partial_response_hash: str, failure_reason: str, policy_violation_details: Optional[Dict] = None):
+        from app.core.events.producer import producer
+        from pydantic import BaseModel
+        from datetime import datetime
+        
+        class StreamEvent(BaseModel):
+            event_type: str
+            stream_id: str
+            partial_response_hash: str
+            failure_reason: str
+            policy_violation_details: Optional[Dict]
+            timestamp: str
+            event_id: str
+            
+        import uuid
+        event = StreamEvent(
+            event_type="gateway.stream.failed",
+            stream_id=stream_id,
+            partial_response_hash=partial_response_hash,
+            failure_reason=failure_reason,
+            policy_violation_details=policy_violation_details,
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            event_id=str(uuid.uuid4())
+        )
+        await producer.publish("authclaw.audit.events", event)
+

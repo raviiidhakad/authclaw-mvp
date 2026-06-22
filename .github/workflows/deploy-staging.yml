@@ -1,0 +1,200 @@
+name: Deploy — Staging
+
+# Triggers after the container image CI workflow passes on main.
+# All security, integration, and container gates must pass before
+# this workflow runs. The ci-promote gate handles gate checking.
+on:
+  workflow_run:
+    workflows: ["CI Container"]
+    branches: ["main"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Specific image tag to deploy (default: latest sha)"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false   # Never cancel an in-flight staging deploy
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/authclaw-api
+  ECS_CLUSTER: authclaw-staging
+  ECS_SERVICE_API: authclaw-api-staging
+  ECS_SERVICE_AUDIT: authclaw-audit-worker-staging
+  ECS_SERVICE_SECURITY: authclaw-security-worker-staging
+
+jobs:
+  # ── Guard: only run on successful container build ───────────────────
+  check-gate:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      should_deploy: ${{ steps.gate.outputs.should_deploy }}
+    steps:
+      - name: Evaluate deployment gate
+        id: gate
+        run: |
+          echo "should_deploy=true" >> $GITHUB_OUTPUT
+          echo "::notice::Staging deployment gate passed."
+
+  # ── Database migrations ─────────────────────────────────────────────
+  run-migrations:
+    needs: check-gate
+    if: needs.check-gate.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGING }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run Alembic migrations via ECS Task
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition authclaw-migration-staging \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition $TASK_DEF \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.STAGING_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.STAGING_MIGRATION_SG_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Migration task ARN: $TASK_ARN"
+
+          # Wait for completion (max 5 minutes)
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN
+
+          # Check exit code
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration task failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+          echo "::notice::Migrations completed successfully."
+
+  # ── Deploy API service ──────────────────────────────────────────────
+  deploy-api:
+    needs: run-migrations
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGING }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Determine image tag
+        id: image
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: .aws/task-definitions/api-staging.json
+          container-name: api
+          image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
+
+      - name: Deploy API to ECS (rolling update)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_API }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+  # ── Deploy workers ──────────────────────────────────────────────────
+  deploy-workers:
+    needs: run-migrations
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGING }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Audit Worker
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_AUDIT }} \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Deploy Security Worker
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_SECURITY }} \
+            --force-new-deployment \
+            --no-cli-pager
+
+  # ── Post-deploy smoke test ──────────────────────────────────────────
+  smoke-test:
+    needs: [deploy-api, deploy-workers]
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 30
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.STAGING_API_URL }}/health")
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Health check failed with HTTP $STATUS"
+            exit 1
+          fi
+          echo "::notice::Staging health check passed (HTTP $STATUS)."
+
+      - name: Post deployment summary
+        run: |
+          echo "## Staging Deployment Complete :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Migrations | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Audit Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Test | ✅ |" >> $GITHUB_STEP_SUMMARY

@@ -23,6 +23,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     reset_token_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     reset_token_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    
+    sso_provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    sso_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
 
 
     tenant = relationship("Tenant", back_populates="users")

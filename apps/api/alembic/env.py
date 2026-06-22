@@ -28,7 +28,15 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+import os
 from app.core.config import settings
+
+# Migrations must run as a superuser so DDL bypasses RLS.
+# ALEMBIC_DATABASE_URL takes precedence over DATABASE_URL.
+# In docker-compose: ALEMBIC_DATABASE_URL = postgres superuser
+#                    DATABASE_URL         = authclaw_app (RLS-constrained runtime)
+_migration_url = os.environ.get("ALEMBIC_DATABASE_URL") or settings.DATABASE_URL
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -42,7 +50,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = settings.DATABASE_URL
+    url = _migration_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -67,7 +75,7 @@ async def run_async_migrations() -> None:
 
     """
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    configuration["sqlalchemy.url"] = _migration_url
 
     connectable = async_engine_from_config(
         configuration,

@@ -11,6 +11,39 @@ from app.api.middleware import TenantContextMiddleware
 # Setup structured logging
 setup_logging()
 
+from contextlib import asynccontextmanager
+from app.core.events.producer import producer
+from app.workers.audit_worker import AuditWorker
+from app.workers.security_worker import SecurityWorker
+
+# Sprint 1: Security pipeline singletons
+from app.core.detection.presidio_engine import presidio_engine
+from app.core.policy.cache import policy_cache
+
+
+audit_worker = AuditWorker()
+security_worker = SecurityWorker()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await producer.start()
+    await audit_worker.start()
+    await security_worker.start()
+    # Sprint 1: Start security pipeline services (guarded by feature flag)
+    if settings.FF_SECURITY_PIPELINE:
+        await policy_cache.start()
+        await presidio_engine.start()
+    yield
+    # Shutdown
+    if settings.FF_SECURITY_PIPELINE:
+        await presidio_engine.stop()
+        await policy_cache.stop()
+    await security_worker.stop()
+    await audit_worker.stop()
+    await producer.stop()
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
@@ -18,6 +51,7 @@ app = FastAPI(
     openapi_url=f"{settings.API_PREFIX}/openapi.json",
     docs_url=f"{settings.API_PREFIX}/docs",
     redoc_url=f"{settings.API_PREFIX}/redoc",
+    lifespan=lifespan,
 )
 
 # Add Custom Middleware
@@ -50,3 +84,4 @@ async def health_check():
 # from app.routes import auth, tenants, users, providers, policies, gateway, audit, compliance, settings_route
 # app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["Auth"])
 # app.include_router(tenants.router, prefix=f"{settings.API_PREFIX}/tenants", tags=["Tenants"])
+

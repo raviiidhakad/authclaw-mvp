@@ -8,14 +8,21 @@ import {
   Settings,
   AlertTriangle,
   CheckSquare,
-  Bot
+  Bot,
+  Cloud,
+  ShieldAlert,
+  Wrench
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
 const NAV_ITEMS = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Gateway', href: '/gateway', icon: Network },
+  { name: 'Gateway Explorer', href: '/gateway', icon: Network },
+  { name: 'Gateway Routes', href: '/gateway-routes', icon: Network },
   { name: 'Action Center', href: '/approvals', icon: CheckSquare },
+  { name: 'Integrations', href: '/integrations', icon: Cloud },
+  { name: 'Findings', href: '/findings', icon: ShieldAlert },
+  { name: 'Remediation', href: '/remediation', icon: Wrench },
   { name: 'Policies', href: '/policies', icon: ShieldCheck },
   { name: 'Violations', href: '/policies/violations', icon: AlertTriangle },
   { name: 'Compliance', href: '/compliance', icon: ShieldCheck },
@@ -29,7 +36,7 @@ export function Sidebar() {
   const { user } = useAuth();
 
   return (
-    <div className="w-64 border-r border-neutral-800 bg-neutral-950 flex flex-col h-screen fixed left-0 top-0">
+    <div className="w-64 border-r border-sidebar-border bg-sidebar flex flex-col h-screen fixed left-0 top-0">
       <div className="h-16 flex items-center px-6 border-b border-neutral-800">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">

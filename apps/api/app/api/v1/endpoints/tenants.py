@@ -39,10 +39,18 @@ async def update_tenant_details(
         tenant.name = body.name
     if body.status is not None:
         tenant.status = body.status
-        
-    await db.commit()
+
+    await db.flush()
     await db.refresh(tenant)
+    await db.commit()
+
+    # Sprint 1: Invalidate Redis policy cache for this tenant on any status change.
+    # (Covers tenant deactivation, rename, and future policy-affecting tenant changes.)
+    from app.core.policy.cache import policy_cache
+    await policy_cache.invalidate(tenant.id)
+
     return tenant
+
 
 
 @router.get("/stats", response_model=TenantStats)

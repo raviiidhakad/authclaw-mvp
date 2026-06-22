@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.provider import ProviderType
 
@@ -24,6 +24,8 @@ class ProviderUpdate(BaseModel):
 
 # ── Response schemas ─────────────────────────────────────────────
 class ProviderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     name: str
@@ -32,9 +34,6 @@ class ProviderResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class ProviderListResponse(BaseModel):

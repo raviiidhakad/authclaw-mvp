@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from 'react';
-import { Plus, ShieldCheck, Trash2, Edit, ChevronRight } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Plus, ShieldCheck, Trash2, Edit, ChevronRight, Search, ShieldAlert, Shield } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { usePolicies, useCreatePolicy, useDeletePolicy, useUpdatePolicy } from '@/hooks/use-data';
-import { PolicyForm } from '@/components/shared/PolicyForm';
+import { PolicyForm, type PolicyAction, type PolicySubmitPayload, type RuleType } from '@/components/shared/PolicyForm';
+import { CardSkeleton } from '@/components/shared/loaders';
+import { EmptyState } from '@/components/shared/states';
 import { toast } from 'sonner';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface PolicyRule {
   id: string;
-  rule_type: string;
-  action: string;
+  rule_type: RuleType;
+  action: PolicyAction;
   message?: string;
   is_active: boolean;
   conditions: Record<string, unknown>;
@@ -42,23 +45,24 @@ const RULE_TYPE_COLORS: Record<string, string> = {
 const ACTION_COLORS: Record<string, string> = {
   block: 'text-red-400',
   warn: 'text-yellow-400',
-  allow: 'text-green-400',
+  allow: 'text-emerald-400',
 };
 
 function RuleSummaryBadges({ rules }: { rules: PolicyRule[] }) {
   if (!rules?.length) {
-    return <span className="text-xs text-neutral-600 italic">No rules</span>;
+    return <span className="text-xs text-neutral-600 italic">No enforced rules</span>;
   }
   return (
-    <div className="flex flex-wrap gap-1 mt-1">
+    <div className="flex flex-wrap gap-1 mt-2">
       {rules.map((rule) => (
         <span
           key={rule.id}
-          className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${RULE_TYPE_COLORS[rule.rule_type] ?? RULE_TYPE_COLORS.custom}`}
+          className={`inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full border font-medium ${RULE_TYPE_COLORS[rule.rule_type] ?? RULE_TYPE_COLORS.custom}`}
         >
           <span className={`font-bold ${ACTION_COLORS[rule.action] ?? ''}`}>
             {rule.action.toUpperCase()}
           </span>
+          <span className="opacity-80">•</span>
           {rule.rule_type.replace('_', ' ')}
         </span>
       ))}
@@ -76,21 +80,36 @@ interface ModalProps {
 
 function Modal({ title, onClose, children }: ModalProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        className="bg-[#0a0a0a] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl relative z-10 overflow-hidden"
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800 shrink-0">
-          <h2 className="text-base font-semibold text-neutral-100">{title}</h2>
+        <div className="flex items-center justify-between px-6 py-5 border-b border-white/5 bg-white/[0.02] shrink-0">
+          <h2 className="text-lg font-bold text-neutral-100 flex items-center gap-2">
+            <Shield className="w-5 h-5 text-blue-400" />
+            {title}
+          </h2>
           <button
             onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200 text-xl leading-none"
+            className="text-neutral-500 hover:text-white transition-colors text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10"
           >
             ×
           </button>
         </div>
         {/* Body */}
-        <div className="overflow-y-auto flex-1 px-6 py-4">{children}</div>
-      </div>
+        <div className="overflow-y-auto flex-1 px-6 py-6 bg-transparent">{children}</div>
+      </motion.div>
     </div>
   );
 }
@@ -106,27 +125,30 @@ export default function PoliciesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // ─── Handlers ───────────────────────────────────────────────────────────────
 
-  const handleCreate = async (payload: any) => {
+  const handleCreate = async (payload: PolicySubmitPayload) => {
     try {
       await createMutation.mutateAsync(payload);
       toast.success(`Policy "${payload.name}" created with ${payload.rules.length} rule(s).`);
       setShowCreate(false);
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Failed to create policy');
+    } catch (err: unknown) {
+      const apiError = err as { response?: { data?: { detail?: string } } };
+      toast.error(apiError.response?.data?.detail || 'Failed to create policy');
     }
   };
 
-  const handleEdit = async (payload: any) => {
+  const handleEdit = async (payload: PolicySubmitPayload) => {
     if (!editingPolicy) return;
     try {
       await updateMutation.mutateAsync({ id: editingPolicy.id, data: payload });
       toast.success(`Policy "${payload.name}" updated.`);
       setEditingPolicy(null);
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Failed to update policy');
+    } catch (err: unknown) {
+      const apiError = err as { response?: { data?: { detail?: string } } };
+      toast.error(apiError.response?.data?.detail || 'Failed to update policy');
     }
   };
 
@@ -153,19 +175,26 @@ export default function PoliciesPage() {
     }
   };
 
+  const filteredPolicies = policies.filter((p: Policy) => 
+    p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (p.description && p.description.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
+  const activeCount = policies.filter((p: Policy) => p.is_active).length;
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
       {/* Page header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Policy Management</h2>
-          <p className="text-neutral-400">Define and manage security policies for AI traffic.</p>
+          <h2 className="text-2xl font-bold tracking-tight text-neutral-100 font-sans">Policy Governance</h2>
+          <p className="text-sm text-neutral-400 mt-1">Define and enforce security guardrails across all AI model traffic.</p>
         </div>
         <Button
           onClick={() => setShowCreate(true)}
-          className="bg-blue-600 hover:bg-blue-700"
+          className="bg-blue-600 hover:bg-blue-500 text-white font-medium px-5"
           disabled={createMutation.isPending}
         >
           <Plus className="w-4 h-4 mr-2" />
@@ -173,201 +202,251 @@ export default function PoliciesPage() {
         </Button>
       </div>
 
+      <div className="flex items-center justify-between bg-black/20 border border-white/5 rounded-xl p-2 gap-4">
+        <div className="flex-1 relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500" />
+          <input 
+            type="text" 
+            placeholder="Search policies..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-transparent border-none focus:ring-0 text-sm text-neutral-200 placeholder:text-neutral-600 pl-10 py-2"
+          />
+        </div>
+        <div className="px-4 border-l border-white/10 hidden sm:flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-emerald-400" />
+          <span className="text-xs font-medium text-neutral-300"><span className="text-emerald-400">{activeCount}</span> Active</span>
+        </div>
+      </div>
+
       {/* Policy list */}
       {loading ? (
-        <div className="py-12 text-center text-neutral-500">Loading policies…</div>
+        <div className="grid gap-4">
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
       ) : policies.length === 0 ? (
-        <Card className="bg-neutral-900 border-neutral-800">
-          <CardContent className="flex flex-col items-center justify-center py-16 text-neutral-500">
-            <ShieldCheck className="w-12 h-12 mb-3 opacity-30" />
-            <p className="font-medium">No policies defined yet.</p>
-            <p className="text-xs mt-1">Create your first policy to start protecting AI traffic.</p>
-          </CardContent>
-        </Card>
+        <EmptyState 
+          title="No Security Policies" 
+          description="Create your first policy to enforce PII redaction, content filtering, and rate limits."
+          icon={ShieldAlert}
+          action={{
+            label: "Create Policy",
+            onClick: () => setShowCreate(true)
+          }}
+        />
+      ) : filteredPolicies.length === 0 ? (
+        <EmptyState 
+          title="No Policies Found" 
+          description="No policies match your current search criteria."
+          icon={Search}
+        />
       ) : (
-        <div className="grid gap-3">
-          {(policies as Policy[]).map((policy) => {
-            const isExpanded = expandedId === policy.id;
-            return (
-              <Card
-                key={policy.id}
-                className={`bg-neutral-900 border transition-colors ${
-                  isExpanded ? 'border-blue-500/40' : 'border-neutral-800'
-                }`}
-              >
-                <CardContent className="p-0">
-                  {/* Policy row */}
-                  <div className="flex items-center justify-between px-5 py-4">
-                    <div className="flex items-center gap-4 min-w-0">
-                      <div
-                        className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${
-                          policy.is_active ? 'bg-blue-600/10' : 'bg-neutral-800'
-                        }`}
-                      >
-                        <ShieldCheck
-                          className={`w-4 h-4 ${
-                            policy.is_active ? 'text-blue-400' : 'text-neutral-500'
-                          }`}
-                        />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-semibold text-neutral-100 truncate">
-                            {policy.name}
-                          </h3>
-                          <Badge
-                            className={
-                              policy.is_active
-                                ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                                : 'bg-neutral-500/10 text-neutral-400 border-neutral-700'
-                            }
+        <div className="grid gap-4">
+          <AnimatePresence>
+            {(filteredPolicies as Policy[]).map((policy, idx) => {
+              const isExpanded = expandedId === policy.id;
+              return (
+                <motion.div 
+                  key={policy.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.05 }}
+                  layout
+                >
+                  <Card
+                    className={`glass-card overflow-hidden transition-all duration-300 ${
+                      isExpanded ? 'border-blue-500/40 shadow-[0_0_15px_rgba(59,130,246,0.1)]' : 'border-white/5 hover:border-white/10'
+                    }`}
+                  >
+                    <CardContent className="p-0">
+                      {/* Policy row */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between p-5 gap-4">
+                        <div className="flex items-start sm:items-center gap-4 min-w-0">
+                          <div
+                            className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center border shadow-inner ${
+                              policy.is_active 
+                                ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' 
+                                : 'bg-neutral-800 border-neutral-700 text-neutral-500'
+                            }`}
                           >
-                            {policy.is_active ? 'Active' : 'Disabled'}
-                          </Badge>
-                          {policy.priority > 0 && (
-                            <span className="text-[10px] text-neutral-500 font-mono">
-                              priority {policy.priority}
-                            </span>
-                          )}
-                        </div>
-                        {policy.description && (
-                          <p className="text-xs text-neutral-400 mt-0.5 truncate">
-                            {policy.description}
-                          </p>
-                        )}
-                        <RuleSummaryBadges rules={policy.rules} />
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1 shrink-0 ml-4">
-                      <button
-                        onClick={() => setExpandedId(isExpanded ? null : policy.id)}
-                        className="p-1.5 text-neutral-500 hover:text-neutral-200 rounded transition-colors"
-                        title={isExpanded ? 'Collapse' : 'View rules'}
-                      >
-                        <ChevronRight
-                          className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                        />
-                      </button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleToggleActive(policy)}
-                        disabled={updateMutation.isPending}
-                        className="text-xs text-neutral-400 hover:text-neutral-200"
-                      >
-                        {policy.is_active ? 'Disable' : 'Enable'}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEditingPolicy(policy)}
-                        className="text-neutral-400 hover:text-blue-400"
-                        title="Edit policy"
-                      >
-                        <Edit className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDelete(policy.id, policy.name)}
-                        disabled={deleteMutation.isPending}
-                        className="text-neutral-400 hover:text-red-400"
-                        title="Delete policy"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Expanded: rule details */}
-                  {isExpanded && (
-                    <div className="border-t border-neutral-800 px-5 py-4 bg-neutral-950/50">
-                      {policy.rules.length === 0 ? (
-                        <p className="text-xs text-neutral-600 italic">
-                          This policy has no rules yet. Click Edit to add rules.
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-xs text-neutral-500 font-medium uppercase tracking-wider mb-3">
-                            {policy.rules.length} Rule{policy.rules.length !== 1 ? 's' : ''}
-                          </p>
-                          {policy.rules.map((rule, idx) => (
-                            <div
-                              key={rule.id}
-                              className="flex items-start gap-3 bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-2.5"
-                            >
-                              <span className="text-xs text-neutral-600 font-mono mt-0.5">
-                                {idx + 1}
-                              </span>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span
-                                    className={`text-xs font-bold ${ACTION_COLORS[rule.action] ?? ''}`}
-                                  >
-                                    {rule.action.toUpperCase()}
-                                  </span>
-                                  <span
-                                    className={`text-[10px] px-1.5 py-0.5 rounded border ${RULE_TYPE_COLORS[rule.rule_type] ?? RULE_TYPE_COLORS.custom}`}
-                                  >
-                                    {rule.rule_type}
-                                  </span>
-                                  {!rule.is_active && (
-                                    <span className="text-[10px] text-neutral-600 italic">
-                                      (inactive)
-                                    </span>
-                                  )}
-                                </div>
-                                {rule.message && (
-                                  <p className="text-xs text-neutral-400 mt-1">{rule.message}</p>
-                                )}
-                                {Object.keys(rule.conditions).length > 0 && (
-                                  <pre className="text-[10px] text-neutral-500 mt-1 font-mono whitespace-pre-wrap">
-                                    {JSON.stringify(rule.conditions, null, 2)}
-                                  </pre>
-                                )}
-                              </div>
+                            <ShieldCheck className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <h3 className="font-semibold text-neutral-100 text-base">
+                                {policy.name}
+                              </h3>
+                              <Badge
+                                variant="outline"
+                                className={
+                                  policy.is_active
+                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 uppercase tracking-wider text-[10px]'
+                                    : 'bg-neutral-500/10 text-neutral-400 border-neutral-700 uppercase tracking-wider text-[10px]'
+                                }
+                              >
+                                {policy.is_active ? 'Active' : 'Disabled'}
+                              </Badge>
+                              {policy.priority > 0 && (
+                                <Badge variant="outline" className="bg-white/5 border-white/10 text-neutral-400 text-[10px] font-mono">
+                                  PRIORITY: {policy.priority}
+                                </Badge>
+                              )}
                             </div>
-                          ))}
+                            {policy.description && (
+                              <p className="text-sm text-neutral-400 mt-1 max-w-2xl line-clamp-1">
+                                {policy.description}
+                              </p>
+                            )}
+                            <RuleSummaryBadges rules={policy.rules} />
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-2 shrink-0 sm:ml-4 bg-black/20 p-1.5 rounded-lg border border-white/5">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleToggleActive(policy)}
+                            disabled={updateMutation.isPending}
+                            className={`text-xs h-8 ${policy.is_active ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-400/10' : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10'}`}
+                          >
+                            {policy.is_active ? 'Disable' : 'Enable'}
+                          </Button>
+                          <div className="w-px h-4 bg-white/10 mx-1"></div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setEditingPolicy(policy)}
+                            className="h-8 w-8 text-neutral-400 hover:text-blue-400 hover:bg-blue-400/10"
+                            title="Edit policy"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(policy.id, policy.name)}
+                            disabled={deleteMutation.isPending}
+                            className="h-8 w-8 text-neutral-400 hover:text-red-400 hover:bg-red-400/10"
+                            title="Delete policy"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                          <div className="w-px h-4 bg-white/10 mx-1"></div>
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : policy.id)}
+                            className={`h-8 w-8 flex items-center justify-center text-neutral-500 hover:text-white transition-colors rounded ${isExpanded ? 'bg-white/10 text-white' : ''}`}
+                            title={isExpanded ? 'Collapse' : 'View details'}
+                          >
+                            <ChevronRight
+                              className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expanded: rule details */}
+                      <AnimatePresence>
+                        {isExpanded && (
+                          <motion.div 
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="overflow-hidden"
+                          >
+                            <div className="border-t border-white/5 p-5 bg-black/40">
+                              {policy.rules.length === 0 ? (
+                                <p className="text-sm text-neutral-500 italic flex items-center justify-center py-6 bg-white/[0.02] rounded-xl border border-white/5 border-dashed">
+                                  This policy has no active rules. Click Edit to define governance controls.
+                                </p>
+                              ) : (
+                                <div className="space-y-3">
+                                  <p className="text-xs text-neutral-500 font-medium uppercase tracking-wider mb-2">
+                                    Enforced Rules ({policy.rules.length})
+                                  </p>
+                                  {policy.rules.map((rule, idx) => (
+                                    <div
+                                      key={rule.id}
+                                      className="flex items-start gap-4 bg-white/[0.02] border border-white/5 rounded-xl p-4 hover:bg-white/[0.04] transition-colors"
+                                    >
+                                      <div className="w-6 h-6 rounded bg-black/50 border border-white/10 flex items-center justify-center text-xs text-neutral-500 font-mono shrink-0">
+                                        {idx + 1}
+                                      </div>
+                                      <div className="flex-1 min-w-0 space-y-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <Badge variant="outline" className={`bg-black/40 font-mono text-[10px] uppercase border-white/10 ${ACTION_COLORS[rule.action] ?? ''}`}>
+                                            ACT: {rule.action}
+                                          </Badge>
+                                          <Badge variant="outline" className={`font-mono text-[10px] uppercase ${RULE_TYPE_COLORS[rule.rule_type] ?? RULE_TYPE_COLORS.custom}`}>
+                                            {rule.rule_type}
+                                          </Badge>
+                                          {!rule.is_active && (
+                                            <Badge variant="outline" className="bg-transparent border-neutral-700 text-neutral-500 text-[10px] uppercase">
+                                              Inactive
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        {rule.message && (
+                                          <p className="text-sm text-neutral-300 font-medium">{rule.message}</p>
+                                        )}
+                                        {Object.keys(rule.conditions).length > 0 && (
+                                          <div className="bg-[#0a0a0a] rounded-lg border border-white/5 p-3 overflow-x-auto mt-2">
+                                            <pre className="text-[11px] text-neutral-400 font-mono">
+                                              {JSON.stringify(rule.conditions, null, 2)}
+                                            </pre>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
         </div>
       )}
 
       {/* Create Modal */}
-      {showCreate && (
-        <Modal title="Create Policy" onClose={() => setShowCreate(false)}>
-          <PolicyForm
-            mode="create"
-            onSubmit={handleCreate}
-            onCancel={() => setShowCreate(false)}
-            isPending={createMutation.isPending}
-          />
-        </Modal>
-      )}
+      <AnimatePresence>
+        {showCreate && (
+          <Modal title="Create Security Policy" onClose={() => setShowCreate(false)}>
+            <PolicyForm
+              mode="create"
+              onSubmit={handleCreate}
+              onCancel={() => setShowCreate(false)}
+              isPending={createMutation.isPending}
+            />
+          </Modal>
+        )}
+      </AnimatePresence>
 
       {/* Edit Modal */}
-      {editingPolicy && (
-        <Modal
-          title={`Edit Policy: ${editingPolicy.name}`}
-          onClose={() => setEditingPolicy(null)}
-        >
-          <PolicyForm
-            mode="edit"
-            initialData={editingPolicy}
-            onSubmit={handleEdit}
-            onCancel={() => setEditingPolicy(null)}
-            isPending={updateMutation.isPending}
-          />
-        </Modal>
-      )}
+      <AnimatePresence>
+        {editingPolicy && (
+          <Modal
+            title={`Edit Policy: ${editingPolicy.name}`}
+            onClose={() => setEditingPolicy(null)}
+          >
+            <PolicyForm
+              mode="edit"
+              initialData={editingPolicy}
+              onSubmit={handleEdit}
+              onCancel={() => setEditingPolicy(null)}
+              isPending={updateMutation.isPending}
+            />
+          </Modal>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

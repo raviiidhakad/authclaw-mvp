@@ -83,8 +83,9 @@ async def create_provider(
         is_active=body.is_active,
     )
     db.add(provider)
-    await db.commit()
+    await db.flush()
     await db.refresh(provider)
+    await db.commit()
     return provider
 
 
@@ -119,8 +120,9 @@ async def update_provider(
     if body.is_active is not None:
         provider.is_active = body.is_active
 
-    await db.commit()
+    await db.flush()
     await db.refresh(provider)
+    await db.commit()
     return provider
 
 

@@ -1,0 +1,13 @@
+# AuthClaw CODEOWNERS
+# Require specific team review for certain file changes
+
+# Security tool configurations require security team review
+.trivyignore                @authclaw-security
+apps/api/.semgrepignore     @authclaw-security
+apps/api/pyproject.toml     @authclaw-security @authclaw-backend
+
+# CI/CD workflows require DevOps review
+.github/workflows/          @authclaw-devops
+
+# Catch-all
+*                           @authclaw-backend

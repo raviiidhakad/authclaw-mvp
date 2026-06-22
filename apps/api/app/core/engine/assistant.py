@@ -2,7 +2,7 @@ import json
 from typing import List, Dict, Any, Optional
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, text
 from openai import AsyncOpenAI
 import structlog
 
@@ -14,21 +14,42 @@ from app.models.approval import Approval, ApprovalActionType, ApprovalStatus
 
 logger = structlog.get_logger(__name__)
 
-# Initialize OpenAI client with Groq base URL and Key
-client = AsyncOpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.GROQ_API_KEY,
-)
-
 # Groq recommends llama-3.3-70b-versatile for tool calling
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are the AuthClaw Compliance & Security Assistant, an expert AI embedded within the AuthClaw enterprise platform. 
-Your goal is to help users understand their security posture, explain policy violations, summarize audit logs, and recommend remediation actions.
-IMPORTANT: Do NOT output raw XML or <function> tags in your responses. Always use the native JSON tool calling API to fetch data when asked about specific logs, scores, or violations.
-When proposing a remediation action using the propose_remediation tool, you MUST ALWAYS provide the `diff_content` parameter containing the exact CLI command, bash script, terraform plan, or configuration code to execute the fix based on the specific violation context.
-CRITICAL: You MUST format the `diff_content` with proper `\\n` newline characters and indentation so that it is readable multi-line code. DO NOT output a single long line.
-Be professional, concise, and helpful."""
+SYSTEM_PROMPT = """You are the AuthClaw Compliance & Security Assistant.
+Your job is to help users manage their security posture, audit logs, and compliance rules.
+
+CORE REQUIREMENTS (AS PER PDF REQUIREMENTS):
+1. **Act as a Gateway for Sensitive Information**:
+   - You MUST act as a secure gateway. Do NOT reveal raw secrets, passwords, or PII.
+   - If a user asks for sensitive information (e.g., "show me all passwords", "show me user PII"), explicitly state that this goes against AuthClaw's Data Protection Policy.
+   - You must explain the specific policy that blocks the request. (e.g., "This request violates the 'Strict Data Privacy' policy because it requests raw secrets.")
+
+2. **Policy Explanations**:
+   - Always explain HOW an action relates to AuthClaw policies.
+   - If a user wants to perform an action, tell them what policy governs it and if it's allowed.
+   - Be an expert on AuthClaw's security gateway features.
+
+3. **Language**:
+   - Understand and respond appropriately if the user speaks in English or Hinglish.
+
+You have access to the following tools:
+1. get_recent_audit_logs: View what happened recently in the tenant.
+2. get_compliance_scores: Check HIPAA, GDPR, SOC2 status.
+3. get_policy_violations: See what rules were broken.
+4. propose_remediation: If you find an issue, you can propose a fix (Terraform or CLI script) which will be sent to admins for approval.
+
+Always be concise, professional, and focus on security. Use tables when presenting logs or violations.
+
+IMPORTANT TOOL USAGE INSTRUCTIONS:
+- You are equipped with tools (e.g., get_policy_violations, get_recent_audit_logs, propose_remediation).
+- NEVER output raw XML, <function>, or <tool_call> tags in your text response. 
+- Always use the native JSON tool calling API provided by the system if you need to fetch data.
+- If you don't need to use a tool, simply respond with normal conversation text. Do NOT hallucinate tool calls in the text.
+- When proposing a remediation action using the propose_remediation tool, you MUST ALWAYS provide the `diff_content` parameter containing the exact CLI command, bash script, terraform plan, or configuration code to execute the fix based on the specific violation context. CRITICAL: Format the `diff_content` with proper `\\n` newline characters.
+
+Respond professionally, concisely, and act as a strict but helpful security gateway."""
 
 TOOLS = [
     {
@@ -192,6 +213,25 @@ async def execute_tool(tool_call, tenant_id: uuid.UUID, db: AsyncSession) -> str
         logger.error("tool_execution_failed", tool=name, error=str(e))
         return f"Error executing tool: {str(e)}"
 
+from app.models.provider import Provider
+from app.core.encryption import decrypt_value
+
+async def get_openai_client(tenant_id: uuid.UUID, db: AsyncSession) -> AsyncOpenAI:
+    result = await db.execute(
+        select(Provider).where(Provider.tenant_id == tenant_id, Provider.is_active == True).limit(1)
+    )
+    provider = result.scalars().first()
+    if not provider:
+        raise Exception("No active AI provider configured for this tenant. Please configure one in the Providers settings.")
+    
+    api_key = decrypt_value(provider.api_key_encrypted)
+    base_url = provider.config.get("base_url") if provider.config else None
+    
+    return AsyncOpenAI(
+        api_key=api_key,
+        base_url=base_url
+    )
+
 async def run_assistant_chat(messages: List[Dict[str, str]], tenant_id: uuid.UUID, db: AsyncSession) -> Dict[str, Any]:
     # Ensure system prompt is first
     formatted_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -202,9 +242,12 @@ async def run_assistant_chat(messages: List[Dict[str, str]], tenant_id: uuid.UUI
             formatted_messages.append({"role": m["role"], "content": m["content"]})
             
     try:
+        client = await get_openai_client(tenant_id, db)
+        model_name = "llama-3.3-70b-versatile" if "groq" in (client.base_url.host or "") else "gpt-4o"
+        
         # Step 1: Initial LLM call
         response = await client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=formatted_messages,
             tools=TOOLS,
             tool_choice="auto",
@@ -229,7 +272,7 @@ async def run_assistant_chat(messages: List[Dict[str, str]], tenant_id: uuid.UUI
                 
             # Step 3: Call LLM again with tool results
             final_response = await client.chat.completions.create(
-                model=MODEL_NAME,
+                model=model_name,
                 messages=formatted_messages,
                 max_tokens=2048
             )

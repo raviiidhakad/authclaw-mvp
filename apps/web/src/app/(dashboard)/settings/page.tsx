@@ -1,17 +1,48 @@
 "use client";
 
 import { useState } from 'react';
-import { Plus, Server, Trash2, Eye, EyeOff, Key, ShieldCheck } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Plus, Server, Trash2, Eye, EyeOff, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
+import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useProviders, useCreateProvider, useDeleteProvider, useApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks/use-data';
+import { CardSkeleton } from '@/components/shared/loaders';
+import { EmptyState } from '@/components/shared/states';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/use-auth';
 import { apiClient } from '@/lib/api-client';
 import { QRCodeSVG } from 'qrcode.react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+type Provider = {
+  id: string;
+  name: string;
+  provider_type: string;
+  api_key?: string | null;
+  is_active?: boolean;
+};
+
+type ApiKeyRecord = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  is_active?: boolean;
+  created_at: string;
+};
+
+type CreatedApiKey = {
+  raw_key: string;
+};
+
+type ApiError = {
+  response?: {
+    data?: {
+      detail?: string;
+    };
+  };
+};
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -32,7 +63,7 @@ export default function SettingsPage() {
 
   // API Keys
   const { data: apiKeysData, isLoading: apiKeysLoading } = useApiKeys(0, 100);
-  const apiKeys = Array.isArray(apiKeysData) ? apiKeysData : (apiKeysData?.items || []);
+  const apiKeys = (Array.isArray(apiKeysData) ? apiKeysData : (apiKeysData?.items || [])) as ApiKeyRecord[];
   const createKeyMutation = useCreateApiKey();
   const revokeKeyMutation = useRevokeApiKey();
 
@@ -57,7 +88,7 @@ export default function SettingsPage() {
       setMfaSecret(res.data.secret);
       setMfaUri(res.data.uri);
       setShowMfaSetup(true);
-    } catch (err: any) {
+    } catch {
       toast.error('Failed to start MFA setup');
     } finally {
       setMfaSetupLoading(false);
@@ -72,8 +103,9 @@ export default function SettingsPage() {
       setShowMfaSetup(false);
       // Ideally we would refresh the user context here, but reloading works
       window.location.reload();
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Invalid MFA code');
+    } catch (err: unknown) {
+      const apiError = err as ApiError;
+      toast.error(apiError.response?.data?.detail || 'Invalid MFA code');
     } finally {
       setMfaSetupLoading(false);
     }
@@ -81,13 +113,14 @@ export default function SettingsPage() {
 
   const createApiKey = async () => {
     try {
-      const result = await createKeyMutation.mutateAsync(newApiKey);
+      const result = await createKeyMutation.mutateAsync(newApiKey) as CreatedApiKey;
       toast.success('API Key created');
       setGeneratedKey(result.raw_key); // Display the plain text key once
       setShowCreateKey(false);
       setNewApiKey({ name: '', expires_in_days: 0 });
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Failed to create API key');
+    } catch (err: unknown) {
+      const apiError = err as ApiError;
+      toast.error(apiError.response?.data?.detail || 'Failed to create API key');
     }
   };
 
@@ -113,8 +146,9 @@ export default function SettingsPage() {
       toast.success('Provider created');
       setShowCreate(false);
       setNewProvider({ name: '', provider_type: 'openai', api_key: '', base_url: '' });
-    } catch (err: any) {
-      toast.error(err.response?.data?.detail || 'Failed to create provider');
+    } catch (err: unknown) {
+      const apiError = err as ApiError;
+      toast.error(apiError.response?.data?.detail || 'Failed to create provider');
     }
   };
 
@@ -129,322 +163,374 @@ export default function SettingsPage() {
 
   const getProviderIcon = (type: string) => {
     const colors: Record<string, string> = {
-      openai: 'bg-green-600/10 text-green-500',
-      anthropic: 'bg-orange-600/10 text-orange-500',
-      azure_openai: 'bg-blue-600/10 text-blue-500',
-      groq: 'bg-pink-600/10 text-pink-500',
+      openai: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
+      anthropic: 'bg-orange-500/10 text-orange-400 border border-orange-500/20',
+      azure_openai: 'bg-blue-500/10 text-blue-400 border border-blue-500/20',
+      groq: 'bg-pink-500/10 text-pink-400 border border-pink-500/20',
     };
-    return colors[type] || 'bg-neutral-800 text-neutral-400';
+    return colors[type] || 'bg-white/5 text-neutral-400 border border-white/10';
   };
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
-        <p className="text-neutral-400">Manage your organization, providers, and API keys.</p>
+    <div className="space-y-10 max-w-[1200px] mx-auto pb-10">
+      <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-neutral-100 font-sans">Settings</h2>
+          <p className="text-sm text-neutral-400 mt-1">Manage your organization, identity, and integration credentials.</p>
+        </div>
       </div>
 
       {/* Organization Info */}
-      <Card className="bg-neutral-900 border-neutral-800">
-        <CardHeader>
-          <CardTitle className="text-neutral-100">Organization</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs text-neutral-500 block mb-1">User</label>
-              <p className="text-sm text-neutral-200">{user?.first_name} {user?.last_name}</p>
-            </div>
-            <div>
-              <label className="text-xs text-neutral-500 block mb-1">Email</label>
-              <p className="text-sm text-neutral-200">{user?.email}</p>
-            </div>
-            <div>
-              <label className="text-xs text-neutral-500 block mb-1">Tenant ID</label>
-              <p className="text-sm text-neutral-400 font-mono">{user?.tenant_id}</p>
-            </div>
-            <div>
-              <label className="text-xs text-neutral-500 block mb-1">Security</label>
-              <div className="flex items-center gap-4">
-                <p className="text-sm text-neutral-200">
-                  MFA Status: <Badge className={user?.mfa_enabled ? "bg-green-500/10 text-green-500 border-green-500/20" : "bg-neutral-800 text-neutral-400"}>
-                    {user?.mfa_enabled ? 'Enabled' : 'Disabled'}
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+        <Card className="glass-card overflow-hidden">
+          <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+            <Building className="w-4 h-4 text-neutral-500" />
+            <CardTitle className="text-neutral-100 text-base">Organization Profile</CardTitle>
+          </div>
+          <CardContent className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium block mb-1.5">User</label>
+                <p className="text-sm text-neutral-200 font-medium">{user?.first_name} {user?.last_name}</p>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium block mb-1.5">Email</label>
+                <p className="text-sm text-neutral-200">{user?.email}</p>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium block mb-1.5">Tenant ID</label>
+                <p className="text-xs text-neutral-400 font-mono bg-black/40 px-2 py-1 rounded border border-white/5 inline-block">{user?.tenant_id}</p>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium block mb-1.5">Security</label>
+                <div className="flex items-center gap-4">
+                  <Badge variant="outline" className={user?.mfa_enabled ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 uppercase tracking-wider text-[10px]" : "bg-neutral-800 text-neutral-400 border-neutral-700 uppercase tracking-wider text-[10px]"}>
+                    {user?.mfa_enabled ? 'MFA Enabled' : 'MFA Disabled'}
                   </Badge>
-                </p>
-                {!user?.mfa_enabled && (
-                  <Button size="sm" variant="outline" onClick={startMfaSetup} disabled={mfaSetupLoading} className="border-blue-600/50 text-blue-500 hover:bg-blue-600/10">
-                    <ShieldCheck className="w-4 h-4 mr-2" />
-                    Setup MFA
-                  </Button>
-                )}
+                  {!user?.mfa_enabled && (
+                    <Button size="sm" variant="ghost" onClick={startMfaSetup} disabled={mfaSetupLoading} className="h-6 text-[10px] text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 uppercase tracking-wider font-bold">
+                      Setup MFA
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </motion.div>
 
       <Dialog open={showMfaSetup} onOpenChange={setShowMfaSetup}>
-        <DialogContent className="sm:max-w-md bg-neutral-900 border-neutral-800 text-neutral-100">
-          <DialogHeader>
-            <DialogTitle>Setup Multi-Factor Authentication</DialogTitle>
-            <DialogDescription className="text-neutral-400">
+        <DialogContent className="sm:max-w-md bg-[#0a0a0a] border-white/10 text-neutral-100 p-0 overflow-hidden shadow-2xl">
+          <DialogHeader className="p-6 border-b border-white/5 bg-white/[0.02]">
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-blue-400" />
+              Multi-Factor Authentication
+            </DialogTitle>
+            <DialogDescription className="text-neutral-400 text-xs mt-1">
               Scan this QR code with Google Authenticator, Authy, or your preferred authenticator app.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col items-center justify-center space-y-4 py-4">
-            <div className="bg-white p-2 rounded-lg">
+          <div className="flex flex-col items-center justify-center p-6 space-y-6">
+            <div className="bg-white p-3 rounded-xl shadow-lg">
               <QRCodeSVG value={mfaUri} size={200} />
             </div>
             <div className="text-center w-full">
-              <p className="text-xs text-neutral-500 mb-1">Manual Entry Secret</p>
-              <p className="text-sm font-mono text-neutral-300 bg-neutral-950 p-2 rounded border border-neutral-800">{mfaSecret}</p>
+              <p className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2">Manual Entry Secret</p>
+              <p className="text-xs font-mono text-neutral-300 bg-black/40 p-3 rounded-lg border border-white/5 select-all">{mfaSecret}</p>
             </div>
-            <div className="w-full pt-4">
-              <p className="text-sm text-neutral-400 mb-2">Enter the 6-digit code to verify:</p>
+            <div className="w-full pt-2">
+              <p className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2 text-center">Enter 6-digit code</p>
               <Input
                 value={mfaCode}
                 onChange={(e) => setMfaCode(e.target.value)}
-                placeholder="123456"
-                className="bg-neutral-950 border-neutral-800 text-neutral-100 text-center tracking-[0.5em] font-mono text-lg"
+                placeholder="000000"
+                className="bg-black/40 border-white/10 text-neutral-100 text-center tracking-[1em] font-mono text-xl h-14"
                 maxLength={6}
               />
             </div>
           </div>
-          <DialogFooter className="bg-transparent border-t-0 p-0">
-            <Button variant="ghost" onClick={() => setShowMfaSetup(false)}>Cancel</Button>
-            <Button onClick={verifyMfa} disabled={mfaCode.length !== 6 || mfaSetupLoading} className="bg-blue-600 hover:bg-blue-700">Verify & Enable</Button>
+          <DialogFooter className="p-4 border-t border-white/5 bg-white/[0.02] flex gap-2">
+            <Button variant="ghost" onClick={() => setShowMfaSetup(false)} className="text-neutral-400 hover:text-white">Cancel</Button>
+            <Button onClick={verifyMfa} disabled={mfaCode.length !== 6 || mfaSetupLoading} className="bg-blue-600 hover:bg-blue-500 text-white">Verify & Enable</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* AI Providers */}
-      <div className="space-y-4">
+      <motion.div className="space-y-4" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-neutral-100">AI Providers</h3>
-            <p className="text-sm text-neutral-400">Configure your upstream AI provider connections.</p>
+            <h3 className="text-lg font-semibold text-neutral-100 flex items-center gap-2">
+              <Server className="w-5 h-5 text-neutral-500" />
+              Upstream AI Providers
+            </h3>
+            <p className="text-sm text-neutral-400 mt-1">Configure your target LLM connections.</p>
           </div>
-          <Button onClick={() => setShowCreate(!showCreate)} className="bg-blue-600 hover:bg-blue-700" disabled={createMutation.isPending}>
+          <Button onClick={() => setShowCreate(!showCreate)} className="bg-white/10 hover:bg-white/20 text-white border border-white/5" disabled={createMutation.isPending}>
             <Plus className="w-4 h-4 mr-2" />
             Add Provider
           </Button>
         </div>
 
-        {showCreate && (
-          <Card className="bg-neutral-900 border-neutral-800">
-            <CardContent className="space-y-4 pt-6">
-              <Input
-                placeholder="Provider name (e.g., Production OpenAI)"
-                value={newProvider.name}
-                onChange={(e) => setNewProvider(p => ({ ...p, name: e.target.value }))}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100"
-              />
-              <select
-                value={newProvider.provider_type}
-                onChange={(e) => setNewProvider(p => ({ ...p, provider_type: e.target.value }))}
-                className="w-full rounded-md bg-neutral-950 border border-neutral-800 text-neutral-100 p-2 text-sm"
-              >
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="azure_openai">Azure OpenAI</option>
-                <option value="groq">Groq</option>
-              </select>
-              <Input
-                type="password"
-                placeholder="API Key"
-                value={newProvider.api_key}
-                onChange={(e) => setNewProvider(p => ({ ...p, api_key: e.target.value }))}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100"
-              />
-              <Input
-                placeholder="Base URL (optional, e.g., https://api.openai.com/v1)"
-                value={newProvider.base_url}
-                onChange={(e) => setNewProvider(p => ({ ...p, base_url: e.target.value }))}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100"
-              />
-              <div className="flex gap-2">
-                <Button onClick={createProvider} disabled={createMutation.isPending} className="bg-blue-600 hover:bg-blue-700">Add Provider</Button>
-                <Button variant="ghost" onClick={() => setShowCreate(false)} className="text-neutral-400">Cancel</Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {loading ? (
-          <div className="py-8 text-center text-neutral-500">Loading...</div>
-        ) : providers.length === 0 ? (
-          <Card className="bg-neutral-900 border-neutral-800">
-            <CardContent className="flex flex-col items-center justify-center py-12 text-neutral-500">
-              <Server className="w-10 h-10 mb-3 opacity-40" />
-              <p>No providers configured.</p>
-              <p className="text-xs mt-1">Add an AI provider to start proxying requests.</p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-4">
-            {providers.map((provider: any) => (
-              <Card key={provider.id} className="bg-neutral-900 border-neutral-800">
-                <CardContent className="flex items-center justify-between py-4 px-6">
-                  <div className="flex items-center gap-4">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${getProviderIcon(provider.provider_type)}`}>
-                      <Server className="w-5 h-5" />
+        <AnimatePresence>
+          {showCreate && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <Card className="glass-card">
+                <CardContent className="space-y-4 p-6">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Provider Alias</label>
+                      <Input
+                        placeholder="e.g. Production OpenAI"
+                        value={newProvider.name}
+                        onChange={(e) => setNewProvider(p => ({ ...p, name: e.target.value }))}
+                        className="bg-black/40 border-white/10 text-neutral-100 focus-visible:ring-blue-500/50"
+                      />
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-neutral-100">{provider.name}</h3>
-                        <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-                          {provider.is_active ? 'Active' : 'Inactive'}
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-neutral-400">{provider.provider_type}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <Key className="w-3 h-3 text-neutral-500" />
-                        <span className="text-xs text-neutral-500 font-mono">
-                          {showKeys[provider.id] 
-                            ? provider.api_key 
-                            : '•'.repeat(20) + (provider.api_key?.slice(-4) || '')}
-                        </span>
-                        <button 
-                          onClick={() => setShowKeys(k => ({ ...k, [provider.id]: !k[provider.id] }))}
-                          className="text-neutral-500 hover:text-neutral-300"
-                        >
-                          {showKeys[provider.id] ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                        </button>
-                      </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Type</label>
+                      <select
+                        value={newProvider.provider_type}
+                        onChange={(e) => setNewProvider(p => ({ ...p, provider_type: e.target.value }))}
+                        className="w-full h-10 rounded-md bg-black/40 border border-white/10 text-neutral-100 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      >
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="azure_openai">Azure OpenAI</option>
+                        <option value="groq">Groq</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">API Key</label>
+                      <Input
+                        type="password"
+                        placeholder="sk-..."
+                        value={newProvider.api_key}
+                        onChange={(e) => setNewProvider(p => ({ ...p, api_key: e.target.value }))}
+                        className="bg-black/40 border-white/10 text-neutral-100 focus-visible:ring-blue-500/50 font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Base URL (Optional)</label>
+                      <Input
+                        placeholder="https://api.openai.com/v1"
+                        value={newProvider.base_url}
+                        onChange={(e) => setNewProvider(p => ({ ...p, base_url: e.target.value }))}
+                        className="bg-black/40 border-white/10 text-neutral-100 focus-visible:ring-blue-500/50 font-mono"
+                      />
                     </div>
                   </div>
-                  <Button 
-                    variant="ghost" 
-                    size="sm"
-                    onClick={() => deleteProvider(provider.id)}
-                    disabled={deleteMutation.isPending}
-                    className="text-neutral-400 hover:text-red-400"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+                  <div className="flex gap-3 pt-2">
+                    <Button onClick={createProvider} disabled={createMutation.isPending} className="bg-blue-600 hover:bg-blue-500 text-white">Save Provider</Button>
+                    <Button variant="ghost" onClick={() => setShowCreate(false)} className="text-neutral-400 hover:text-white">Cancel</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {loading ? (
+          <div className="grid md:grid-cols-2 gap-4"><CardSkeleton /><CardSkeleton /></div>
+        ) : (providers as Provider[]).length === 0 ? (
+          <EmptyState 
+            title="No Upstream Providers" 
+            description="Configure at least one upstream AI provider (e.g. OpenAI) to proxy traffic to."
+            icon={Server}
+            action={{
+              label: "Add Provider",
+              onClick: () => setShowCreate(true)
+            }}
+          />
+        ) : (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {(providers as Provider[]).map((provider) => (
+              <Card key={provider.id} className="glass-card hover:border-white/10 transition-colors group">
+                <CardContent className="p-5 flex flex-col h-full">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center shadow-inner ${getProviderIcon(provider.provider_type)}`}>
+                      <Server className="w-6 h-6" />
+                    </div>
+                    <Button 
+                      variant="ghost" 
+                      size="icon"
+                      onClick={() => deleteProvider(provider.id)}
+                      disabled={deleteMutation.isPending}
+                      className="h-8 w-8 text-neutral-500 hover:text-red-400 hover:bg-red-400/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-neutral-100 text-base">{provider.name}</h3>
+                    <div className="flex gap-2 mt-2">
+                      <Badge variant="outline" className="bg-white/5 border-white/10 text-neutral-400 text-[10px] uppercase tracking-wider">
+                        {provider.provider_type}
+                      </Badge>
+                      <Badge variant="outline" className={provider.is_active ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] uppercase tracking-wider" : "bg-neutral-800 text-neutral-500 border-neutral-700 text-[10px] uppercase tracking-wider"}>
+                        {provider.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
+                      <Key className="w-3.5 h-3.5" />
+                      {showKeys[provider.id] ? provider.api_key : '••••••••••••••••' + (provider.api_key?.slice(-4) || '')}
+                    </div>
+                    <button 
+                      onClick={() => setShowKeys(k => ({ ...k, [provider.id]: !k[provider.id] }))}
+                      className="text-neutral-500 hover:text-neutral-300 transition-colors"
+                    >
+                      {showKeys[provider.id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </CardContent>
               </Card>
             ))}
           </div>
         )}
-      </div>
+      </motion.div>
 
       {/* API Keys */}
-      <div className="space-y-4">
+      <motion.div className="space-y-4" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-neutral-100">API Keys</h3>
-            <p className="text-sm text-neutral-400">Manage API keys to authenticate with AuthClaw gateway.</p>
+            <h3 className="text-lg font-semibold text-neutral-100 flex items-center gap-2">
+              <KeyRound className="w-5 h-5 text-neutral-500" />
+              Gateway API Keys
+            </h3>
+            <p className="text-sm text-neutral-400 mt-1">Manage authentication tokens for the AuthClaw proxy.</p>
           </div>
-          <Button onClick={() => setShowCreateKey(!showCreateKey)} className="bg-blue-600 hover:bg-blue-700" disabled={createKeyMutation.isPending}>
+          <Button onClick={() => setShowCreateKey(!showCreateKey)} className="bg-white/10 hover:bg-white/20 text-white border border-white/5" disabled={createKeyMutation.isPending}>
             <Plus className="w-4 h-4 mr-2" />
-            Create API Key
+            Generate Key
           </Button>
         </div>
 
-        {showCreateKey && (
-          <Card className="bg-neutral-900 border-neutral-800">
-            <CardContent className="space-y-4 pt-6">
-              <Input
-                placeholder="Key name (e.g., Production API Key)"
-                value={newApiKey.name}
-                onChange={(e) => setNewApiKey(k => ({ ...k, name: e.target.value }))}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100"
-              />
-              <Input
-                type="number"
-                placeholder="Expires in days (optional)"
-                value={newApiKey.expires_in_days || ''}
-                onChange={(e) => setNewApiKey(k => ({ ...k, expires_in_days: parseInt(e.target.value) || 0 }))}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100"
-              />
-              <div className="flex gap-2">
-                <Button onClick={createApiKey} disabled={createKeyMutation.isPending} className="bg-blue-600 hover:bg-blue-700">Create Key</Button>
-                <Button variant="ghost" onClick={() => setShowCreateKey(false)} className="text-neutral-400">Cancel</Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        <AnimatePresence>
+          {showCreateKey && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <Card className="glass-card">
+                <CardContent className="space-y-4 p-6">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Key Name</label>
+                      <Input
+                        placeholder="e.g. Production Application Server"
+                        value={newApiKey.name}
+                        onChange={(e) => setNewApiKey(k => ({ ...k, name: e.target.value }))}
+                        className="bg-black/40 border-white/10 text-neutral-100 focus-visible:ring-blue-500/50"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Expiration (Days)</label>
+                      <Input
+                        type="number"
+                        placeholder="Optional (leave 0 for no expiration)"
+                        value={newApiKey.expires_in_days || ''}
+                        onChange={(e) => setNewApiKey(k => ({ ...k, expires_in_days: parseInt(e.target.value) || 0 }))}
+                        className="bg-black/40 border-white/10 text-neutral-100 focus-visible:ring-blue-500/50"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-3 pt-2">
+                    <Button onClick={createApiKey} disabled={createKeyMutation.isPending} className="bg-blue-600 hover:bg-blue-500 text-white">Generate Token</Button>
+                    <Button variant="ghost" onClick={() => setShowCreateKey(false)} className="text-neutral-400 hover:text-white">Cancel</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <Dialog open={!!generatedKey} onOpenChange={(open) => !open && setGeneratedKey(null)}>
-          <DialogContent className="sm:max-w-md bg-neutral-900 border-neutral-800 text-neutral-100">
-            <DialogHeader>
-              <DialogTitle className="text-xl">Save your key</DialogTitle>
-              <DialogDescription className="text-neutral-400 pt-2 pb-2">
-                Please save your secret key in a safe place since <strong className="text-neutral-200">you won't be able to view it again</strong>. Keep it secure, as anyone with your API key can make requests on your behalf. If you do lose it, you'll need to generate a new one.
+          <DialogContent className="sm:max-w-md bg-[#0a0a0a] border-white/10 text-neutral-100 shadow-2xl p-0 overflow-hidden">
+            <DialogHeader className="p-6 border-b border-white/5 bg-white/[0.02]">
+              <DialogTitle className="text-xl flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-amber-400" />
+                Secret Key Generated
+              </DialogTitle>
+              <DialogDescription className="text-neutral-400 mt-2 text-sm leading-relaxed">
+                Please save your secret key in a safe place. <strong className="text-amber-400 font-medium">You will not be able to view it again</strong> once you close this dialog.
               </DialogDescription>
             </DialogHeader>
-            <div className="flex items-center space-x-2 my-2">
-              <Input
-                readOnly
-                value={generatedKey || ''}
-                className="bg-neutral-950 border-neutral-800 text-neutral-100 font-mono text-sm"
-              />
-              <Button onClick={() => {
-                navigator.clipboard.writeText(generatedKey || '');
-                toast.success('API key copied to clipboard');
-              }} className="bg-neutral-800 text-neutral-100 hover:bg-neutral-700 border border-neutral-700">
-                Copy
-              </Button>
+            <div className="p-6">
+              <div className="flex items-center space-x-2">
+                <Input
+                  readOnly
+                  value={generatedKey || ''}
+                  className="bg-black/40 border-white/10 text-emerald-400 font-mono text-sm h-12 tracking-wide"
+                />
+                <Button onClick={() => {
+                  navigator.clipboard.writeText(generatedKey || '');
+                  toast.success('API key copied to clipboard');
+                }} className="h-12 px-6 bg-white/10 hover:bg-white/20 text-white border border-white/5">
+                  Copy
+                </Button>
+              </div>
             </div>
-            <DialogFooter className="mt-2 border-t-0 bg-transparent p-0">
-              <Button type="button" onClick={() => setGeneratedKey(null)} className="bg-neutral-200 text-neutral-900 hover:bg-neutral-300">
-                Done
+            <DialogFooter className="p-4 border-t border-white/5 bg-white/[0.02]">
+              <Button type="button" onClick={() => setGeneratedKey(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white">
+                I have saved this key safely
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
         {apiKeysLoading ? (
-          <div className="py-8 text-center text-neutral-500">Loading...</div>
+          <div className="grid gap-4"><CardSkeleton /></div>
         ) : apiKeys.length === 0 ? (
-          <Card className="bg-neutral-900 border-neutral-800">
-            <CardContent className="flex flex-col items-center justify-center py-12 text-neutral-500">
-              <Key className="w-10 h-10 mb-3 opacity-40" />
-              <p>No API keys created.</p>
-              <p className="text-xs mt-1">Create an API key to access the gateway programmatically.</p>
-            </CardContent>
-          </Card>
+          <EmptyState 
+            title="No API Keys Active" 
+            description="Create an API key to authenticate your applications with the AuthClaw proxy."
+            icon={KeyRound}
+            action={{
+              label: "Generate Key",
+              onClick: () => setShowCreateKey(true)
+            }}
+          />
         ) : (
           <div className="grid gap-4">
-            {apiKeys.map((apiKey: any) => (
-              <Card key={apiKey.id} className="bg-neutral-900 border-neutral-800">
-                <CardContent className="flex items-center justify-between py-4 px-6">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-neutral-800 text-neutral-400">
-                      <Key className="w-5 h-5" />
+            {apiKeys.map((apiKey) => (
+              <Card key={apiKey.id} className="glass-card flex flex-col sm:flex-row items-start sm:items-center justify-between p-5 gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-neutral-400 shadow-inner">
+                    <KeyRound className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h3 className="font-semibold text-neutral-100">{apiKey.name}</h3>
+                      <Badge variant="outline" className={apiKey.is_active ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] uppercase tracking-wider" : "bg-neutral-800 text-neutral-500 border-neutral-700 text-[10px] uppercase tracking-wider"}>
+                        {apiKey.is_active ? 'Active' : 'Revoked'}
+                      </Badge>
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-neutral-100">{apiKey.name}</h3>
-                        <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-                          {apiKey.is_active ? 'Active' : 'Inactive'}
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-neutral-400 font-mono mt-1">
-                        Prefix: {apiKey.key_prefix}...
+                    <div className="flex items-center gap-4 mt-2">
+                      <p className="text-xs text-neutral-400 font-mono bg-black/40 px-2 py-0.5 rounded border border-white/5">
+                        {apiKey.key_prefix}••••••••••••
                       </p>
-                      <p className="text-xs text-neutral-500 mt-1">
+                      <p className="text-xs text-neutral-500 hidden sm:block">
                         Created: {new Date(apiKey.created_at).toLocaleDateString()}
-                        {apiKey.expires_at && ` · Expires: ${new Date(apiKey.expires_at).toLocaleDateString()}`}
                       </p>
                     </div>
                   </div>
+                </div>
+                <div className="w-full sm:w-auto flex justify-end">
                   <Button 
                     variant="ghost" 
                     size="sm"
                     onClick={() => revokeApiKey(apiKey.id)}
                     disabled={revokeKeyMutation.isPending}
-                    className="text-neutral-400 hover:text-red-400"
+                    className="text-neutral-500 hover:text-red-400 hover:bg-red-400/10 bg-black/20 border border-white/5 h-9 px-4"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Revoke
                   </Button>
-                </CardContent>
+                </div>
               </Card>
             ))}
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   );
 }

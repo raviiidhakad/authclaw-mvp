@@ -5,10 +5,29 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { usePolicyViolations } from '@/hooks/use-data';
 
+type PolicyViolation = {
+  id?: string;
+  created_at: string;
+  resolved_at?: string | null;
+  policy_name?: string | null;
+  rule_name?: string | null;
+  severity?: string | null;
+  action_taken?: string | null;
+  details?: string | null;
+  metadata?: {
+    policy_name?: string;
+    rule_name?: string;
+    severity?: string;
+    action?: string;
+    details?: string;
+    message?: string;
+  } | null;
+};
+
 export default function ViolationsPage() {
   const { data: violations = [], isLoading: loading } = usePolicyViolations(0, 100);
 
-  const getSeverityBadge = (severity: string) => {
+  const getSeverityBadge = (severity?: string | null) => {
     switch (severity?.toLowerCase()) {
       case 'critical':
         return <Badge className="bg-red-500/10 text-red-500 border-red-500/20">Critical</Badge>;
@@ -23,7 +42,7 @@ export default function ViolationsPage() {
     }
   };
 
-  const getActionBadge = (action: string) => {
+  const getActionBadge = (action?: string | null) => {
     switch (action?.toLowerCase()) {
       case 'blocked':
         return <Badge className="bg-red-500/10 text-red-400 border-red-500/20">Blocked</Badge>;
@@ -36,8 +55,9 @@ export default function ViolationsPage() {
     }
   };
 
-  const unresolvedCount = violations.filter((v: any) => !v.resolved_at).length;
-  const resolvedCount = violations.filter((v: any) => !!v.resolved_at).length;
+  const typedViolations = violations as PolicyViolation[];
+  const unresolvedCount = typedViolations.filter((v) => !v.resolved_at).length;
+  const resolvedCount = typedViolations.filter((v) => !!v.resolved_at).length;
 
   return (
     <div className="space-y-6">
@@ -53,7 +73,7 @@ export default function ViolationsPage() {
             <AlertTriangle className="h-4 w-4 text-amber-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-neutral-100">{violations.length}</div>
+            <div className="text-2xl font-bold text-neutral-100">{typedViolations.length}</div>
           </CardContent>
         </Card>
         <Card className="bg-neutral-900 border-neutral-800">
@@ -83,7 +103,7 @@ export default function ViolationsPage() {
         <CardContent>
           {loading ? (
             <div className="flex items-center justify-center py-12 text-neutral-500">Loading...</div>
-          ) : violations.length === 0 ? (
+          ) : typedViolations.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-neutral-500">
               <ShieldAlert className="w-10 h-10 mb-3 opacity-40" />
               <p>No violations detected.</p>
@@ -103,7 +123,7 @@ export default function ViolationsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {violations.map((v: any, i: number) => (
+                  {typedViolations.map((v, i) => (
                     <tr key={v.id || i} className="border-b border-neutral-800 hover:bg-neutral-800/30">
                       <td className="p-3 text-neutral-400 text-xs">
                         <div className="flex items-center gap-2">

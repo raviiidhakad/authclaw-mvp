@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.models.api_key import ApiKeyScope
 
 class ApiKeyCreate(BaseModel):
@@ -10,6 +10,8 @@ class ApiKeyCreate(BaseModel):
     expires_at: Optional[datetime] = None
 
 class ApiKeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     user_id: uuid.UUID
@@ -20,9 +22,6 @@ class ApiKeyResponse(BaseModel):
     expires_at: Optional[datetime]
     last_used_at: Optional[datetime]
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class ApiKeyCreateResponse(ApiKeyResponse):
     raw_key: Optional[str] = None

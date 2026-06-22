@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.policy import RuleType, PolicyAction, ViolationSeverity, ViolationResolution
 
@@ -16,6 +16,8 @@ class PolicyRuleCreate(BaseModel):
 
 
 class PolicyRuleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     policy_id: uuid.UUID
     rule_type: RuleType
@@ -24,9 +26,6 @@ class PolicyRuleResponse(BaseModel):
     message: Optional[str]
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 # ── Policy schemas ───────────────────────────────────────────────
@@ -47,6 +46,8 @@ class PolicyUpdate(BaseModel):
 
 
 class PolicyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     name: str
@@ -57,9 +58,6 @@ class PolicyResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class PolicyListResponse(BaseModel):
     items: list[PolicyResponse]
@@ -68,6 +66,8 @@ class PolicyListResponse(BaseModel):
 
 # ── Violation schemas ────────────────────────────────────────────
 class ViolationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     request_id: Optional[uuid.UUID]
@@ -78,9 +78,6 @@ class ViolationResponse(BaseModel):
     context: Dict[str, Any]
     resolution: ViolationResolution
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class ViolationUpdateResolution(BaseModel):

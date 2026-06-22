@@ -14,7 +14,7 @@ async def get_redis() -> AsyncGenerator[redis.Redis, None]:
     try:
         yield client
     finally:
-        await client.close()
+        await client.aclose()
 
 # Singleton-like instance for internal engines/services that don't use FastAPI Depends
 class RedisClient:

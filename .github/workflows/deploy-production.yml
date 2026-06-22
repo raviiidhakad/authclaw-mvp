@@ -1,0 +1,234 @@
+name: Deploy — Production
+
+# Production deployment is MANUALLY triggered only.
+# Requires explicit approval from the "production" GitHub environment.
+# Preceded by mandatory staging deployment and sign-off.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to promote to production (must match what is in staging)"
+        required: true
+        type: string
+      confirm:
+        description: "Type DEPLOY to confirm production deployment"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # Never cancel an in-flight production deploy
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/authclaw-api
+  ECS_CLUSTER: authclaw-production
+  ECS_SERVICE_API: authclaw-api-production
+  ECS_SERVICE_AUDIT: authclaw-audit-worker-production
+  ECS_SERVICE_SECURITY: authclaw-security-worker-production
+
+jobs:
+  # ── Safety gate: explicit confirmation required ──────────────────────
+  validate-input:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deployment confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY" ]; then
+            echo "::error::Production deployment requires confirmation string 'DEPLOY'. Got: '${{ inputs.confirm }}'"
+            exit 1
+          fi
+          echo "::notice::Deployment confirmed for tag: ${{ inputs.image_tag }}"
+
+  # ── Database migrations (zero-downtime, backward-compatible only) ────
+  run-migrations:
+    needs: validate-input
+    runs-on: ubuntu-latest
+    environment: production     # Requires GitHub environment approval
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create pre-deploy snapshot
+        run: |
+          SNAPSHOT_ID=$(aws rds create-db-snapshot \
+            --db-instance-identifier authclaw-production \
+            --db-snapshot-identifier authclaw-prod-pre-deploy-$(date +%Y%m%d%H%M%S) \
+            --query 'DBSnapshot.DBSnapshotIdentifier' \
+            --output text)
+          echo "Pre-deploy snapshot: $SNAPSHOT_ID"
+          echo "SNAPSHOT_ID=$SNAPSHOT_ID" >> $GITHUB_ENV
+
+      - name: Wait for snapshot completion
+        run: |
+          aws rds wait db-snapshot-completed \
+            --db-snapshot-identifier ${{ env.SNAPSHOT_ID }}
+          echo "::notice::RDS snapshot ${{ env.SNAPSHOT_ID }} complete."
+
+      - name: Run Alembic migrations via ECS Task
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition authclaw-migration-production \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition $TASK_DEF \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.PROD_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.PROD_MIGRATION_SG_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Migration task ARN: $TASK_ARN"
+
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $TASK_ARN \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration failed (exit $EXIT_CODE). Snapshot ${{ env.SNAPSHOT_ID }} available for rollback."
+            exit 1
+          fi
+          echo "::notice::Production migrations completed successfully."
+
+  # ── Blue/green-style rolling deployment ─────────────────────────────
+  deploy-api:
+    needs: run-migrations
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: .aws/task-definitions/api-production.json
+          container-name: api
+          image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
+
+      - name: Deploy API to ECS
+        id: ecs-deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_API }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 15
+
+  # ── Deploy workers ───────────────────────────────────────────────────
+  deploy-workers:
+    needs: run-migrations
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Audit Worker
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_AUDIT }} \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Deploy Security Worker
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_SECURITY }} \
+            --force-new-deployment \
+            --no-cli-pager
+
+  # ── Production smoke test ────────────────────────────────────────────
+  smoke-test:
+    needs: [deploy-api, deploy-workers]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 45
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.PROD_API_URL }}/health")
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Production health check failed with HTTP $STATUS"
+            exit 1
+          fi
+          echo "::notice::Production health check passed (HTTP $STATUS)."
+
+      - name: Post deployment summary
+        run: |
+          echo "## Production Deployment Complete :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** \`${{ inputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| RDS Snapshot | ✅ ${{ env.SNAPSHOT_ID }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Migrations | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Audit Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Test | ✅ |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Rollback job (triggered manually on failure) ─────────────────────
+  rollback:
+    needs: smoke-test
+    if: failure()
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Rollback ECS API service to previous task definition
+        run: |
+          PREV_TASK_DEF=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_API }} \
+            --query 'services[0].deployments[-1].taskDefinition' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_API }} \
+            --task-definition $PREV_TASK_DEF \
+            --no-cli-pager
+
+          echo "::error::Production smoke test failed. Rolled back API to: $PREV_TASK_DEF"
+          echo "RDS snapshot for DB rollback: ${{ env.SNAPSHOT_ID }}"

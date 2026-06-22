@@ -3,6 +3,7 @@ Policy CRUD endpoints + Violation management.
 All operations are tenant-scoped.
 """
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -24,6 +25,43 @@ from app.schemas.policy import (
 )
 
 router = APIRouter()
+
+
+# ── Event helpers ─────────────────────────────────────────────────
+async def _publish_policy_event(
+    event_type: str,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    policy_id: uuid.UUID,
+    policy_name: str,
+) -> None:
+    """Fire a Kafka audit event for policy lifecycle changes.
+
+    Args:
+        event_type:   Dot-separated event identifier, e.g. ``"policy.created"``.
+        tenant_id:    UUID of the owning tenant.
+        user_id:      UUID of the acting user.
+        policy_id:    UUID of the affected policy.
+        policy_name:  Human-readable name of the policy for log enrichment.
+    """
+    from app.core.events.producer import producer
+    from app.schemas.events import AuditEvent
+
+    await producer.publish(
+        "authclaw.audit.events",
+        AuditEvent(
+            event_type=event_type,
+            tenant_id=str(tenant_id),
+            actor_id=str(user_id),
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            payload={
+                "action": event_type.split(".")[-1],
+                "resource": "policy",
+                "resource_id": str(policy_id),
+                "name": policy_name,
+            },
+        ),
+    )
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -73,7 +111,7 @@ async def create_policy(
     body: PolicyCreate,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(require_roles(["owner", "admin"])),
+    current_user: User = Depends(require_roles(["owner", "admin"])),
 ):
     """Create a new policy with optional inline rules."""
     policy = Policy(
@@ -99,6 +137,12 @@ async def create_policy(
         db.add(rule)
 
     await db.commit()
+    await _publish_policy_event(
+        "policy.created", tenant.id, current_user.id, policy.id, policy.name
+    )
+    # Sprint 1: Invalidate Redis policy cache for this tenant
+    from app.core.policy.cache import policy_cache
+    await policy_cache.invalidate(tenant.id)
 
     # Re-fetch with eager-loaded rules
     return await _get_policy_or_404(policy.id, tenant.id, db)
@@ -121,7 +165,7 @@ async def update_policy(
     body: PolicyUpdate,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(require_roles(["owner", "admin"])),
+    current_user: User = Depends(require_roles(["owner", "admin"])),
 ):
     """Update a policy's metadata and optionally replace all its rules."""
     policy = await _get_policy_or_404(policy_id, tenant.id, db)
@@ -161,6 +205,12 @@ async def update_policy(
             policy.rules.append(new_rule)
 
     await db.commit()
+    await _publish_policy_event(
+        "policy.updated", tenant.id, current_user.id, policy.id, policy.name
+    )
+    # Sprint 1: Invalidate Redis policy cache for this tenant
+    from app.core.policy.cache import policy_cache
+    await policy_cache.invalidate(tenant.id)
     # Refresh to ensure relationships are loaded
     return await _get_policy_or_404(policy.id, tenant.id, db)
 
@@ -170,12 +220,24 @@ async def delete_policy(
     policy_id: uuid.UUID,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(require_roles(["owner", "admin"])),
+    current_user: User = Depends(require_roles(["owner", "admin"])),
 ):
     """Delete a policy and all its rules."""
     policy = await _get_policy_or_404(policy_id, tenant.id, db)
+
+    # Capture identity fields before the ORM object is expunged by delete()
+    deleted_policy_id: uuid.UUID = policy.id
+    deleted_policy_name: str = policy.name
+
     await db.delete(policy)
     await db.commit()
+    await _publish_policy_event(
+        "policy.deleted", tenant.id, current_user.id, deleted_policy_id, deleted_policy_name
+    )
+    # Sprint 1: Invalidate Redis policy cache for this tenant
+    from app.core.policy.cache import policy_cache
+    await policy_cache.invalidate(tenant.id)
+
 
 
 # ── Violation routes ─────────────────────────────────────────────
@@ -221,6 +283,7 @@ async def update_violation_resolution(
         raise NotFoundException(detail="Violation not found")
 
     violation.resolution = body.resolution
-    await db.commit()
+    await db.flush()
     await db.refresh(violation)
+    await db.commit()
     return violation

@@ -1,4 +1,19 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
+
+test.describe.configure({ mode: 'serial' });
+
+async function fulfillJson(route: Route, json: unknown, status = 200) {
+  await route.fulfill({
+    status,
+    contentType: 'application/json',
+    headers: {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': 'authorization, content-type',
+      'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    },
+    json,
+  });
+}
 
 test('has title', async ({ page }) => {
   await page.goto('/');
@@ -20,4 +35,891 @@ test('dashboard requires authentication', async ({ page }) => {
   // Since we don't have a token, it redirects us.
   await page.waitForURL('**/login');
   expect(page.url()).toContain('/login');
+});
+
+async function mockAuthenticatedUser(page: Page, role = 'admin') {
+  await page.route(/.*\/auth\/me.*/, async (route: Route) => {
+    await fulfillJson(route, {
+        id: 'user-1',
+        email: 'admin@example.com',
+        first_name: 'Ava',
+        last_name: 'Admin',
+        tenant_id: 'tenant-1',
+        role,
+        roles: [role],
+    });
+  });
+  await page.context().addInitScript(() => {
+    window.localStorage.setItem('authclaw_tokens', JSON.stringify({ accessToken: 'test-token', refreshToken: 'refresh' }));
+  });
+  await page.goto('/login');
+  await page.evaluate(() => {
+    window.localStorage.setItem('authclaw_tokens', JSON.stringify({ accessToken: 'test-token', refreshToken: 'refresh' }));
+  });
+}
+
+const integration = {
+  id: '11111111-1111-1111-1111-111111111111',
+  tenant_id: 'tenant-1',
+  provider_type: 'aws',
+  target_identifier: '123456789012',
+  display_name: 'AWS prod',
+  status: 'active',
+  vault_reference_id: 'authclaw/tenants/tenant-1/integrations/1111',
+  last_sync_at: '2026-06-20T10:00:00Z',
+  last_sync_finding_count: 3,
+  error_message: null,
+  created_at: '2026-06-20T09:00:00Z',
+  updated_at: '2026-06-20T10:00:00Z',
+};
+
+const finding = {
+  id: '22222222-2222-2222-2222-222222222222',
+  integration_id: integration.id,
+  provider_type: 'aws',
+  dedup_hash: 'abc123def4567890',
+  external_id: 'securityhub-1',
+  resource_id: 'arn:aws:s3:::prod-data',
+  title: 'Public S3 bucket',
+  description: 'Bucket allows public read access.',
+  remediation_instructions: 'Enable S3 block public access.',
+  severity: 'critical',
+  status: 'active',
+  resolved_at: null,
+  created_at: '2026-06-20T09:30:00Z',
+  updated_at: '2026-06-20T10:30:00Z',
+  compliance_tags: ['SOC2'],
+  service: 's3',
+};
+
+test('integrations list renders API data and health', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [integration], total: 1 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, {
+      registered_providers: ['aws'],
+      circuit_breakers: { aws: { state: 'closed' } },
+      items: [{ integration_id: integration.id, provider_type: 'aws', status: 'active', worker_visibility: 'event_scheduled', registered_connector_available: true, circuit_breaker_state: { state: 'closed' } }],
+    }));
+
+  await page.goto('/integrations');
+
+  await expect(page.getByText('AWS prod')).toBeVisible();
+  await expect(page.getByText('123456789012')).toBeVisible();
+  await expect(page.getByText('registered')).toBeVisible();
+});
+
+test('add integration does not display secret values and clears credential fields after validation', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: [], circuit_breakers: {}, items: [] }));
+  await page.route(/\/api\/v1\/integrations\/validate$/, async (route) => fulfillJson(route, { provider_type: 'aws', valid: true, missing_permissions: [] }));
+
+  await page.goto('/integrations');
+  await page.getByRole('button', { name: /^add integration$/i }).first().click();
+  await page.getByLabel(/aws account id/i).fill('123456789012');
+  await page.getByLabel(/access key/i).fill('AKIAIOSFODNN7EXAMPLE');
+  await page.getByLabel(/secret key/i).fill('super-secret-value');
+  await page.getByRole('button', { name: /^validate$/i }).click();
+
+  const dialog = page.getByRole('dialog', { name: /add cloud integration/i });
+  await expect(dialog.getByText('Credentials valid', { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/access key/i)).toHaveValue('');
+  await expect(page.getByLabel(/secret key/i)).toHaveValue('');
+  await expect(page.getByText('super-secret-value')).toHaveCount(0);
+});
+
+test('validation result renders missing permissions safely', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: [], circuit_breakers: {}, items: [] }));
+  await page.route(/\/api\/v1\/integrations\/validate$/, async (route) => fulfillJson(route, { provider_type: 'github', valid: false, error_code: '[redacted] missing scope', missing_permissions: ['security_events:read'] }));
+
+  await page.goto('/integrations');
+  await page.getByRole('button', { name: /^add integration$/i }).first().click();
+  await page.locator('select').first().selectOption('github');
+  await page.getByLabel(/org or repo target/i).fill('acme');
+  await page.getByLabel(/github token/i).fill('ghp_supersecretsecretsecretsecret');
+  await page.getByRole('button', { name: /^validate$/i }).click();
+
+  const dialog = page.getByRole('dialog', { name: /add cloud integration/i });
+  await expect(dialog.getByText('Validation failed', { exact: true })).toBeVisible();
+  await expect(page.getByText('security_events:read')).toBeVisible();
+  await expect(page.getByText('ghp_supersecretsecretsecretsecret')).toHaveCount(0);
+});
+
+test('manual sync calls API and shows queued state', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  let syncCalled = false;
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [integration], total: 1 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: ['aws'], circuit_breakers: {}, items: [] }));
+  await page.route(`**/api/v1/integrations/${integration.id}/sync`, async (route) => {
+    syncCalled = true;
+    await fulfillJson(route, { integration_id: integration.id, status: 'accepted', queued: true }, 202);
+  });
+
+  await page.goto('/integrations');
+  await page.getByRole('button', { name: /^sync$/i }).click();
+
+  await expect(page.getByRole('button', { name: /queued/i })).toBeVisible();
+  expect(syncCalled).toBeTruthy();
+});
+
+test('read-only users cannot access integration write actions', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'viewer');
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [integration], total: 1 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: ['aws'], circuit_breakers: {}, items: [] }));
+
+  await page.goto('/integrations');
+
+  await expect(page.getByText('write actions are disabled')).toBeVisible();
+  await expect(page.getByRole('button', { name: /add integration/i })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^sync$/i })).toBeDisabled();
+});
+
+test('findings table renders normalized findings and filters call API with params', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  let requestedUrl = '';
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [integration], total: 1 }));
+  await page.route(/\/api\/v1\/findings(?:\?.*)?$/, async (route) => {
+    requestedUrl = route.request().url();
+    await fulfillJson(route, { items: [finding], total: 1, skip: 0, limit: 25 });
+  });
+
+  await page.goto('/findings');
+  await expect(page.getByText('Public S3 bucket')).toBeVisible();
+  await page.getByLabel(/severity/i).selectOption('critical');
+  await expect.poll(() => requestedUrl).toContain('severity=critical');
+});
+
+test('finding detail excludes raw payload and status update works', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [integration], total: 1 }));
+  await page.route(/\/api\/v1\/findings(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [finding], total: 1, skip: 0, limit: 25 }));
+  await page.route(`**/api/v1/findings/${finding.id}`, async (route) => fulfillJson(route, { ...finding, status: 'suppressed' }));
+  page.on('dialog', (dialog) => dialog.accept());
+
+  await page.goto('/findings');
+  await page.getByRole('button', { name: /detail/i }).click();
+
+  await expect(page.getByText('Bucket allows public read access.')).toBeVisible();
+  await expect(page.getByText(/Raw provider payloads/)).toBeVisible();
+  await expect(page.getByText('raw_payload')).toHaveCount(0);
+  await page.getByRole('button', { name: /suppress/i }).last().click();
+  await expect(page.locator('[data-slot="badge"]').filter({ hasText: /^suppressed$/ })).toBeVisible();
+});
+
+const framework = {
+  id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  key: 'soc2',
+  version: '2026',
+  name: 'SOC 2',
+  description: 'Trust services criteria summary.',
+  source_url: null,
+  license_note: 'AuthClaw curated summary',
+  status: 'active',
+  metadata: {},
+  control_count: 1,
+  created_at: '2026-06-20T09:00:00Z',
+  updated_at: '2026-06-20T10:00:00Z',
+};
+
+const control = {
+  id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+  framework_id: framework.id,
+  control_code: 'SOC2-SEC-ACCESS',
+  title: 'Logical access protection',
+  summary: 'Access control review for privileged systems.',
+  domain: 'security',
+  category: 'access',
+  severity_weight: 3,
+  requires_review: true,
+  sort_order: 1,
+  metadata: {},
+  requirements: [{ id: 'req-1', requirement_key: 'CC6.1', summary: 'Review access evidence.', evidence_expectation: 'User and policy evidence.', sort_order: 1 }],
+  created_at: '2026-06-20T09:00:00Z',
+  updated_at: '2026-06-20T10:00:00Z',
+};
+
+const assessment = {
+  id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  tenant_id: 'tenant-1',
+  framework_id: framework.id,
+  framework_key: 'soc2',
+  status: 'completed',
+  score: 74,
+  score_band: 'at_risk',
+  started_at: '2026-06-20T11:00:00Z',
+  completed_at: '2026-06-20T11:01:00Z',
+  inputs_hash: 'hash',
+  explanation: 'Evidence-supported posture needs review.',
+  control_results: [{ id: 'result-1', tenant_id: 'tenant-1', assessment_id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', control_id: control.id, score: 74, score_band: 'at_risk', evidence_count: 1, gap_count: 1, explanation: 'One gap detected.', metadata: {}, control_code: control.control_code, control_title: control.title, created_at: '2026-06-20T11:00:00Z', updated_at: '2026-06-20T11:00:00Z' }],
+  gaps: [],
+  created_at: '2026-06-20T11:00:00Z',
+  updated_at: '2026-06-20T11:00:00Z',
+};
+
+const mapping = {
+  id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+  tenant_id: 'tenant-1',
+  finding_id: finding.id,
+  control_id: control.id,
+  rule_id: 's3_public_access',
+  confidence: 0.92,
+  mapping_source: 'deterministic',
+  review_status: 'needs_review',
+  override_reason: null,
+  control_code: control.control_code,
+  control_title: control.title,
+  framework_key: 'soc2',
+  created_at: '2026-06-20T11:00:00Z',
+  updated_at: '2026-06-20T11:00:00Z',
+};
+
+const evidence = {
+  id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+  tenant_id: 'tenant-1',
+  control_id: control.id,
+  finding_id: finding.id,
+  integration_id: integration.id,
+  audit_log_id: null,
+  mapping_id: mapping.id,
+  source_type: 'finding_mapping',
+  status: 'active',
+  safe_summary: 'Normalized finding evidence. token=super-secret-value raw_provider_payload removed.',
+  proof_hash: 'abcdef1234567890',
+  freshness_expires_at: '2026-07-20T11:00:00Z',
+  metadata: {},
+  control_code: control.control_code,
+  framework_key: 'soc2',
+  created_at: '2026-06-20T11:00:00Z',
+  updated_at: '2026-06-20T11:00:00Z',
+};
+
+const gap = {
+  id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+  tenant_id: 'tenant-1',
+  assessment_id: assessment.id,
+  control_id: control.id,
+  evidence_id: evidence.id,
+  mapping_id: mapping.id,
+  finding_id: finding.id,
+  gap_type: 'needs_review',
+  severity: 'high',
+  reason: 'Mapping requires human review before audit preparation.',
+  evidence_status: 'active',
+  metadata: {},
+  control_code: control.control_code,
+  framework_key: 'soc2',
+  created_at: '2026-06-20T11:00:00Z',
+  updated_at: '2026-06-20T11:00:00Z',
+};
+
+const recommendation = {
+  id: gap.id,
+  tenant_id: 'tenant-1',
+  control_id: control.id,
+  gap_id: gap.id,
+  finding_id: finding.id,
+  severity: 'high',
+  status: 'review_recommended',
+  title: 'Review needs review',
+  summary: gap.reason,
+  control_code: control.control_code,
+  framework_key: 'soc2',
+  created_at: '2026-06-20T11:00:00Z',
+};
+
+const knowledgeDocument = {
+  id: '99999999-9999-9999-9999-999999999999',
+  tenant_id: null,
+  framework_id: framework.id,
+  source_type: 'control_summary',
+  title: 'SOC2 access control summary',
+  source_url: null,
+  license_status: 'summary_only',
+  trust_level: 'curated',
+  checksum: 'abc',
+  status: 'active',
+  ingested_by: null,
+  metadata: {},
+  chunk_count: 2,
+  chunks: [],
+  created_at: '2026-06-20T11:00:00Z',
+  updated_at: '2026-06-20T11:00:00Z',
+};
+
+async function mockComplianceApi(page: Page) {
+  await page.route(/\/api\/v1\/compliance\/frameworks\/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\/controls(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [control], total: 1, skip: 0, limit: 200 }));
+  await page.route(/\/api\/v1\/compliance\/frameworks\/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa$/, async (route) => fulfillJson(route, framework));
+  await page.route(/\/api\/v1\/compliance\/frameworks(?:\?.*)?$/, async (route) => fulfillJson(route, [framework]));
+  await page.route(/\/api\/v1\/compliance\/controls\/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb$/, async (route) => fulfillJson(route, control));
+  await page.route(/\/api\/v1\/compliance\/assessments(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [assessment], total: 1, skip: 0, limit: 20 }));
+  await page.route(/\/api\/v1\/compliance\/mappings(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [mapping], total: 1, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/compliance\/evidence(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [evidence], total: 1, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/compliance\/gaps(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [gap], total: 1, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/compliance\/recommendations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [recommendation], total: 1, skip: 0, limit: 100, status: 'derived_from_existing_gaps' }));
+  await page.route(/\/api\/v1\/compliance\/knowledge(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [knowledgeDocument], total: 1, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/compliance\/knowledge\/ingest$/, async (route) => fulfillJson(route, { documents_seen: 1, documents_created: 0, documents_updated: 0, chunks_created: 0 }));
+  await page.route(/\/api\/v1\/compliance\/ask\/sessions(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'session-1', tenant_id: 'tenant-1', user_id: null, question_hash: 'hash-only-no-question', answer: 'Prior safe answer', citations: [], confidence: 0.8, refused: false, refusal_reason: null, framework_id: framework.id, control_id: control.id, assessment_id: null, retrieval_trace_id: 'trace-1', metadata: {}, created_at: '2026-06-20T12:00:00Z', updated_at: '2026-06-20T12:00:00Z' }], total: 1, skip: 0, limit: 10 }));
+}
+
+test('compliance overview renders assessments and gaps without posture overclaims', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockComplianceApi(page);
+  await page.route(/\/api\/v1\/compliance\/assessments\/run$/, async (route) => fulfillJson(route, assessment));
+
+  await page.goto('/compliance', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('Evidence-supported posture across frameworks')).toBeVisible();
+  await expect(page.getByText('SOC 2')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Mapping requires human review' })).toBeVisible();
+  await expect(page.getByText(/\bcompliant\b/i)).toHaveCount(0);
+});
+
+test('framework and control detail render controls, evidence, mappings, gaps, and review mapping', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockComplianceApi(page);
+  let reviewCalled = false;
+  await page.route(`**/api/v1/compliance/mappings/${mapping.id}/review`, async (route) => {
+    reviewCalled = true;
+    await fulfillJson(route, { ...mapping, review_status: 'approved' });
+  });
+
+  await page.goto(`/compliance/frameworks/${framework.id}`, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Logical access protection')).toBeVisible();
+  await page.getByRole('link', { name: /open/i }).click();
+  await expect(page.getByText('Mapped findings')).toBeVisible();
+  await expect(page.getByText(/normalized .* evidence/i).first()).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Mapping requires human review' })).toBeVisible();
+  await page.getByRole('button', { name: /^approve$/i }).click();
+  expect(reviewCalled).toBeTruthy();
+});
+
+test('evidence library filters and detail drawer avoid raw secret display', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockComplianceApi(page);
+  let requestedUrl = '';
+  await page.route(/\/api\/v1\/compliance\/evidence(?:\?.*)?$/, async (route) => {
+    requestedUrl = route.request().url();
+    await fulfillJson(route, { items: [evidence], total: 1, skip: 0, limit: 25 });
+  });
+
+  await page.goto('/compliance/evidence', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/source type/i).selectOption('finding_mapping');
+  await expect.poll(() => requestedUrl).toContain('source_type=finding_mapping');
+  await page.getByRole('button', { name: /detail/i }).click();
+  await expect(page.getByLabel('Evidence detail').getByText('Normalized finding evidence')).toBeVisible();
+  await expect(page.getByText('super-secret-value')).toHaveCount(0);
+  await expect(page.getByText('raw_provider_payload')).toHaveCount(0);
+});
+
+test('gaps, recommendations, and knowledge pages render safe metadata without execution controls', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockComplianceApi(page);
+
+  await page.goto('/compliance/gaps', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/severity/i).selectOption('high');
+  await expect(page.getByRole('cell', { name: 'Mapping requires human review' })).toBeVisible();
+
+  await page.goto('/compliance/recommendations', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Review needs review')).toBeVisible();
+  await expect(page.getByRole('button', { name: /execute|apply/i })).toHaveCount(0);
+
+  await page.goto('/compliance/knowledge', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('SOC2 access control summary')).toBeVisible();
+  await expect(page.getByText('summary_only')).toBeVisible();
+  await expect(page.getByText('curated', { exact: true })).toBeVisible();
+});
+
+test('compliance assistant renders citations and refusal states safely', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockComplianceApi(page);
+  await page.route(/\/api\/v1\/compliance\/ask$/, async (route) => {
+    const body = await route.request().postDataJSON();
+    if (String(body.question).includes('guarantee')) {
+      await fulfillJson(route, { answer: 'Cannot provide that guarantee.', confidence: 0, citations: [], related_controls: [], related_evidence: [], related_gaps: [], recommended_next_steps: [], refusal_reason: 'legal_guarantee_requested', retrieval_trace_id: null, session_id: 'session-refused' });
+      return;
+    }
+    await fulfillJson(route, { answer: 'Evidence-supported access control posture should be reviewed.', confidence: 0.82, citations: [{ document_title: 'SOC2 access control summary', source_locator: 'control:summary' }], related_controls: [{ control_code: control.control_code }], related_evidence: [{ evidence_id: evidence.id }], related_gaps: [{ gap_id: gap.id }], recommended_next_steps: ['Review mapped evidence with an auditor.'], refusal_reason: null, retrieval_trace_id: 'trace-2', session_id: 'session-2' });
+  });
+
+  await page.goto('/compliance/assistant', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/question/i).fill('What access control evidence should we review?');
+  await page.getByRole('button', { name: /^ask$/i }).click();
+  await expect(page.getByText('SOC2 access control summary')).toBeVisible();
+  await expect(page.getByText('Review mapped evidence')).toBeVisible();
+
+  await page.getByLabel(/question/i).fill('Can you guarantee audit passage?');
+  await page.getByRole('button', { name: /^ask$/i }).click();
+  await expect(page.getByText(/legal_guarantee_requested/)).toBeVisible();
+});
+
+test('read-only compliance role cannot see admin-only actions', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'viewer');
+  await mockComplianceApi(page);
+
+  await page.goto(`/compliance/controls/${control.id}`, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Review actions hidden for this role.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^approve$/i })).toHaveCount(0);
+
+  await page.goto('/compliance/knowledge', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('button', { name: /ingest curated catalog/i })).toBeDisabled();
+});
+
+const phase8DemoMappings = [
+  mapping,
+  {
+    ...mapping,
+    id: 'dddddddd-dddd-dddd-dddd-ddddddddddde',
+    finding_id: '22222222-2222-2222-2222-222222222223',
+    rule_id: 'aws_cloudtrail_missing',
+    confidence: 0.93,
+    control_code: 'SOC2-SEC-MONITOR',
+    control_title: 'Monitoring and audit logging',
+  },
+  {
+    ...mapping,
+    id: 'dddddddd-dddd-dddd-dddd-dddddddddddf',
+    finding_id: '22222222-2222-2222-2222-222222222224',
+    rule_id: 'github_secret_exposure',
+    confidence: 0.95,
+  },
+];
+
+const phase8DemoEvidence = [
+  {
+    ...evidence,
+    safe_summary: 'critical active normalized AWS public S3 bucket evidence mapped to SOC2-SEC-ACCESS.',
+  },
+  {
+    ...evidence,
+    id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeef',
+    mapping_id: phase8DemoMappings[1].id,
+    finding_id: phase8DemoMappings[1].finding_id,
+    safe_summary: 'high active normalized CloudTrail missing evidence mapped to SOC2-SEC-MONITOR.',
+  },
+  {
+    ...evidence,
+    id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeed',
+    mapping_id: phase8DemoMappings[2].id,
+    finding_id: phase8DemoMappings[2].finding_id,
+    safe_summary: 'critical active normalized GitHub dummy secret exposure evidence mapped safely.',
+  },
+];
+
+const phase8DemoGaps = [
+  {
+    ...gap,
+    reason: 'Public S3 bucket remains unresolved and caps SOC 2 posture.',
+    severity: 'critical',
+    gap_type: 'critical_open_risk',
+  },
+  {
+    ...gap,
+    id: 'ffffffff-ffff-ffff-ffff-fffffffffffe',
+    evidence_id: phase8DemoEvidence[1].id,
+    mapping_id: phase8DemoMappings[1].id,
+    finding_id: phase8DemoMappings[1].finding_id,
+    reason: 'CloudTrail evidence is missing for the primary demo region.',
+    severity: 'high',
+    gap_type: 'unresolved_finding',
+  },
+  {
+    ...gap,
+    id: 'ffffffff-ffff-ffff-ffff-fffffffffffd',
+    evidence_id: phase8DemoEvidence[2].id,
+    mapping_id: phase8DemoMappings[2].id,
+    finding_id: phase8DemoMappings[2].finding_id,
+    reason: 'GitHub dummy secret exposure requires human review.',
+    severity: 'critical',
+    gap_type: 'needs_review',
+  },
+];
+
+const phase8DemoRecommendations = phase8DemoGaps.map((demoGap, index) => ({
+  ...recommendation,
+  id: demoGap.id,
+  gap_id: demoGap.id,
+  finding_id: demoGap.finding_id,
+  severity: demoGap.severity,
+  title: ['Review public S3 exposure', 'Review CloudTrail logging evidence', 'Review GitHub dummy secret exposure'][index],
+  summary: demoGap.reason,
+}));
+
+const phase8DemoKnowledge = {
+  ...knowledgeDocument,
+  title: 'Sprint 3 demo SOC 2 risk narrative',
+  source_type: 'demo_acceptance_scenario',
+  license_status: 'demo_synthetic',
+  trust_level: 'demo_curated',
+  metadata: { scenario: 'sprint3_phase8_demo' },
+};
+
+async function mockPhase8DemoComplianceApi(page: Page) {
+  await mockComplianceApi(page);
+  await page.route(/\/api\/v1\/compliance\/mappings(?:\?.*)?$/, async (route) => fulfillJson(route, { items: phase8DemoMappings, total: phase8DemoMappings.length, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/compliance\/evidence(?:\?.*)?$/, async (route) => fulfillJson(route, { items: phase8DemoEvidence, total: phase8DemoEvidence.length, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/compliance\/gaps(?:\?.*)?$/, async (route) => fulfillJson(route, { items: phase8DemoGaps, total: phase8DemoGaps.length, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/compliance\/recommendations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: phase8DemoRecommendations, total: phase8DemoRecommendations.length, skip: 0, limit: 100, status: 'derived_from_existing_gaps' }));
+  await page.route(/\/api\/v1\/compliance\/knowledge(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [phase8DemoKnowledge], total: 1, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/compliance\/ask$/, async (route) => {
+    const body = await route.request().postDataJSON();
+    if (String(body.question).toLowerCase().includes('guarantee')) {
+      await fulfillJson(route, {
+        answer: 'Cannot provide legal guarantees, certification claims, or remediation execution.',
+        confidence: 0,
+        citations: [],
+        related_controls: [],
+        related_evidence: [],
+        related_gaps: [],
+        recommended_next_steps: [],
+        refusal_reason: 'legal_guarantee_requested',
+        retrieval_trace_id: null,
+        session_id: 'phase8-session-refused',
+      });
+      return;
+    }
+    await fulfillJson(route, {
+      answer: 'SOC 2 is at risk because demo evidence shows a public S3 bucket, missing CloudTrail logging, and GitHub dummy secret exposure. This is evidence-supported posture, not legal advice.',
+      confidence: 0.91,
+      citations: [{ document_title: phase8DemoKnowledge.title, source_locator: 'demo:sprint3:soc2-risk' }],
+      related_controls: [{ control_code: 'SOC2-SEC-ACCESS' }, { control_code: 'SOC2-SEC-MONITOR' }],
+      related_evidence: phase8DemoEvidence.map((item) => ({ evidence_id: item.id })),
+      related_gaps: phase8DemoGaps.map((item) => ({ gap_id: item.id })),
+      recommended_next_steps: ['Review public access evidence.', 'Review CloudTrail logging evidence.', 'Review GitHub secret exposure workflow.'],
+      refusal_reason: null,
+      retrieval_trace_id: 'phase8-trace',
+      session_id: 'phase8-session',
+    });
+  });
+}
+
+test('phase 8 demo acceptance walks compliance console and assistant safely', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockPhase8DemoComplianceApi(page);
+
+  await page.goto('/compliance', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('cell', { name: 'SOC 2', exact: true })).toBeVisible();
+  await expect(page.getByText(/\bcompliant\b/i)).toHaveCount(0);
+
+  await page.goto(`/compliance/frameworks/${framework.id}`, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Logical access protection')).toBeVisible();
+  await page.getByRole('link', { name: /open/i }).click();
+  await expect(page.getByText('Mapped findings')).toBeVisible();
+  await expect(page.getByText(/normalized .* evidence/i).first()).toBeVisible();
+
+  await page.goto('/compliance/evidence', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('public S3 bucket evidence')).toBeVisible();
+  await page.getByLabel(/source type/i).selectOption('finding_mapping');
+
+  await page.goto('/compliance/gaps', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/severity/i).selectOption('critical');
+  await expect(page.getByText('Public S3 bucket remains unresolved')).toBeVisible();
+  await expect(page.getByText('GitHub dummy secret exposure requires human review')).toBeVisible();
+
+  await page.goto('/compliance/recommendations', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Review CloudTrail logging evidence')).toBeVisible();
+  await expect(page.getByRole('button', { name: /execute|apply/i })).toHaveCount(0);
+
+  await page.goto('/compliance/knowledge', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Sprint 3 demo SOC 2 risk narrative')).toBeVisible();
+  await expect(page.getByText('demo_synthetic')).toBeVisible();
+  await expect(page.getByText('demo curated')).toBeVisible();
+
+  await page.goto('/compliance/assistant', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/question/i).fill('Why is SOC 2 at risk?');
+  await page.getByRole('button', { name: /^ask$/i }).click();
+  await expect(page.getByText('public S3 bucket')).toBeVisible();
+  await expect(page.getByText('Sprint 3 demo SOC 2 risk narrative')).toBeVisible();
+  await expect(page.getByText(/not legal advice/i).first()).toBeVisible();
+
+  await page.getByLabel(/question/i).fill('Can you guarantee we pass audit?');
+  await page.getByRole('button', { name: /^ask$/i }).click();
+  await expect(page.getByText(/legal_guarantee_requested/)).toBeVisible();
+
+  await expect(page.getByText(/AKIA|ghp_|super-secret|raw_provider_payload|you are compliant/i)).toHaveCount(0);
+});
+
+const remediationPlanDraft = {
+  id: 'aaaaaaaa-1111-4444-8888-aaaaaaaaaaaa',
+  tenant_id: 'tenant-1',
+  finding_id: finding.id,
+  gap_id: null,
+  recommendation_id: null,
+  integration_id: integration.id,
+  provider: 'aws',
+  resource_ref: 'arn:aws:s3:::prod-data',
+  risk_level: 'critical',
+  status: 'plan_drafted',
+  summary: 'Draft plan for public S3 bucket',
+  expected_impact: 'Review-only public access reduction draft. No execution is available.',
+  created_by: 'user-1',
+  created_at: '2026-06-21T10:00:00Z',
+  updated_at: '2026-06-21T10:01:00Z',
+};
+
+const remediationPlanValidated = {
+  ...remediationPlanDraft,
+  id: 'bbbbbbbb-1111-4444-8888-bbbbbbbbbbbb',
+  status: 'plan_validated',
+  risk_level: 'high',
+  summary: 'Validated draft plan for CloudTrail logging',
+  resource_ref: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/demo',
+};
+
+const remediationArtifact = {
+  id: 'cccccccc-1111-4444-8888-cccccccccccc',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanDraft.id,
+  artifact_type: 'terraform_plan_draft',
+  content_redacted: 'NON-EXECUTING DRAFT ONLY. token=super-secret-value raw_provider_payload ghp_supersecretsecretsecretsecret AKIAIOSFODNN7EXAMPLE',
+  diff_summary: 'Enable block public access settings for review.',
+  artifact_hash: 'artifacthash1234567890',
+  risk_flags: { non_executing: true, requires_future_human_approval: true },
+  status: 'draft',
+  created_at: '2026-06-21T10:00:00Z',
+  updated_at: '2026-06-21T10:00:00Z',
+};
+
+const remediationPolicyCheck = {
+  id: 'dddddddd-1111-4444-8888-dddddddddddd',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanDraft.id,
+  artifact_id: remediationArtifact.id,
+  passed: false,
+  warnings: [{ code: 'public_access_change', message: 'Public access control changes require owner review.' }],
+  blocking_reasons: [{ code: 'manual_review_required', message: 'Manual review is required before approval.' }],
+  required_approval_level: 'owner',
+  policy_check_hash: 'policyhash1234567890',
+  created_at: '2026-06-21T10:02:00Z',
+  updated_at: '2026-06-21T10:02:00Z',
+};
+
+const remediationRollback = {
+  id: 'eeeeeeee-1111-4444-8888-eeeeeeeeeeee',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanDraft.id,
+  rollback_summary: 'Restore prior reviewed access settings if a future controlled phase executes.',
+  rollback_artifact_hash: 'rollbackhash1234567890',
+  risk_level: 'critical',
+  created_at: '2026-06-21T10:00:00Z',
+  updated_at: '2026-06-21T10:00:00Z',
+};
+
+const remediationApproval = {
+  id: 'ffffffff-1111-4444-8888-ffffffffffff',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanValidated.id,
+  artifact_hash: 'validatedartifacthash1234567890',
+  policy_check_hash: 'validatedpolicyhash1234567890',
+  required_approval_level: 'owner',
+  requested_by: 'user-2',
+  approved_by: null,
+  status: 'pending',
+  expires_at: '2026-06-22T10:00:00Z',
+  resolved_at: null,
+  mfa_verified: false,
+  approval_reason: 'Needs owner review.',
+  created_at: '2026-06-21T10:03:00Z',
+  updated_at: '2026-06-21T10:03:00Z',
+};
+
+const remediationJob = {
+  id: '99999999-1111-4444-8888-999999999999',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanValidated.id,
+  approval_id: remediationApproval.id,
+  sandbox_id: 'dryrun-safe-simulated',
+  dry_run_result_id: '88888888-1111-4444-8888-888888888888',
+  status: 'succeeded',
+  disabled_reason: 'Controlled simulated provider execution completed. No external mutation was attempted.',
+  started_at: '2026-06-21T10:04:00Z',
+  completed_at: '2026-06-21T10:05:00Z',
+  created_at: '2026-06-21T10:04:00Z',
+  updated_at: '2026-06-21T10:05:00Z',
+};
+
+const remediationBlockedJob = {
+  id: '99999999-1111-4444-8888-999999999998',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanDraft.id,
+  approval_id: null,
+  sandbox_id: null,
+  dry_run_result_id: null,
+  status: 'disabled',
+  disabled_reason: 'Blocked mutation demo: Terraform apply, AWS mutation, provider credentials, and shell execution are not allowed.',
+  started_at: null,
+  completed_at: null,
+  created_at: '2026-06-21T10:06:00Z',
+  updated_at: '2026-06-21T10:06:00Z',
+};
+
+const remediationDryRun = {
+  id: remediationJob.dry_run_result_id,
+  tenant_id: 'tenant-1',
+  job_id: remediationJob.id,
+  plan_id: remediationPlanValidated.id,
+  artifact_id: remediationArtifact.id,
+  approval_id: remediationApproval.id,
+  sandbox_id: remediationJob.sandbox_id,
+  dry_run_type: 'documentation_only',
+  status: 'succeeded',
+  output_summary: 'Documentation-only artifact passed static dry-run checks. No execution was attempted.',
+  warnings: [],
+  blocking_reasons: [],
+  started_at: '2026-06-21T10:04:00Z',
+  completed_at: '2026-06-21T10:04:30Z',
+  created_at: '2026-06-21T10:04:00Z',
+  updated_at: '2026-06-21T10:04:30Z',
+};
+
+const remediationVerification = {
+  id: '77777777-1111-4444-8888-777777777777',
+  tenant_id: 'tenant-1',
+  plan_id: remediationPlanValidated.id,
+  job_id: remediationJob.id,
+  finding_status_before: null,
+  finding_status_after: 'verified',
+  evidence_id: null,
+  verified: true,
+  verification_summary: 'Simulated provider execution succeeded. No external provider was called and no resources were mutated.',
+  status: 'verified',
+  created_at: '2026-06-21T10:05:00Z',
+  updated_at: '2026-06-21T10:05:00Z',
+};
+
+async function mockRemediationApi(page: Page) {
+  await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await fulfillJson(route, { ...remediationPlanDraft, artifacts: [remediationArtifact], rollback_plan: remediationRollback, policy_checks: [], approvals: [], execution_jobs: [] });
+      return;
+    }
+    await fulfillJson(route, { items: [remediationPlanDraft, remediationPlanValidated], total: 2, skip: 0, limit: 25 });
+  });
+  await page.route(`**/api/v1/remediation/plans/${remediationPlanDraft.id}`, async (route) => fulfillJson(route, {
+    ...remediationPlanDraft,
+    artifacts: [remediationArtifact],
+    rollback_plan: remediationRollback,
+    policy_checks: [remediationPolicyCheck],
+    approvals: [],
+    execution_jobs: [],
+  }));
+  await page.route(`**/api/v1/remediation/plans/${remediationPlanDraft.id}/validate`, async (route) => fulfillJson(route, {
+    plan: remediationPlanDraft,
+    artifact: remediationArtifact,
+    policy_check: remediationPolicyCheck,
+  }));
+  await page.route(`**/api/v1/remediation/plans/${remediationPlanValidated.id}/request-approval`, async (route) => fulfillJson(route, remediationApproval));
+  await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationApproval], total: 1, skip: 0, limit: 100 }));
+  await page.route(`**/api/v1/remediation/approvals/${remediationApproval.id}/approve`, async (route) => fulfillJson(route, { detail: 'Separation of duties prevents self-approval for elevated remediation' }, 403));
+  await page.route(`**/api/v1/remediation/approvals/${remediationApproval.id}/reject`, async (route) => fulfillJson(route, { ...remediationApproval, status: 'rejected', approval_reason: 'Rejected after review.' }));
+  await page.route(`**/api/v1/remediation/approvals/${remediationApproval.id}/revoke`, async (route) => fulfillJson(route, { ...remediationApproval, status: 'revoked', approval_reason: 'Revoked stale approval.' }));
+  await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationDryRun], total: 1, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationVerification], total: 1, skip: 0, limit: 100 }));
+  await page.route(/\/api\/v1\/remediation\/jobs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationJob, remediationBlockedJob], total: 2, skip: 0, limit: 100 }));
+}
+
+test('remediation overview renders safe status without execution controls', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockRemediationApi(page);
+
+  await page.goto('/remediation', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('Remediation Console')).toBeVisible();
+  await expect(page.getByText('Controlled safe execution visibility')).toBeVisible();
+  await expect(page.getByText('Draft plan for public S3 bucket')).toBeVisible();
+  await expect(page.getByText('Validated draft plan for CloudTrail logging')).toBeVisible();
+  await expect(page.getByRole('button', { name: /execute|apply|dry-run|terraform/i })).toHaveCount(0);
+});
+
+test('remediation plan list filters and request approval flow call safe APIs', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockRemediationApi(page);
+  let requestedApproval = false;
+  await page.route(`**/api/v1/remediation/plans/${remediationPlanValidated.id}/request-approval`, async (route) => {
+    requestedApproval = true;
+    await fulfillJson(route, remediationApproval);
+  });
+
+  await page.goto('/remediation/plans', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Draft plan for public S3 bucket')).toBeVisible();
+  await page.getByLabel(/risk level/i).selectOption('critical');
+  await page.getByRole('row', { name: /Validated draft plan/ }).getByRole('button', { name: /request approval/i }).click();
+  await page.getByLabel(/reason/i).fill('Please review validated draft.');
+  await page.getByRole('dialog').getByRole('button', { name: /request approval/i }).click();
+
+  expect(requestedApproval).toBeTruthy();
+  await expect(page.getByRole('button', { name: /execute|apply|dry-run|terraform/i })).toHaveCount(0);
+});
+
+test('remediation plan detail shows artifact hash, warnings, validation, and no secrets', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockRemediationApi(page);
+  let validateCalled = false;
+  await page.route(`**/api/v1/remediation/plans/${remediationPlanDraft.id}/validate`, async (route) => {
+    validateCalled = true;
+    await fulfillJson(route, { plan: remediationPlanDraft, artifact: remediationArtifact, policy_check: remediationPolicyCheck });
+  });
+
+  await page.goto(`/remediation/plans/${remediationPlanDraft.id}`, { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('Draft only. Not executable from UI.')).toBeVisible();
+  await expect(page.getByText('artifacthash1234567890')).toBeVisible();
+  await expect(page.getByText('public_access_change')).toBeVisible();
+  await expect(page.getByText('manual_review_required')).toBeVisible();
+  await page.getByRole('button', { name: /^validate$/i }).click();
+  expect(validateCalled).toBeTruthy();
+  await expect(page.getByText('super-secret-value')).toHaveCount(0);
+  await expect(page.getByText('raw_provider_payload')).toHaveCount(0);
+  await expect(page.getByText(/AKIA|ghp_/)).toHaveCount(0);
+});
+
+test('remediation approval queue requires reasons and shows backend errors safely', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockRemediationApi(page);
+
+  await page.goto('/remediation/approvals', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Validated draft plan for CloudTrail logging')).toBeVisible();
+
+  await page.getByRole('row', { name: /Validated draft plan/ }).getByRole('button', { name: /^approve$/i }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: /^approve$/i })).toBeDisabled();
+  await page.getByLabel(/reason/i).fill('Approving after review.');
+  await page.getByLabel(/mfa verified/i).check();
+  await page.getByRole('dialog').getByRole('button', { name: /^approve$/i }).click();
+  await expect(page.getByText('Separation of duties prevents', { exact: false })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: /^cancel$/i }).click();
+
+  await page.getByRole('row', { name: /Validated draft plan/ }).getByRole('button', { name: /^reject$/i }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: /^reject$/i })).toBeDisabled();
+});
+
+test('remediation jobs are visibility only and expose no mutation controls', async ({ page }) => {
+  await mockAuthenticatedUser(page);
+  await mockRemediationApi(page);
+
+  await page.goto('/remediation/jobs', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('Safe simulated/no-op execution records are visible')).toBeVisible();
+  await expect(page.getByText('Controlled simulated provider execution completed')).toBeVisible();
+  await expect(page.getByText('Documentation-only artifact passed static dry-run checks')).toBeVisible();
+  await expect(page.getByText('Simulated provider execution succeeded')).toBeVisible();
+  await expect(page.getByText('Blocked mutation demo')).toBeVisible();
+  await expect(page.getByRole('button', { name: /execute|apply|dry-run|terraform/i })).toHaveCount(0);
+  await expect(page.getByText(/AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+});
+
+test('read-only remediation role cannot see enabled mutation actions', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'viewer');
+  await mockRemediationApi(page);
+
+  await page.goto('/remediation/plans', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.getByText('generation, validation, and approval requests are disabled')).toBeVisible();
+  await expect(page.getByRole('button', { name: /generate draft/i })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^validate$/i }).first()).toBeDisabled();
+  await expect(page.getByRole('button', { name: /request approval/i }).first()).toBeDisabled();
+
+  await page.goto('/remediation/approvals', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('approval decisions are disabled')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^approve$/i })).toBeDisabled();
 });

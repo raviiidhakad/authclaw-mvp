@@ -1,6 +1,6 @@
 import uuid
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 # Auth Schemas
 class Token(BaseModel):
@@ -20,6 +20,8 @@ class UserCreate(BaseModel):
     company_name: Optional[str] = None
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: EmailStr
     first_name: str
@@ -27,15 +29,11 @@ class UserResponse(BaseModel):
     tenant_id: uuid.UUID
     mfa_enabled: bool
 
-    class Config:
-        from_attributes = True
-
 class TenantResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
-
-    class Config:
-        from_attributes = True
 
 class RefreshRequest(BaseModel):
     refresh_token: str
@@ -52,4 +50,12 @@ class MFASetupResponse(BaseModel):
     uri: str
 
 class MFAVerifyRequest(BaseModel):
+    code: str
+
+class LoginMfaResponse(BaseModel):
+    mfa_required: bool = True
+    mfa_token: str
+
+class LoginMfaRequest(BaseModel):
+    mfa_token: str
     code: str

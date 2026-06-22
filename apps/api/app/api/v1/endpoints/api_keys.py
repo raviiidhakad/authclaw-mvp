@@ -57,8 +57,9 @@ async def create_api_key(
     )
     
     db.add(api_key)
-    await db.commit()
+    await db.flush()
     await db.refresh(api_key)
+    await db.commit()
     
     # Inject the raw key into the response model
     response_data = ApiKeyCreateResponse.model_validate(api_key)

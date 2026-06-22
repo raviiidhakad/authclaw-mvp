@@ -1,4 +1,14 @@
 .venv
+.env
+.env.*
+!.env.example
 __pycache__
 *.pyc
 .pytest_cache
+tests/
+docs/
+scripts/
+bandit-report.json
+semgrep.sarif
+trivy-fs.sarif
+.coverage

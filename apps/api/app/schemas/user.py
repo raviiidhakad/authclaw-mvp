@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 class UserCreateAdmin(BaseModel):
     email: EmailStr
@@ -20,6 +20,8 @@ class RoleAssign(BaseModel):
     roles: List[str]
 
 class UserResponseWithRoles(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: EmailStr
     first_name: str
@@ -30,6 +32,3 @@ class UserResponseWithRoles(BaseModel):
     created_at: datetime
     roles: List[str] = []
     mfa_enabled: bool = False
-
-    class Config:
-        from_attributes = True

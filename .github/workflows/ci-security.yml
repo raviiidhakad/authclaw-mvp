@@ -1,0 +1,95 @@
+name: CI Security
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  bandit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Bandit
+        run: pip install bandit[toml]
+      - name: Run Bandit
+        run: |
+          bandit -r apps/api/app/ \
+            -c apps/api/pyproject.toml \
+            --severity-level medium \
+            --confidence-level medium \
+            -f json -o bandit-report.json || true
+      - name: Upload Bandit Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+      - name: Fail on high severity
+        run: |
+          if jq -e '.results[] | select(.issue_severity == "HIGH")' bandit-report.json > /dev/null; then
+            echo "High severity issues found by Bandit."
+            exit 1
+          fi
+
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan \
+            --config=p/python \
+            --config=p/jwt \
+            --config=p/secrets \
+            --config=p/owasp-top-ten \
+            --sarif-output=semgrep.sarif \
+            apps/api/app/ || true
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      - name: Fail on errors
+        run: |
+          if jq -e '.runs[].results[] | select(.level == "error")' semgrep.sarif > /dev/null; then
+            echo "Error level issues found by Semgrep."
+            exit 1
+          fi
+
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action@v1.9.0
+        with:
+          scan-args: --lockfile=apps/api/requirements.txt
+        continue-on-error: true
+
+  trivy-filesystem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "apps/api/"
+          format: "sarif"
+          output: "trivy-fs.sarif"
+          severity: "CRITICAL,HIGH"
+          ignore-unfixed: true
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy

@@ -91,8 +91,9 @@ async def create_user(
     )
     db.add(user_role)
     
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
+    await db.commit()
     
     return await _get_user_with_roles(user, tenant.id, db)
 
@@ -166,8 +167,9 @@ async def update_user(
     if body.is_active is not None:
         user.is_active = body.is_active
         
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
+    await db.commit()
     
     return await _get_user_with_roles(user, tenant.id, db)
 
@@ -242,7 +244,8 @@ async def assign_user_roles(
         )
         db.add(ur)
         
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
+    await db.commit()
     
     return await _get_user_with_roles(user, tenant.id, db)

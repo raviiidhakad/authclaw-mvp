@@ -49,10 +49,17 @@ async def verify_api_key(authorization: str = Header(None), db: AsyncSession = D
 
 
 
+from app.core.rate_limit.limiter import check_gateway_limits
+
+async def rate_limit_dependency(api_key: ApiKey = Depends(verify_api_key), db: AsyncSession = Depends(get_db)) -> ApiKey:
+    """Enforces global, tenant, and api key rate limits."""
+    await check_gateway_limits(str(api_key.tenant_id), str(api_key.id), db)
+    return api_key
+
 @router.post("/chat/completions")
 async def chat_completions(
     request: Request,
-    api_key: ApiKey = Depends(verify_api_key),
+    api_key: ApiKey = Depends(rate_limit_dependency),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -64,19 +71,33 @@ async def chat_completions(
     except Exception:
         return JSONResponse(status_code=400, content={"error": {"message": "Invalid JSON payload"}})
         
-    gateway_service = GatewayService(db)
-    
-    result = await gateway_service.process_chat_request(
-        tenant_id=api_key.tenant_id,
-        user_id=api_key.user_id,
-        api_key_id=api_key.id,
-        payload=payload
-    )
-    
-    status_code = result.get("status_code", 200)
-    data = result.get("data", {})
+    try:
+        gateway_service = GatewayService(db)
         
-    return JSONResponse(status_code=status_code, content=data)
+        # Enable RLS context for this tenant
+        from sqlalchemy import text
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+            {"tid": str(api_key.tenant_id)},
+        )
+        
+        result = await gateway_service.process_chat_request(
+            tenant_id=api_key.tenant_id,
+            user_id=api_key.user_id,
+            api_key_id=api_key.id,
+            payload=payload
+        )
+        
+        status_code = result.get("status_code", 200)
+        if "response" in result:
+            return result["response"]
+            
+        data = result.get("data", {})
+        return JSONResponse(status_code=status_code, content=data)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.get("/requests", response_model=GatewayRequestListResponse)

@@ -24,14 +24,17 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     MFASetupResponse,
     MFAVerifyRequest,
+    LoginMfaResponse,
+    LoginMfaRequest,
 )
-
+from app.core.events.producer import producer
+from app.schemas.events import SecurityEvent, UserEvent
 import pyotp
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token | LoginMfaResponse)
 async def login(
     request: LoginRequest, db: AsyncSession = Depends(get_db)
 ) -> dict:
@@ -42,10 +45,38 @@ async def login(
     user = result.scalars().first()
     
     if not user or not verify_password(request.password, user.password_hash):
+        if user:
+            await producer.publish("authclaw.security.events", SecurityEvent(
+                event_type="user.login.failed",
+                tenant_id=user.tenant_id,
+                actor_id=user.id,
+                payload={"reason": "invalid_credentials"}
+            ))
         raise UnauthorizedException(detail="Incorrect email or password")
     
     if not user.is_active:
+        await producer.publish("authclaw.security.events", SecurityEvent(
+            event_type="user.login.failed",
+            tenant_id=user.tenant_id,
+            actor_id=user.id,
+            payload={"reason": "inactive_account"}
+        ))
         raise UnauthorizedException(detail="Inactive user")
+
+    # If MFA is enabled, issue a challenge token instead of access tokens
+    if user.mfa_enabled:
+        mfa_token = create_access_token(
+            subject=str(user.id), 
+            expires_delta=timedelta(minutes=5),
+            token_type="mfa_challenge"
+        )
+        await producer.publish("authclaw.security.events", SecurityEvent(
+            event_type="user.login.mfa_challenge",
+            tenant_id=user.tenant_id,
+            actor_id=user.id,
+            payload={}
+        ))
+        return LoginMfaResponse(mfa_token=mfa_token).dict()
 
     # Generate access token
     access_token = create_access_token(subject=str(user.id))
@@ -68,7 +99,86 @@ async def login(
     user.last_login_at = datetime.utcnow()
     
     await db.commit()
+
+    await producer.publish("authclaw.security.events", SecurityEvent(
+        event_type="user.login.success",
+        tenant_id=user.tenant_id,
+        actor_id=user.id,
+        payload={"method": "password"}
+    ))
     
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token": raw_refresh
+    }
+
+@router.post("/login/mfa", response_model=Token)
+async def login_mfa(
+    request: LoginMfaRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Complete login using MFA challenge token and TOTP code.
+    """
+    import jwt
+    from pydantic import ValidationError
+    from app.core.config import settings
+
+    try:
+        payload = jwt.decode(
+            request.mfa_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
+        if payload.get("type") != "mfa_challenge":
+            raise UnauthorizedException(detail="Invalid token type for MFA challenge.")
+        user_id = payload.get("sub")
+    except (jwt.InvalidTokenError, ValidationError):
+        raise UnauthorizedException(detail="Invalid or expired MFA token")
+
+    if not user_id:
+        raise UnauthorizedException(detail="Invalid MFA token payload")
+
+    import uuid
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise UnauthorizedException(detail="Invalid user ID format")
+
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalars().first()
+
+    if not user or not user.is_active or not user.mfa_enabled:
+        raise UnauthorizedException(detail="User not eligible for MFA login")
+
+    # Verify TOTP
+    totp = pyotp.TOTP(user.mfa_secret)
+    if not totp.verify(request.code):
+        raise UnauthorizedException(detail="Invalid MFA code")
+
+    # Issue real tokens
+    access_token = create_access_token(subject=str(user.id))
+    raw_refresh = secrets.token_hex(32)
+    refresh_hash = hashlib.sha256(raw_refresh.encode()).hexdigest()
+    family = str(secrets.token_hex(16))
+
+    db_refresh = RefreshToken(
+        user_id=user.id,
+        token_hash=refresh_hash,
+        family=family,
+        is_revoked=False,
+        expires_at=datetime.utcnow() + timedelta(days=14)
+    )
+    db.add(db_refresh)
+    
+    user.last_login_at = datetime.utcnow()
+    await db.commit()
+
+    await producer.publish("authclaw.security.events", SecurityEvent(
+        event_type="user.login.mfa_success",
+        tenant_id=user.tenant_id,
+        actor_id=user.id,
+        payload={}
+    ))
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -104,6 +214,10 @@ async def signup(
     db.add(tenant)
     await db.flush()
     
+    # Set the tenant context for RLS before inserting the user
+    from sqlalchemy import text
+    await db.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant.id}'"))
+
     # Create user
     user = User(
         email=request.email,
@@ -124,7 +238,17 @@ async def signup(
         db.add(user_role)
 
     await db.commit()
+    
+    # Re-set tenant context for the new transaction implicitly started by refresh
+    await db.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant.id}'"))
     await db.refresh(user)
+
+    await producer.publish("authclaw.user.events", UserEvent(
+        event_type="user.created",
+        tenant_id=tenant.id,
+        actor_id=user.id,
+        payload={"email": user.email, "method": "signup"}
+    ))
 
     return user
 

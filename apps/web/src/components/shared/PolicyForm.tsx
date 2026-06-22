@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, Code } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,6 +39,37 @@ export interface PolicyFormData {
   is_active: boolean;
   priority: number;
   rules: PolicyRuleForm[];
+}
+
+export interface ApiPolicyRule {
+  rule_type: RuleType;
+  action: PolicyAction;
+  message?: string | null;
+  is_active?: boolean;
+  conditions?: Record<string, unknown>;
+}
+
+export interface ApiPolicyData {
+  name?: string;
+  description?: string | null;
+  is_active?: boolean;
+  priority?: number;
+  rules?: ApiPolicyRule[];
+}
+
+export interface PolicySubmitPayload {
+  [key: string]: unknown;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  priority: number;
+  rules: Array<{
+    rule_type: RuleType;
+    action: PolicyAction;
+    message: string | null;
+    is_active: boolean;
+    conditions: Record<string, unknown>;
+  }>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -133,7 +164,7 @@ function makeEmptyRule(): PolicyRuleForm {
   };
 }
 
-function ruleFromApi(apiRule: any): PolicyRuleForm {
+function ruleFromApi(apiRule: ApiPolicyRule): PolicyRuleForm {
   const raw = JSON.stringify(apiRule.conditions ?? {}, null, 2);
   return {
     rule_type: apiRule.rule_type as RuleType,
@@ -158,13 +189,6 @@ function ConditionsEditor({ rule, onChange }: ConditionsEditorProps) {
   const [visual, setVisual] = useState<Record<string, string>>(
     conditionsToVisual(rule.rule_type, rule.conditions),
   );
-
-  // When rule_type changes, rebuild visual state
-  useEffect(() => {
-    const newVisual = conditionsToVisual(rule.rule_type, rule.conditions);
-    setVisual(newVisual);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rule.rule_type]);
 
   const applyVisual = (newVisual: Record<string, string>) => {
     setVisual(newVisual);
@@ -405,6 +429,7 @@ function RuleCard({ rule, index, total, onChange, onRemove, onMoveUp, onMoveDown
             <div className="space-y-1">
               <label className="text-xs text-neutral-500">Conditions</label>
               <ConditionsEditor
+                key={rule.rule_type}
                 rule={rule}
                 onChange={(updated) => onChange(index, updated)}
               />
@@ -433,8 +458,8 @@ function RuleCard({ rule, index, total, onChange, onRemove, onMoveUp, onMoveDown
 
 interface PolicyFormProps {
   /** If provided, pre-populate form with existing policy data (edit mode) */
-  initialData?: any;
-  onSubmit: (payload: any) => Promise<void>;
+  initialData?: ApiPolicyData;
+  onSubmit: (payload: PolicySubmitPayload) => Promise<void>;
   onCancel: () => void;
   isPending: boolean;
   mode: 'create' | 'edit';
@@ -472,7 +497,7 @@ export function PolicyForm({ initialData, onSubmit, onCancel, isPending, mode }:
 
   const handleSubmit = async () => {
     // Build the payload matching the backend schema
-    const payload = {
+    const payload: PolicySubmitPayload = {
       name: name.trim(),
       description: description.trim() || null,
       is_active: isActive,
@@ -481,7 +506,7 @@ export function PolicyForm({ initialData, onSubmit, onCancel, isPending, mode }:
         let conditions = r.conditions;
         // Try to parse raw JSON as the authoritative value when showRaw or custom
         if (r.showRaw || r.rule_type === 'custom') {
-          try { conditions = JSON.parse(r.conditionsRaw); } catch { /* ignore */ }
+          try { conditions = JSON.parse(r.conditionsRaw) as Record<string, unknown>; } catch { /* ignore */ }
         }
         return {
           rule_type: r.rule_type,

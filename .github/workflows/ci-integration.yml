@@ -1,0 +1,83 @@
+name: CI Integration
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          
+      - name: Install dependencies
+        run: |
+          cd apps/api
+          pip install -r requirements.txt
+          
+      - name: Start services (Docker Compose)
+        run: |
+          docker compose config --quiet
+          docker compose up -d db redis redpanda vault clickhouse
+          sleep 15  # wait for services to initialize
+          
+      - name: Run Alembic migrations
+        env:
+          ALEMBIC_DATABASE_URL: ${{ secrets.INTEGRATION_ALEMBIC_DATABASE_URL || 'postgresql+asyncpg://postgres:password@localhost:5434/authclaw' }}
+          DATABASE_URL: ${{ secrets.INTEGRATION_DATABASE_URL || 'postgresql+asyncpg://authclaw_app:authclaw_app_password@localhost:5434/authclaw' }}
+          REDIS_URL: ${{ secrets.INTEGRATION_REDIS_URL || 'redis://localhost:6379/0' }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY || 'test-jwt-secret' }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY || '0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=' }}
+          KAFKA_BROKERS: "localhost:19092"
+          VAULT_ADDR: "http://localhost:8200"
+          VAULT_TOKEN: "local-vault-root-token"
+          CLICKHOUSE_URL: "http://localhost:8123"
+          CLICKHOUSE_USER: "authclaw"
+          CLICKHOUSE_PASSWORD: "authclaw_clickhouse_local_password"
+          CLICKHOUSE_DB: "authclaw"
+        run: |
+          cd apps/api
+          alembic upgrade head
+          
+      - name: Run integration tests
+        env:
+          PYTHONPATH: apps/api
+          APP_DEBUG: "false"
+          DATABASE_URL: ${{ secrets.INTEGRATION_DATABASE_URL || 'postgresql+asyncpg://authclaw_app:authclaw_app_password@localhost:5434/authclaw' }}
+          ALEMBIC_DATABASE_URL: ${{ secrets.INTEGRATION_ALEMBIC_DATABASE_URL || 'postgresql+asyncpg://postgres:password@localhost:5434/authclaw' }}
+          REDIS_URL: ${{ secrets.INTEGRATION_REDIS_URL || 'redis://localhost:6379/0' }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY || 'test-jwt-secret' }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY || '0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=' }}
+          KAFKA_BROKERS: "localhost:19092"
+          VAULT_ADDR: "http://localhost:8200"
+          VAULT_TOKEN: "local-vault-root-token"
+          CLICKHOUSE_URL: "http://localhost:8123"
+          CLICKHOUSE_USER: "authclaw"
+          CLICKHOUSE_PASSWORD: "authclaw_clickhouse_local_password"
+          CLICKHOUSE_DB: "authclaw"
+        run: |
+          cd apps/api
+          pytest tests/test_rls_isolation.py \
+            tests/test_engine.py \
+            tests/test_limiter.py \
+            tests/test_streaming.py \
+            tests/test_azure_auth.py \
+            tests/integration/test_event_backbone.py \
+            tests/performance/test_backbone_stress.py \
+            -v --tb=short
+            
+      - name: Stop services
+        if: always()
+        run: docker compose down

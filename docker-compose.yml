@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
@@ -8,7 +6,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: authclaw
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,22 +21,82 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      - ./apps/api:/app
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/authclaw
-      - JWT_SECRET=supersecret
+      # Runtime DB connection — authclaw_app role is subject to PostgreSQL RLS
+      - DATABASE_URL=postgresql+asyncpg://authclaw_app:authclaw_app_password@db:5432/authclaw
+      # Alembic migration connection — postgres superuser bypasses RLS (correct for DDL)
+      - ALEMBIC_DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/authclaw
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-change-before-production}
+      - JWT_SECRET=${JWT_SECRET:-dev-only-jwt-secret-change-before-production}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=production
       - CORS_ORIGINS=["http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001"]
-      - GROQ_API_KEY=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
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=}
+      - KAFKA_BROKERS=redpanda:9092
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-authclaw}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-authclaw_clickhouse_local_password}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-authclaw}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_DEV_ROOT_TOKEN_ID:-local-vault-root-token}
+      - FF_USE_REAL_CONNECTORS=true
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
+      redpanda:
+        condition: service_started
+      vault:
+        condition: service_started
+      clickhouse:
+        condition: service_started
     command: >
-      sh -c "alembic upgrade head && 
-             python scripts/seed.py && 
+      sh -c "alembic upgrade head &&
+             python scripts/seed.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  connector-worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    volumes:
+      - ./apps/api:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://authclaw_app:authclaw_app_password@db:5432/authclaw
+      - ALEMBIC_DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/authclaw
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-only-jwt-secret-change-before-production}
+      - JWT_SECRET=${JWT_SECRET:-dev-only-jwt-secret-change-before-production}
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=production
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=}
+      - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_CONNECTOR_TOPIC=authclaw.connector.scan
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-authclaw}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-authclaw_clickhouse_local_password}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-authclaw}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_DEV_ROOT_TOKEN_ID:-local-vault-root-token}
+      - FF_USE_REAL_CONNECTORS=true
+    depends_on:
+      api:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      redpanda:
+        condition: service_started
+      vault:
+        condition: service_started
+      clickhouse:
+        condition: service_started
+    command: python -m app.workers.connector_worker
+
 
   web:
     build:
@@ -55,6 +113,79 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vault:
+    image: hashicorp/vault:latest
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-local-vault-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json | grep -q '\"sealed\": false'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --mode
+      - dev-container
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  console:
+    image: redpandadata/console:latest
+    entrypoint: /app/console
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redpanda
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-authclaw}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-authclaw_clickhouse_local_password}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-authclaw}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./infrastructure/clickhouse/initdb/001_create_authclaw_db.sql:/docker-entrypoint-initdb.d/001_create_authclaw_db.sql:ro
+      - ./infrastructure/clickhouse/users.d/authclaw-user.xml:/etc/clickhouse-server/users.d/authclaw-user.xml:ro
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --database \"$$CLICKHOUSE_DB\" --query \"SELECT 1\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
+  clickhouse_data:

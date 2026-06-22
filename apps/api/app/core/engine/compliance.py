@@ -16,7 +16,7 @@ from sqlalchemy import select, func
 from app.models.policy import Policy, PolicyRule, PolicyViolation, RuleType, ViolationSeverity
 from app.models.api_key import ApiKey
 from app.models.role import Role, UserRole
-from app.models.compliance import ComplianceScore, ComplianceFramework
+from app.models.compliance import ComplianceScore
 from app.models.audit import AuditLog
 
 

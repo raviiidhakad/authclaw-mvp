@@ -1,0 +1,266 @@
+{
+  "seed_key": "framework_catalog_v1",
+  "version": "2026.06.21",
+  "frameworks": [
+    {
+      "key": "gdpr",
+      "version": "2016-679-summary-v1",
+      "name": "GDPR",
+      "description": "Summarized GDPR security and accountability control objectives relevant to AuthClaw gateway, audit, and cloud finding evidence.",
+      "source_url": "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
+      "license_note": "Public EU regulation reference. AuthClaw stores internal summaries, not full legal text.",
+      "status": "active",
+      "metadata": {
+        "jurisdiction": "EU",
+        "source_type": "public_regulation"
+      },
+      "controls": [
+        {
+          "control_code": "GDPR-SEC-32",
+          "title": "Security of Processing",
+          "summary": "Personal data processing should be protected with appropriate technical and organizational safeguards, including confidentiality, integrity, availability, and resilience controls.",
+          "domain": "security",
+          "category": "technical_and_organizational_measures",
+          "severity_weight": 5,
+          "requires_review": false,
+          "sort_order": 10,
+          "requirements": [
+            {
+              "requirement_key": "GDPR-SEC-32-LOGGING",
+              "summary": "Maintain security telemetry and audit evidence for systems that process personal data.",
+              "evidence_expectation": "Gateway audit logs, policy events, and connector findings showing logging and monitoring posture.",
+              "sort_order": 10
+            },
+            {
+              "requirement_key": "GDPR-SEC-32-ACCESS",
+              "summary": "Limit access to personal data and related systems to authorized identities.",
+              "evidence_expectation": "RBAC configuration, API key expiry, IAM findings, and access-control findings.",
+              "sort_order": 20
+            }
+          ]
+        },
+        {
+          "control_code": "GDPR-ACC-5",
+          "title": "Accountability and Data Minimization",
+          "summary": "Processing should be accountable, limited to necessary data, and supported by evidence of policy enforcement.",
+          "domain": "privacy_governance",
+          "category": "accountability",
+          "severity_weight": 4,
+          "requires_review": true,
+          "sort_order": 20,
+          "requirements": [
+            {
+              "requirement_key": "GDPR-ACC-5-PII",
+              "summary": "Detect, redact, or block personal data exposure according to configured tenant policy.",
+              "evidence_expectation": "PII/PHI detection policy, redaction events, and policy violation records.",
+              "sort_order": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "hipaa",
+      "version": "security-rule-summary-v1",
+      "name": "HIPAA Security Rule",
+      "description": "Summarized HIPAA Security Rule safeguards relevant to ePHI protection, access control, audit controls, and transmission security.",
+      "source_url": "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html",
+      "license_note": "Public HHS summary reference. AuthClaw stores internal summaries, not full regulatory text.",
+      "status": "active",
+      "metadata": {
+        "jurisdiction": "US",
+        "source_type": "public_regulatory_guidance"
+      },
+      "controls": [
+        {
+          "control_code": "HIPAA-TECH-AUDIT",
+          "title": "Audit Controls",
+          "summary": "Systems handling ePHI should maintain mechanisms that record and examine activity in relevant information systems.",
+          "domain": "auditability",
+          "category": "technical_safeguards",
+          "severity_weight": 5,
+          "requires_review": false,
+          "sort_order": 10,
+          "requirements": [
+            {
+              "requirement_key": "HIPAA-TECH-AUDIT-EVENTS",
+              "summary": "Capture policy, access, and security events for systems in scope.",
+              "evidence_expectation": "AuthClaw audit log entries, gateway events, and connector scan events.",
+              "sort_order": 10
+            }
+          ]
+        },
+        {
+          "control_code": "HIPAA-TECH-ACCESS",
+          "title": "Access Control",
+          "summary": "Access to systems and data in scope should be limited to authorized users and reviewed through technical controls.",
+          "domain": "access_control",
+          "category": "technical_safeguards",
+          "severity_weight": 5,
+          "requires_review": false,
+          "sort_order": 20,
+          "requirements": [
+            {
+              "requirement_key": "HIPAA-TECH-ACCESS-IDENTITY",
+              "summary": "Use tenant roles, expiring credentials, and provider IAM evidence to assess access-control posture.",
+              "evidence_expectation": "RBAC state, API key expiry status, IAM findings, and integration metadata.",
+              "sort_order": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "soc2",
+      "version": "trust-services-summary-v1",
+      "name": "SOC 2 Trust Services Criteria",
+      "description": "Internal summarized control objectives inspired by SOC 2 Trust Services categories for security, availability, confidentiality, processing integrity, and privacy.",
+      "source_url": "https://www.aicpa-cima.com/resources/landing/system-and-organization-controls-soc-suite-of-services",
+      "license_note": "SOC 2 criteria are not copied. AuthClaw stores internal summaries and requires licensed review before using official wording.",
+      "status": "active",
+      "metadata": {
+        "source_type": "licensed_framework_summary",
+        "requires_licensed_text_review": true
+      },
+      "controls": [
+        {
+          "control_code": "SOC2-SEC-ACCESS",
+          "title": "Logical Access Protection",
+          "summary": "Systems should protect information and services from unauthorized access using identity, authentication, authorization, and monitoring controls.",
+          "domain": "security",
+          "category": "access_control",
+          "severity_weight": 5,
+          "requires_review": true,
+          "sort_order": 10,
+          "requirements": [
+            {
+              "requirement_key": "SOC2-SEC-ACCESS-CLOUD",
+              "summary": "Cloud and source-control findings related to public exposure, excessive permissions, or leaked credentials should map to access risk.",
+              "evidence_expectation": "AWS/GitHub/GCP findings, RBAC configuration, API key status, and audit events.",
+              "sort_order": 10
+            }
+          ]
+        },
+        {
+          "control_code": "SOC2-SEC-MONITOR",
+          "title": "Monitoring and Auditability",
+          "summary": "Security-relevant activity should be logged, monitored, and available for review.",
+          "domain": "monitoring",
+          "category": "auditability",
+          "severity_weight": 4,
+          "requires_review": true,
+          "sort_order": 20,
+          "requirements": [
+            {
+              "requirement_key": "SOC2-SEC-MONITOR-LOGS",
+              "summary": "Cloud audit logging and AuthClaw audit records should support investigation and control review.",
+              "evidence_expectation": "CloudTrail/logging findings, AuthClaw audit hash chain status, and gateway event records.",
+              "sort_order": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "authclaw_ai_governance",
+      "version": "project-plan-v1",
+      "name": "AuthClaw AI Governance",
+      "description": "AuthClaw internal AI governance control objectives for safe AI gateway operations, policy enforcement, human approval, and evidence-backed agent behavior.",
+      "source_url": null,
+      "license_note": "Internal project-plan-derived summaries. No external licensed text.",
+      "status": "active",
+      "metadata": {
+        "source_type": "internal_control_framework"
+      },
+      "controls": [
+        {
+          "control_code": "AC-AI-GW-POLICY",
+          "title": "AI Gateway Policy Enforcement",
+          "summary": "AI requests and responses should be evaluated against tenant policy before unsafe content or sensitive data is allowed through.",
+          "domain": "ai_governance",
+          "category": "policy_enforcement",
+          "severity_weight": 5,
+          "requires_review": false,
+          "sort_order": 10,
+          "requirements": [
+            {
+              "requirement_key": "AC-AI-GW-POLICY-PII",
+              "summary": "PII/PHI detection and redaction/blocking should be active where tenant policy requires it.",
+              "evidence_expectation": "Policy rules, gateway events, redaction outcomes, and policy violation records.",
+              "sort_order": 10
+            }
+          ]
+        },
+        {
+          "control_code": "AC-AI-HITL",
+          "title": "Human Approval for Risky Actions",
+          "summary": "Agent-generated remediation plans should require tenant-authorized human review before execution.",
+          "domain": "ai_governance",
+          "category": "human_oversight",
+          "severity_weight": 4,
+          "requires_review": false,
+          "sort_order": 20,
+          "requirements": [
+            {
+              "requirement_key": "AC-AI-HITL-APPROVAL",
+              "summary": "High-impact generated actions should be queued as expiring, non-transferable approvals.",
+              "evidence_expectation": "Approval records, requester identity, expiry status, and audit events.",
+              "sort_order": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "iso27001",
+      "version": "2022-summary-v1",
+      "name": "ISO/IEC 27001",
+      "description": "Internal summarized ISO/IEC 27001-aligned information security management objectives relevant to AuthClaw evidence and cloud findings.",
+      "source_url": "https://www.iso.org/standard/27001",
+      "license_note": "ISO standard text is licensed and not copied. AuthClaw stores internal summaries only.",
+      "status": "active",
+      "metadata": {
+        "source_type": "licensed_framework_summary",
+        "requires_licensed_text_review": true
+      },
+      "controls": [
+        {
+          "control_code": "ISO27001-ACCESS",
+          "title": "Access Control Management",
+          "summary": "Access to information systems should be governed, limited, and reviewed based on business and security requirements.",
+          "domain": "access_control",
+          "category": "information_security",
+          "severity_weight": 4,
+          "requires_review": true,
+          "sort_order": 10,
+          "requirements": [
+            {
+              "requirement_key": "ISO27001-ACCESS-CLOUD",
+              "summary": "Cloud IAM, repository access, and AuthClaw RBAC evidence should support access-control review.",
+              "evidence_expectation": "IAM findings, GitHub access findings, AuthClaw roles, and API key posture.",
+              "sort_order": 10
+            }
+          ]
+        },
+        {
+          "control_code": "ISO27001-LOGGING",
+          "title": "Logging and Monitoring",
+          "summary": "Security-relevant events should be logged, protected, and reviewed to support detection and investigation.",
+          "domain": "monitoring",
+          "category": "information_security",
+          "severity_weight": 4,
+          "requires_review": true,
+          "sort_order": 20,
+          "requirements": [
+            {
+              "requirement_key": "ISO27001-LOGGING-AUDIT",
+              "summary": "Audit logs and cloud logging controls should be available and protected from unauthorized alteration.",
+              "evidence_expectation": "AuthClaw audit hash chain, CloudTrail/logging findings, and connector scan history.",
+              "sort_order": 10
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

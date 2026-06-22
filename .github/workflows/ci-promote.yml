@@ -1,0 +1,87 @@
+name: Deployment Promotion Gate
+
+# This workflow acts as the gating job between CI and CD.
+# It only allows deployment to proceed when all required CI workflows
+# have succeeded on the main branch.
+#
+# Gate order:
+#   CI Fast -> CI Frontend -> CI Security -> CI Integration -> CI Contract -> CI Container
+#   -> [this gate] -> deploy-staging.yml -> [manual] -> deploy-production.yml
+
+on:
+  workflow_run:
+    workflows:
+      - "CI Container"    # The last CI stage — image already built and scanned
+    branches: ["main"]
+    types: [completed]
+
+jobs:
+  # ── Aggregate gate: verify ALL required workflows passed ─────────────
+  aggregate-gate:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    outputs:
+      all_passed: ${{ steps.check.outputs.all_passed }}
+    steps:
+      - name: Check all CI workflows passed for this commit
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const requiredWorkflows = [
+              'CI Fast',
+              'CI Frontend',
+              'CI Security',
+              'CI Integration',
+              'CI Contract',
+              'CI Container',
+            ];
+
+            let allPassed = true;
+            const results = [];
+
+            for (const workflow of requiredWorkflows) {
+              const runs = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head_sha: sha,
+                status: 'completed',
+                per_page: 5,
+              });
+
+              const matchingRun = runs.data.workflow_runs.find(
+                r => r.name === workflow
+              );
+
+              const conclusion = matchingRun?.conclusion ?? 'not_found';
+              results.push({ workflow, conclusion });
+
+              if (conclusion !== 'success') {
+                allPassed = false;
+              }
+            }
+
+            console.log('CI Gate Summary:', JSON.stringify(results, null, 2));
+            core.setOutput('all_passed', allPassed ? 'true' : 'false');
+
+            if (!allPassed) {
+              core.setFailed('One or more required CI workflows did not pass.');
+            }
+
+  # ── Emit summary and trigger staging deploy ──────────────────────────
+  promote-to-staging:
+    needs: aggregate-gate
+    if: needs.aggregate-gate.outputs.all_passed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit Promotion Summary
+        run: |
+          echo "## All CI Gates Passed — Promoting to Staging :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The \`deploy-staging.yml\` workflow will now run automatically." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> To deploy to **production**, run \`deploy-production.yml\` manually" >> $GITHUB_STEP_SUMMARY
+          echo "> with the specific image tag and type 'DEPLOY' as confirmation." >> $GITHUB_STEP_SUMMARY

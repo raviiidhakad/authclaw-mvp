@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class TenantCreate(BaseModel):
     name: str
@@ -11,15 +11,14 @@ class TenantUpdate(BaseModel):
     status: Optional[str] = None
 
 class TenantResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
     slug: str
     status: str
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class TenantStats(BaseModel):
     user_count: int

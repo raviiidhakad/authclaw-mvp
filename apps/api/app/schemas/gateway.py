@@ -1,11 +1,13 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List, Any, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.models.gateway import RequestStatus
 from app.models.policy import ViolationSeverity, ViolationResolution
 
 class GatewayResponseSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     request_id: uuid.UUID
     response_original: Optional[str]
@@ -15,10 +17,9 @@ class GatewayResponseSchema(BaseModel):
     latency_ms: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class PolicyViolationSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     request_id: Optional[uuid.UUID]
@@ -30,10 +31,9 @@ class PolicyViolationSchema(BaseModel):
     resolution: ViolationResolution
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class GatewayRequestResponseBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     user_id: uuid.UUID
     provider_id: Optional[uuid.UUID]
@@ -47,10 +47,9 @@ class GatewayRequestResponseBrief(BaseModel):
     error_code: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class GatewayRequestDetail(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     user_id: uuid.UUID
     provider_id: Optional[uuid.UUID]
@@ -68,9 +67,6 @@ class GatewayRequestDetail(BaseModel):
     created_at: datetime
     response: Optional[GatewayResponseSchema] = None
     violations: List[PolicyViolationSchema] = []
-
-    class Config:
-        from_attributes = True
 
 class GatewayRequestListResponse(BaseModel):
     items: List[GatewayRequestResponseBrief]

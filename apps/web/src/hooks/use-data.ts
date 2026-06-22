@@ -30,7 +30,7 @@ export function usePolicies(skip = 0, limit = 50) {
 export function useCreatePolicy() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: any) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const res = await apiClient.post('/policies', data);
       return res.data;
     },
@@ -55,7 +55,7 @@ export function useDeletePolicy() {
 export function useUpdatePolicy() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: any }) => {
+    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
       const res = await apiClient.patch(`/policies/${id}`, data);
       return res.data;
     },
@@ -81,7 +81,7 @@ export function useGatewayRequests(skip = 0, limit = 50, status?: string) {
   return useQuery({
     queryKey: ['gateway-requests', skip, limit, status],
     queryFn: async () => {
-      const params: any = { skip, limit };
+      const params: { skip: number; limit: number; status?: string } = { skip, limit };
       if (status) params.status = status;
       const res = await apiClient.get('/gateway/requests', { params });
       return res.data; // { items, total }
@@ -102,12 +102,61 @@ export function useGatewayRequestDetail(id: string | null) {
   });
 }
 
+// ── Gateway Routes ──
+export function useGatewayRoutes() {
+  return useQuery({
+    queryKey: ['gateway-routes'],
+    queryFn: async () => {
+      const res = await apiClient.get('/gateway-routes');
+      return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+    },
+  });
+}
+
+export function useCreateGatewayRoute() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await apiClient.post('/gateway-routes', data);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
+    },
+  });
+}
+
+export function useUpdateGatewayRoute() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
+      const res = await apiClient.patch(`/gateway-routes/${id}`, data);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
+    },
+  });
+}
+
+export function useDeleteGatewayRoute() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await apiClient.delete(`/gateway-routes/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
+    },
+  });
+}
+
 // ── Audit Logs ──
 export function useAuditLogs(skip = 0, limit = 50, eventType?: string) {
   return useQuery({
     queryKey: ['audit-logs', skip, limit, eventType],
     queryFn: async () => {
-      const params: any = { skip, limit };
+      const params: { skip: number; limit: number; event_type?: string } = { skip, limit };
       if (eventType) params.event_type = eventType;
       const res = await apiClient.get('/audit/logs', { params });
       return res.data; // { items, total }
@@ -225,7 +274,7 @@ export function useProviders() {
 export function useCreateProvider() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: any) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const res = await apiClient.post('/providers', data);
       return res.data;
     },
@@ -260,7 +309,7 @@ export function useApiKeys(skip = 0, limit = 50) {
 export function useCreateApiKey() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: any) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const res = await apiClient.post('/api-keys', data);
       return res.data;
     },
@@ -284,11 +333,24 @@ export function useRevokeApiKey() {
 
 // ── Agent & Approvals (HITL) ──
 export function useApprovals() {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ['approvals'],
     queryFn: async () => {
-      const res = await apiClient.get('/approvals');
-      return res.data;
+      const res = await apiClient.get('/approvals?_t=' + Date.now());
+      const newData = res.data;
+      
+      // Defense in depth: Approvals are append-only/immutable history.
+      // If the backend intermittently returns an empty array due to a failure,
+      // preserve the existing valid state to prevent UI flicker.
+      if (Array.isArray(newData) && newData.length === 0) {
+        const previousData = queryClient.getQueryData(['approvals']);
+        if (Array.isArray(previousData) && previousData.length > 0) {
+          console.warn('Backend returned empty approvals but we have existing data. Preserving existing data to prevent UI flicker.');
+          return previousData;
+        }
+      }
+      return newData;
     },
     refetchInterval: 5000,
   });
@@ -324,7 +386,7 @@ export function useRunAgentScan() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (target: string) => {
-      const res = await apiClient.post('/agent/scan', { target });
+      const res = await apiClient.post('/ai/analyze', { target });
       return res.data;
     },
     onSuccess: () => {
@@ -333,3 +395,1037 @@ export function useRunAgentScan() {
   });
 }
 
+// -- Sprint 2 Phase 10: Cloud integrations and findings --
+export type CloudProvider = 'aws' | 'github' | 'gcp';
+export type IntegrationStatus = 'pending' | 'active' | 'error' | 'syncing' | 'disabled';
+export type FindingSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type FindingStatus = 'new' | 'active' | 'remediating' | 'resolved' | 'suppressed';
+
+export interface CloudIntegration {
+  id: string;
+  tenant_id: string;
+  provider_type: CloudProvider;
+  target_identifier: string;
+  display_name?: string | null;
+  status: IntegrationStatus;
+  vault_reference_id?: string;
+  last_sync_at?: string | null;
+  last_sync_finding_count: number;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationHealth {
+  integration_id?: string | null;
+  provider_type?: CloudProvider | null;
+  status?: IntegrationStatus | null;
+  last_sync_at?: string | null;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  last_error_code?: string | null;
+  circuit_breaker_state?: Record<string, unknown> | null;
+  worker_visibility: string;
+  registered_connector_available: boolean;
+}
+
+export interface SecurityFinding {
+  id: string;
+  integration_id: string;
+  provider_type: CloudProvider;
+  dedup_hash: string;
+  external_id: string;
+  resource_id: string;
+  title: string;
+  description?: string | null;
+  remediation_instructions?: string | null;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  resolved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  compliance_tags: string[];
+  service?: string | null;
+}
+
+export interface IntegrationCreatePayload {
+  provider_type: CloudProvider;
+  target_identifier: string;
+  display_name?: string;
+  credentials: Record<string, unknown>;
+}
+
+export interface IntegrationUpdatePayload {
+  target_identifier?: string;
+  display_name?: string;
+  status?: IntegrationStatus;
+  credentials?: Record<string, unknown>;
+}
+
+export interface IntegrationValidationResult {
+  provider_type: CloudProvider;
+  valid: boolean;
+  error_code?: string | null;
+  missing_permissions: string[];
+}
+
+export interface FindingsFilters {
+  provider_type?: string;
+  integration_id?: string;
+  severity?: string;
+  status?: string;
+  service?: string;
+  skip?: number;
+  limit?: number;
+}
+
+export async function listIntegrations(params?: { provider_type?: string; status?: string; skip?: number; limit?: number }) {
+  const res = await apiClient.get('/integrations', { params });
+  return res.data as { items: CloudIntegration[]; total: number };
+}
+
+export async function getIntegration(id: string) {
+  const res = await apiClient.get(`/integrations/${id}`);
+  return res.data as CloudIntegration;
+}
+
+export async function createIntegration(data: IntegrationCreatePayload) {
+  const res = await apiClient.post('/integrations', data);
+  return res.data as CloudIntegration;
+}
+
+export async function updateIntegration({ id, data }: { id: string; data: IntegrationUpdatePayload }) {
+  const res = await apiClient.patch(`/integrations/${id}`, data);
+  return res.data as CloudIntegration;
+}
+
+export async function deleteIntegration(id: string) {
+  await apiClient.delete(`/integrations/${id}`);
+}
+
+export async function validateIntegration(data: IntegrationCreatePayload) {
+  const res = await apiClient.post('/integrations/validate', data);
+  return res.data as IntegrationValidationResult;
+}
+
+export async function validateExistingIntegration(id: string) {
+  const res = await apiClient.post(`/integrations/${id}/validate`);
+  return res.data as IntegrationValidationResult;
+}
+
+export async function requestIntegrationSync(id: string) {
+  const res = await apiClient.post(`/integrations/${id}/sync`);
+  return res.data as { integration_id: string; status: string; queued: boolean };
+}
+
+export async function getIntegrationHealth(id?: string) {
+  const res = await apiClient.get(id ? `/integrations/${id}/health` : '/integrations/health');
+  return res.data as IntegrationHealth | { registered_providers: string[]; circuit_breakers: Record<string, unknown>; items: IntegrationHealth[] };
+}
+
+export async function listFindings(params: FindingsFilters = {}) {
+  const cleanParams = Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== '')
+  );
+  const res = await apiClient.get('/findings', { params: cleanParams });
+  return res.data as { items: SecurityFinding[]; total: number; skip: number; limit: number };
+}
+
+export async function getFinding(id: string) {
+  const res = await apiClient.get(`/findings/${id}`);
+  return res.data as SecurityFinding;
+}
+
+export async function updateFindingStatus({ id, status }: { id: string; status: FindingStatus }) {
+  const res = await apiClient.patch(`/findings/${id}`, { status });
+  return res.data as SecurityFinding;
+}
+
+export function useIntegrations(params?: { provider_type?: string; status?: string; skip?: number; limit?: number }) {
+  return useQuery({
+    queryKey: ['integrations', params],
+    queryFn: () => listIntegrations(params),
+    refetchInterval: 10000,
+  });
+}
+
+export function useCreateIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createIntegration,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
+    },
+  });
+}
+
+export function useUpdateIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateIntegration,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
+    },
+  });
+}
+
+export function useDeleteIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteIntegration,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
+    },
+  });
+}
+
+export function useValidateIntegration() {
+  return useMutation({ mutationFn: validateIntegration });
+}
+
+export function useValidateExistingIntegration() {
+  return useMutation({ mutationFn: validateExistingIntegration });
+}
+
+export function useRequestIntegrationSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: requestIntegrationSync,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
+    },
+  });
+}
+
+export function useIntegrationHealth() {
+  return useQuery({
+    queryKey: ['integration-health'],
+    queryFn: () => getIntegrationHealth() as Promise<{ registered_providers: string[]; circuit_breakers: Record<string, unknown>; items: IntegrationHealth[] }>,
+    refetchInterval: 10000,
+  });
+}
+
+export function useFindings(filters: FindingsFilters) {
+  return useQuery({
+    queryKey: ['findings', filters],
+    queryFn: () => listFindings(filters),
+    refetchInterval: 10000,
+  });
+}
+
+export function useFinding(id: string | null) {
+  return useQuery({
+    queryKey: ['finding', id],
+    queryFn: () => (id ? getFinding(id) : null),
+    enabled: !!id,
+  });
+}
+
+export function useUpdateFindingStatus() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateFindingStatus,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['findings'] });
+      queryClient.invalidateQueries({ queryKey: ['finding', variables.id] });
+    },
+  });
+}
+
+// -- Sprint 3 Phase 7: Compliance Intelligence Console --
+export interface ComplianceFramework {
+  id: string;
+  key: string;
+  version: string;
+  name: string;
+  description?: string | null;
+  source_url?: string | null;
+  license_note: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  control_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceRequirement {
+  id: string;
+  requirement_key: string;
+  summary: string;
+  evidence_expectation?: string | null;
+  sort_order: number;
+}
+
+export interface ComplianceControl {
+  id: string;
+  framework_id: string;
+  control_code: string;
+  title: string;
+  summary: string;
+  domain: string;
+  category?: string | null;
+  severity_weight: number;
+  requires_review: boolean;
+  sort_order: number;
+  metadata: Record<string, unknown>;
+  requirements: ComplianceRequirement[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceMapping {
+  id: string;
+  tenant_id: string;
+  finding_id: string;
+  control_id: string;
+  rule_id: string;
+  confidence: number;
+  mapping_source: string;
+  review_status: string;
+  override_reason?: string | null;
+  control_code?: string | null;
+  control_title?: string | null;
+  framework_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ControlAssessmentResult {
+  id: string;
+  tenant_id: string;
+  assessment_id: string;
+  control_id: string;
+  score: number;
+  score_band: string;
+  evidence_count: number;
+  gap_count: number;
+  explanation: string;
+  metadata: Record<string, unknown>;
+  control_code?: string | null;
+  control_title?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceAssessment {
+  id: string;
+  tenant_id: string;
+  framework_id: string;
+  framework_key?: string | null;
+  status: string;
+  score: number;
+  score_band: string;
+  started_at: string;
+  completed_at?: string | null;
+  inputs_hash: string;
+  explanation: string;
+  control_results: ControlAssessmentResult[];
+  gaps: ComplianceGap[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EvidenceItem {
+  id: string;
+  tenant_id: string;
+  control_id: string;
+  finding_id?: string | null;
+  integration_id?: string | null;
+  audit_log_id?: string | null;
+  mapping_id?: string | null;
+  source_type: string;
+  status: string;
+  safe_summary: string;
+  proof_hash?: string | null;
+  freshness_expires_at?: string | null;
+  metadata: Record<string, unknown>;
+  control_code?: string | null;
+  framework_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceGap {
+  id: string;
+  tenant_id: string;
+  assessment_id: string;
+  control_id: string;
+  evidence_id?: string | null;
+  mapping_id?: string | null;
+  finding_id?: string | null;
+  gap_type: string;
+  severity: string;
+  reason: string;
+  evidence_status: string;
+  metadata: Record<string, unknown>;
+  control_code?: string | null;
+  framework_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceRecommendation {
+  id: string;
+  tenant_id: string;
+  control_id: string;
+  gap_id?: string | null;
+  finding_id?: string | null;
+  severity: string;
+  status: string;
+  title: string;
+  summary: string;
+  control_code?: string | null;
+  framework_key?: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  tenant_id?: string | null;
+  framework_id?: string | null;
+  source_type: string;
+  title: string;
+  source_url?: string | null;
+  license_status: string;
+  trust_level: string;
+  checksum: string;
+  status: string;
+  ingested_by?: string | null;
+  metadata: Record<string, unknown>;
+  chunk_count: number;
+  chunks?: KnowledgeChunk[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeChunk {
+  id: string;
+  document_id: string;
+  framework_id?: string | null;
+  tenant_id?: string | null;
+  control_id?: string | null;
+  chunk_index: number;
+  chunk_text: string;
+  summary?: string | null;
+  metadata: Record<string, unknown>;
+  source_locator?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComplianceAskResponse {
+  answer: string;
+  confidence: number;
+  citations: Record<string, unknown>[];
+  related_controls: Record<string, unknown>[];
+  related_evidence: Record<string, unknown>[];
+  related_gaps: Record<string, unknown>[];
+  recommended_next_steps: string[];
+  refusal_reason?: string | null;
+  retrieval_trace_id?: string | null;
+  session_id: string;
+}
+
+export interface ComplianceAskSession {
+  id: string;
+  tenant_id: string;
+  user_id?: string | null;
+  question_hash: string;
+  answer: string;
+  citations: Record<string, unknown>[];
+  confidence: number;
+  refused: boolean;
+  refusal_reason?: string | null;
+  framework_id?: string | null;
+  control_id?: string | null;
+  assessment_id?: string | null;
+  retrieval_trace_id?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+type ListResponse<T> = { items: T[]; total: number; skip: number; limit: number; status?: string };
+
+function cleanParams(params: Record<string, unknown> = {}) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
+}
+
+export async function listComplianceFrameworks(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/frameworks', { params: cleanParams(params) });
+  return res.data as ComplianceFramework[];
+}
+
+export async function getComplianceFramework(id: string) {
+  const res = await apiClient.get(`/compliance/frameworks/${id}`);
+  return res.data as ComplianceFramework;
+}
+
+export async function listComplianceControls(frameworkId: string, params: Record<string, unknown> = {}) {
+  const res = await apiClient.get(`/compliance/frameworks/${frameworkId}/controls`, { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceControl>;
+}
+
+export async function getComplianceControl(id: string) {
+  const res = await apiClient.get(`/compliance/controls/${id}`);
+  return res.data as ComplianceControl;
+}
+
+export async function listComplianceMappings(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/mappings', { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceMapping>;
+}
+
+export async function reviewComplianceMapping({ id, data }: { id: string; data: { review_status: 'approved' | 'rejected' | 'overridden'; override_reason?: string } }) {
+  const res = await apiClient.patch(`/compliance/mappings/${id}/review`, data);
+  return res.data as ComplianceMapping;
+}
+
+export async function runComplianceAssessment(data: { framework_id?: string; framework?: string }) {
+  const res = await apiClient.post('/compliance/assessments/run', data);
+  return res.data as ComplianceAssessment;
+}
+
+export async function listComplianceAssessments(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/assessments', { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceAssessment>;
+}
+
+export async function getComplianceAssessment(id: string) {
+  const res = await apiClient.get(`/compliance/assessments/${id}`);
+  return res.data as ComplianceAssessment;
+}
+
+export async function getAssessmentControls(id: string, params: Record<string, unknown> = {}) {
+  const res = await apiClient.get(`/compliance/assessments/${id}/controls`, { params: cleanParams(params) });
+  return res.data as ControlAssessmentResult[];
+}
+
+export async function listComplianceEvidence(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/evidence', { params: cleanParams(params) });
+  return res.data as ListResponse<EvidenceItem>;
+}
+
+export async function getComplianceEvidence(id: string) {
+  const res = await apiClient.get(`/compliance/evidence/${id}`);
+  return res.data as EvidenceItem;
+}
+
+export async function listComplianceGaps(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/gaps', { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceGap>;
+}
+
+export async function getComplianceGap(id: string) {
+  const res = await apiClient.get(`/compliance/gaps/${id}`);
+  return res.data as ComplianceGap;
+}
+
+export async function listComplianceRecommendations(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/recommendations', { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceRecommendation>;
+}
+
+export async function listKnowledgeDocuments(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/knowledge', { params: cleanParams(params) });
+  return res.data as ListResponse<KnowledgeDocument>;
+}
+
+export async function getKnowledgeDocument(id: string) {
+  const res = await apiClient.get(`/compliance/knowledge/${id}`);
+  return res.data as KnowledgeDocument;
+}
+
+export async function ingestKnowledge(data: { tenant_scoped?: boolean } = { tenant_scoped: false }) {
+  const res = await apiClient.post('/compliance/knowledge/ingest', data);
+  return res.data as { documents_seen: number; documents_created: number; documents_updated: number; chunks_created: number };
+}
+
+export async function queryComplianceRetrieval(data: { query: string; framework_id?: string; control_id?: string; limit?: number; session_id?: string }) {
+  const res = await apiClient.post('/compliance/retrieval/query', data);
+  return res.data;
+}
+
+export async function askCompliance(data: { question: string; framework_id?: string; control_id?: string; finding_id?: string; assessment_id?: string }) {
+  const res = await apiClient.post('/compliance/ask', data);
+  return res.data as ComplianceAskResponse;
+}
+
+export async function listComplianceAskSessions(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/compliance/ask/sessions', { params: cleanParams(params) });
+  return res.data as ListResponse<ComplianceAskSession>;
+}
+
+export async function getComplianceAskSession(id: string) {
+  const res = await apiClient.get(`/compliance/ask/sessions/${id}`);
+  return res.data as ComplianceAskSession;
+}
+
+export function useComplianceFrameworks(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-frameworks', params], queryFn: () => listComplianceFrameworks(params) });
+}
+
+export function useComplianceFramework(id?: string) {
+  return useQuery({ queryKey: ['compliance-framework', id], queryFn: () => (id ? getComplianceFramework(id) : null), enabled: !!id });
+}
+
+export function useComplianceControls(frameworkId?: string, params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-controls', frameworkId, params], queryFn: () => (frameworkId ? listComplianceControls(frameworkId, params) : { items: [], total: 0, skip: 0, limit: 0 }), enabled: !!frameworkId });
+}
+
+export function useComplianceControl(id?: string) {
+  return useQuery({ queryKey: ['compliance-control', id], queryFn: () => (id ? getComplianceControl(id) : null), enabled: !!id });
+}
+
+export function useComplianceMappings(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-mappings', params], queryFn: () => listComplianceMappings(params) });
+}
+
+export function useReviewComplianceMapping() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: reviewComplianceMapping,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['compliance-mappings'] });
+    },
+  });
+}
+
+export function useRunComplianceAssessment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: runComplianceAssessment,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['compliance-assessments'] });
+      queryClient.invalidateQueries({ queryKey: ['compliance-gaps'] });
+      queryClient.invalidateQueries({ queryKey: ['compliance-evidence'] });
+      queryClient.invalidateQueries({ queryKey: ['compliance-recommendations'] });
+    },
+  });
+}
+
+export function useComplianceAssessments(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-assessments', params], queryFn: () => listComplianceAssessments(params) });
+}
+
+export function useAssessmentControls(id?: string, params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-assessment-controls', id, params], queryFn: () => (id ? getAssessmentControls(id, params) : []), enabled: !!id });
+}
+
+export function useComplianceEvidence(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-evidence', params], queryFn: () => listComplianceEvidence(params) });
+}
+
+export function useComplianceGaps(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-gaps', params], queryFn: () => listComplianceGaps(params) });
+}
+
+export function useComplianceRecommendations(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-recommendations', params], queryFn: () => listComplianceRecommendations(params) });
+}
+
+export function useKnowledgeDocuments(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-knowledge', params], queryFn: () => listKnowledgeDocuments(params) });
+}
+
+export function useIngestKnowledge() {
+  const queryClient = useQueryClient();
+  return useMutation({ mutationFn: ingestKnowledge, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['compliance-knowledge'] }) });
+}
+
+export function useAskCompliance() {
+  const queryClient = useQueryClient();
+  return useMutation({ mutationFn: askCompliance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['compliance-ask-sessions'] }) });
+}
+
+export function useComplianceAskSessions(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['compliance-ask-sessions', params], queryFn: () => listComplianceAskSessions(params) });
+}
+
+// -- Sprint 4 Phase 6: Remediation Approval Console --
+export type RemediationRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type RemediationPlanStatus =
+  | 'detected'
+  | 'recommendation_created'
+  | 'plan_drafted'
+  | 'plan_validated'
+  | 'approval_requested'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'queued_for_execution'
+  | 'executing'
+  | 'succeeded'
+  | 'failed'
+  | 'rollback_required'
+  | 'rolled_back'
+  | 'verified';
+export type RemediationApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'revoked' | 'used';
+export type RemediationApprovalLevel = 'operator' | 'admin' | 'owner' | 'security_admin';
+export type RemediationExecutionStatus =
+  | 'disabled'
+  | 'queued'
+  | 'dry_run_requested'
+  | 'dry_run_succeeded'
+  | 'dry_run_failed'
+  | 'executing'
+  | 'succeeded'
+  | 'failed'
+  | 'rollback_required'
+  | 'rolled_back';
+export type RemediationDryRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'rejected';
+export type RemediationVerificationStatus = 'pending' | 'verified' | 'failed' | 'inconclusive';
+
+export interface RemediationArtifact {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  artifact_type: string;
+  content_redacted?: string | null;
+  diff_summary?: string | null;
+  artifact_hash: string;
+  risk_flags: Record<string, unknown>;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationRollbackPlan {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  rollback_summary: string;
+  rollback_artifact_hash?: string | null;
+  risk_level: RemediationRiskLevel | string;
+  created_at: string;
+  updated_at?: string | null;
+}
+
+export interface RemediationPolicyCheck {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  artifact_id?: string | null;
+  passed: boolean;
+  warnings: Array<Record<string, unknown>>;
+  blocking_reasons: Array<Record<string, unknown>>;
+  required_approval_level: RemediationApprovalLevel | string;
+  policy_check_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationApproval {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  artifact_hash: string;
+  policy_check_hash: string;
+  required_approval_level?: RemediationApprovalLevel | string | null;
+  requested_by?: string | null;
+  approved_by?: string | null;
+  status: RemediationApprovalStatus | string;
+  expires_at: string;
+  resolved_at?: string | null;
+  mfa_verified: boolean;
+  approval_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationExecutionJob {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  approval_id?: string | null;
+  sandbox_id?: string | null;
+  dry_run_result_id?: string | null;
+  status: RemediationExecutionStatus | string;
+  disabled_reason?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationDryRunResult {
+  id: string;
+  tenant_id: string;
+  job_id?: string | null;
+  plan_id: string;
+  artifact_id: string;
+  approval_id?: string | null;
+  sandbox_id: string;
+  dry_run_type: string;
+  status: RemediationDryRunStatus | string;
+  output_summary: string;
+  warnings: Array<Record<string, unknown>>;
+  blocking_reasons: Array<Record<string, unknown>>;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationVerificationResult {
+  id: string;
+  tenant_id: string;
+  plan_id: string;
+  job_id?: string | null;
+  finding_status_before?: string | null;
+  finding_status_after?: string | null;
+  evidence_id?: string | null;
+  verified: boolean;
+  verification_summary: string;
+  status: RemediationVerificationStatus | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationPlan {
+  id: string;
+  tenant_id: string;
+  finding_id?: string | null;
+  gap_id?: string | null;
+  recommendation_id?: string | null;
+  integration_id?: string | null;
+  provider?: string | null;
+  resource_ref?: string | null;
+  risk_level: RemediationRiskLevel | string;
+  status: RemediationPlanStatus | string;
+  summary: string;
+  expected_impact: string;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemediationPlanDetail extends RemediationPlan {
+  artifacts: RemediationArtifact[];
+  rollback_plan?: RemediationRollbackPlan | null;
+  policy_checks: RemediationPolicyCheck[];
+  approvals: RemediationApproval[];
+  execution_jobs: RemediationExecutionJob[];
+}
+
+export type RemediationListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
+
+export async function listRemediationPlans(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/remediation/plans', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationPlan>;
+}
+
+export async function generateRemediationPlan(data: { source_type: 'finding' | 'gap' | 'recommendation'; source_id: string }) {
+  const res = await apiClient.post('/remediation/plans/generate', data);
+  return res.data as RemediationPlanDetail;
+}
+
+export async function getRemediationPlan(id: string) {
+  const res = await apiClient.get(`/remediation/plans/${id}`);
+  return res.data as RemediationPlanDetail;
+}
+
+export async function listPlanArtifacts(planId: string, params: Record<string, unknown> = {}) {
+  const res = await apiClient.get(`/remediation/plans/${planId}/artifacts`, { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationArtifact>;
+}
+
+export async function getRemediationArtifact(id: string) {
+  const res = await apiClient.get(`/remediation/artifacts/${id}`);
+  return res.data as RemediationArtifact;
+}
+
+export async function validateRemediationPlan(planId: string) {
+  const res = await apiClient.post(`/remediation/plans/${planId}/validate`);
+  return res.data as { plan: RemediationPlan; artifact: RemediationArtifact; policy_check: RemediationPolicyCheck };
+}
+
+export async function listPolicyChecks(planId: string, params: Record<string, unknown> = {}) {
+  const res = await apiClient.get(`/remediation/plans/${planId}/policy-checks`, { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationPolicyCheck>;
+}
+
+export async function requestRemediationApproval({ planId, reason }: { planId: string; reason?: string }) {
+  const res = await apiClient.post(`/remediation/plans/${planId}/request-approval`, { reason });
+  return res.data as RemediationApproval;
+}
+
+export async function listRemediationApprovals(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/remediation/approvals', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationApproval>;
+}
+
+export async function getRemediationApproval(id: string) {
+  const res = await apiClient.get(`/remediation/approvals/${id}`);
+  return res.data as RemediationApproval;
+}
+
+export async function approveRemediationApproval({ id, approval_reason, mfa_verified }: { id: string; approval_reason: string; mfa_verified: boolean }) {
+  const res = await apiClient.post(`/remediation/approvals/${id}/approve`, { approval_reason, mfa_verified });
+  return res.data as RemediationApproval;
+}
+
+export async function rejectRemediationApproval({ id, rejection_reason }: { id: string; rejection_reason: string }) {
+  const res = await apiClient.post(`/remediation/approvals/${id}/reject`, { rejection_reason });
+  return res.data as RemediationApproval;
+}
+
+export async function revokeRemediationApproval({ id, reason }: { id: string; reason: string }) {
+  const res = await apiClient.post(`/remediation/approvals/${id}/revoke`, { reason });
+  return res.data as RemediationApproval;
+}
+
+export async function listRemediationJobs(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/remediation/jobs', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationExecutionJob>;
+}
+
+export async function getRemediationJob(id: string) {
+  const res = await apiClient.get(`/remediation/jobs/${id}`);
+  return res.data as RemediationExecutionJob;
+}
+
+export async function listRemediationDryRuns(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/remediation/dry-runs', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationDryRunResult>;
+}
+
+export async function getRemediationDryRun(id: string) {
+  const res = await apiClient.get(`/remediation/dry-runs/${id}`);
+  return res.data as RemediationDryRunResult;
+}
+
+export async function listRemediationVerificationResults(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/remediation/verification-results', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<RemediationVerificationResult>;
+}
+
+export async function getRemediationVerificationResult(id: string) {
+  const res = await apiClient.get(`/remediation/verification-results/${id}`);
+  return res.data as RemediationVerificationResult;
+}
+
+export function useRemediationPlans(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-plans', params], queryFn: () => listRemediationPlans(params) });
+}
+
+export function useGenerateRemediationPlan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: generateRemediationPlan,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['remediation-plans'] }),
+  });
+}
+
+export function useRemediationPlan(id?: string) {
+  return useQuery({ queryKey: ['remediation-plan', id], queryFn: () => (id ? getRemediationPlan(id) : null), enabled: !!id });
+}
+
+export function usePlanArtifacts(planId?: string, params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-artifacts', planId, params], queryFn: () => (planId ? listPlanArtifacts(planId, params) : { items: [], total: 0, skip: 0, limit: 0 }), enabled: !!planId });
+}
+
+export function useRemediationArtifact(id?: string) {
+  return useQuery({ queryKey: ['remediation-artifact', id], queryFn: () => (id ? getRemediationArtifact(id) : null), enabled: !!id });
+}
+
+export function useValidateRemediationPlan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: validateRemediationPlan,
+    onSuccess: (_data, planId) => {
+      queryClient.invalidateQueries({ queryKey: ['remediation-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plan', planId] });
+    },
+  });
+}
+
+export function usePolicyChecks(planId?: string, params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-policy-checks', planId, params], queryFn: () => (planId ? listPolicyChecks(planId, params) : { items: [], total: 0, skip: 0, limit: 0 }), enabled: !!planId });
+}
+
+export function useRequestRemediationApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: requestRemediationApproval,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['remediation-approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plans'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plan', variables.planId] });
+    },
+  });
+}
+
+export function useRemediationApprovals(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-approvals', params], queryFn: () => listRemediationApprovals(params) });
+}
+
+export function useRemediationApproval(id?: string) {
+  return useQuery({ queryKey: ['remediation-approval', id], queryFn: () => (id ? getRemediationApproval(id) : null), enabled: !!id });
+}
+
+export function useApproveRemediationApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: approveRemediationApproval,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['remediation-approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-approval', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plans'] });
+    },
+  });
+}
+
+export function useRejectRemediationApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: rejectRemediationApproval,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['remediation-approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-approval', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plans'] });
+    },
+  });
+}
+
+export function useRevokeRemediationApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: revokeRemediationApproval,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['remediation-approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-approval', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['remediation-plans'] });
+    },
+  });
+}
+
+export function useRemediationJobs(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-jobs', params], queryFn: () => listRemediationJobs(params) });
+}
+
+export function useRemediationJob(id?: string) {
+  return useQuery({ queryKey: ['remediation-job', id], queryFn: () => (id ? getRemediationJob(id) : null), enabled: !!id });
+}
+
+export function useRemediationDryRuns(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-dry-runs', params], queryFn: () => listRemediationDryRuns(params) });
+}
+
+export function useRemediationDryRun(id?: string) {
+  return useQuery({ queryKey: ['remediation-dry-run', id], queryFn: () => (id ? getRemediationDryRun(id) : null), enabled: !!id });
+}
+
+export function useRemediationVerificationResults(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['remediation-verification-results', params], queryFn: () => listRemediationVerificationResults(params) });
+}
+
+export function useRemediationVerificationResult(id?: string) {
+  return useQuery({ queryKey: ['remediation-verification-result', id], queryFn: () => (id ? getRemediationVerificationResult(id) : null), enabled: !!id });
+}

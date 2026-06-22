@@ -44,10 +44,27 @@ docker-compose.override.yml
 .coverage
 htmlcov/
 .pytest_cache/
+test-results/
+playwright-report/
 
 # Logs
 *.log
 logs/
+api_logs*.txt
 
 # Alembic
 alembic/versions/__pycache__/
+
+# Generated/local artifacts
+tmp/
+output/
+scratch/
+*.pdf
+
+# Terraform local cache/state/plan artifacts
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan

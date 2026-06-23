@@ -26,6 +26,7 @@ jobs:
         run: |
           cd apps/api
           pip install -r requirements.txt
+          pip install pytest-timeout
           
       - name: Start services (Docker Compose)
         run: |
@@ -66,6 +67,9 @@ jobs:
           CLICKHOUSE_USER: "authclaw"
           CLICKHOUSE_PASSWORD: "authclaw_clickhouse_local_password"
           CLICKHOUSE_DB: "authclaw"
+          PYTHONUNBUFFERED: "1"
+          STRESS_BATCH_SIZE: "10"
+          STRESS_TIMEOUT_SECONDS: "10"
         run: |
           cd apps/api
           pytest tests/test_rls_isolation.py \
@@ -75,7 +79,7 @@ jobs:
             tests/test_azure_auth.py \
             tests/integration/test_event_backbone.py \
             tests/performance/test_backbone_stress.py \
-            -v --tb=short
+            -vv -s --tb=short --durations=20 --timeout=120 --timeout-method=thread
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs --no-color db redis redpanda vault clickhouse

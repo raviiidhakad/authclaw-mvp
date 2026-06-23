@@ -39,6 +39,7 @@ AUDIT_TOPIC = "authclaw.audit.events"
 GATEWAY_TOPIC = "authclaw.gateway.events"
 STRESS_BATCH_SIZE = int(os.getenv("STRESS_BATCH_SIZE", "50"))
 STRESS_TIMEOUT_SECONDS = int(os.getenv("STRESS_TIMEOUT_SECONDS", "30"))
+STRESS_SEND_TIMEOUT_SECONDS = int(os.getenv("STRESS_SEND_TIMEOUT_SECONDS", "10"))
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ async def _check_kafka_available() -> bool:
             request_timeout_ms=3000,
         )
         await asyncio.wait_for(producer.start(), timeout=5.0)
-        await producer.stop()
+        await asyncio.wait_for(producer.stop(), timeout=5.0)
         return True
     except (KafkaConnectionError, asyncio.TimeoutError, Exception):
         return False
@@ -108,17 +109,14 @@ def _make_gateway_event(tenant_id: str, event_type: str) -> dict:
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-async def kafka_available():
+async def _ensure_kafka_available() -> None:
     """Skip test if Kafka/Redpanda is not reachable."""
     available = await _check_kafka_available()
     if not available:
         pytest.skip(f"Kafka broker at {KAFKA_BROKERS} is not reachable — skipping backbone stress tests")
-    return True
 
 
-@pytest.fixture
-async def stress_producer(kafka_available):
+async def _start_stress_producer() -> AIOKafkaProducer:
     """Yield a started AIOKafkaProducer, stop after test."""
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BROKERS,
@@ -126,13 +124,19 @@ async def stress_producer(kafka_available):
         acks="all",
         enable_idempotence=True,
     )
+    await _ensure_kafka_available()
     await producer.start()
-    yield producer
-    await producer.stop()
+    return producer
 
 
-@pytest.fixture
-async def stress_consumer(kafka_available):
+async def _stop_kafka_client(client: AIOKafkaProducer | AIOKafkaConsumer, label: str) -> None:
+    try:
+        await asyncio.wait_for(client.stop(), timeout=STRESS_SEND_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Timed out stopping stress Kafka %s", label)
+
+
+async def _start_stress_consumer() -> AIOKafkaConsumer:
     """Yield a started AIOKafkaConsumer subscribed to audit and gateway topics."""
     group_id = f"stress-test-{uuid.uuid4().hex[:8]}"
     consumer = AIOKafkaConsumer(
@@ -144,6 +148,7 @@ async def stress_consumer(kafka_available):
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         consumer_timeout_ms=5000,
     )
+    await _ensure_kafka_available()
     await consumer.start()
     # Seek to end of all partitions so we only see messages published AFTER fixture setup
     partitions = consumer.assignment()
@@ -154,8 +159,39 @@ async def stress_consumer(kafka_available):
         partitions = consumer.assignment()
     if partitions:
         await consumer.seek_to_end(*partitions)
-    yield consumer
-    await consumer.stop()
+    return consumer
+
+
+async def _consume_expected_events(consumer: AIOKafkaConsumer, expected_ids: set[str], timeout_seconds: int) -> Dict[str, dict]:
+    """Collect expected event IDs without blocking past the test deadline."""
+    consumed: Dict[str, dict] = {}
+    deadline = time.monotonic() + timeout_seconds
+
+    while len(consumed) < len(expected_ids):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        records = await consumer.getmany(
+            timeout_ms=min(1000, max(100, int(remaining * 1000))),
+            max_records=25,
+        )
+        for messages in records.values():
+            for msg in messages:
+                body = msg.value
+                event_id = body.get("event_id")
+                if event_id in expected_ids:
+                    consumed[event_id] = body
+
+    return consumed
+
+
+async def _send_event(producer: AIOKafkaProducer, topic: str, event: dict) -> None:
+    delivery = await asyncio.wait_for(
+        producer.send(topic, value=event),
+        timeout=STRESS_SEND_TIMEOUT_SECONDS,
+    )
+    await asyncio.wait_for(delivery, timeout=STRESS_SEND_TIMEOUT_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +199,7 @@ async def stress_consumer(kafka_available):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_high_throughput_publish(stress_producer, kafka_available):
+async def test_high_throughput_publish():
     """
     Publish STRESS_BATCH_SIZE audit events as fast as possible.
     Validates:
@@ -176,34 +212,43 @@ async def test_high_throughput_publish(stress_producer, kafka_available):
     start = time.monotonic()
     futures = []
 
-    for i in range(STRESS_BATCH_SIZE):
-        event = _make_audit_event(tenant_id, i)
-        pub_start = time.monotonic()
-        try:
-            fut = await stress_producer.send(AUDIT_TOPIC, value=event)
-            futures.append((fut, pub_start))
-            metrics.events_published += 1
-        except Exception as e:
-            logger.error(f"Publish failed for event {i}: {e}")
-            metrics.failed_publishes += 1
+    producer = await _start_stress_producer()
+    try:
+        for i in range(STRESS_BATCH_SIZE):
+            event = _make_audit_event(tenant_id, i)
+            pub_start = time.monotonic()
+            try:
+                delivery = await asyncio.wait_for(
+                    producer.send(AUDIT_TOPIC, value=event),
+                    timeout=STRESS_SEND_TIMEOUT_SECONDS,
+                )
+                futures.append((delivery, pub_start))
+                metrics.events_published += 1
+            except Exception as e:
+                logger.error(f"Publish failed for event {i}: {e!r}")
+                metrics.failed_publishes += 1
 
-    # Wait for all sends to complete
-    for fut, pub_start in futures:
-        try:
-            await fut
-            pub_latency = (time.monotonic() - pub_start) * 1000
-            metrics.publish_latencies_ms.append(pub_latency)
-        except Exception as e:
-            logger.error(f"Send confirmation failed: {e}")
-            metrics.failed_publishes += 1
+        # Wait for all sends to complete
+        for fut, pub_start in futures:
+            try:
+                await asyncio.wait_for(fut, timeout=STRESS_SEND_TIMEOUT_SECONDS)
+                pub_latency = (time.monotonic() - pub_start) * 1000
+                metrics.publish_latencies_ms.append(pub_latency)
+            except Exception as e:
+                logger.error(f"Send confirmation failed: {e!r}")
+                metrics.failed_publishes += 1
+    finally:
+        await _stop_kafka_client(producer, "producer")
 
     elapsed = time.monotonic() - start
     metrics.throughput_per_second = metrics.events_published / elapsed if elapsed > 0 else 0
 
+    avg_publish_latency = statistics.mean(metrics.publish_latencies_ms) if metrics.publish_latencies_ms else 0
+
     print(f"\n[STRESS-PUBLISH] Published={metrics.events_published} "
           f"Failed={metrics.failed_publishes} "
           f"Throughput={metrics.throughput_per_second:.1f} evt/s "
-          f"AvgLatency={statistics.mean(metrics.publish_latencies_ms):.2f}ms")
+          f"AvgLatency={avg_publish_latency:.2f}ms")
 
     assert metrics.failed_publishes == 0, f"{metrics.failed_publishes} publish failures"
     assert metrics.throughput_per_second >= 10, f"Low throughput: {metrics.throughput_per_second:.1f} evt/s"
@@ -214,7 +259,7 @@ async def test_high_throughput_publish(stress_producer, kafka_available):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_publish_consume_roundtrip(stress_producer, stress_consumer, kafka_available):
+async def test_publish_consume_roundtrip():
     """
     Publish N events to both audit and gateway topics.
     Consume them and validate delivery:
@@ -227,43 +272,41 @@ async def test_publish_consume_roundtrip(stress_producer, stress_consumer, kafka
     consumed_ids = set()
     publish_times = {}
 
-    # Publish audit events
-    for i in range(batch):
-        event = _make_audit_event(tenant_id, i)
-        event_id = event["event_id"]
-        publish_times[event_id] = time.monotonic()
-        await stress_producer.send_and_wait(AUDIT_TOPIC, value=event)
-        published_ids.add(event_id)
-
-    # Publish gateway lifecycle events
-    for evt_type in ["gateway.stream.started", "gateway.stream.completed", "gateway.stream.failed"]:
-        event = _make_gateway_event(tenant_id, evt_type)
-        event_id = event["event_id"]
-        publish_times[event_id] = time.monotonic()
-        await stress_producer.send_and_wait(GATEWAY_TOPIC, value=event)
-        published_ids.add(event_id)
-
-    total_expected = len(published_ids)
-    consume_latencies = []
-
-    # Consume with timeout
-    deadline = time.monotonic() + STRESS_TIMEOUT_SECONDS
+    producer = await _start_stress_producer()
+    consumer = await _start_stress_consumer()
     try:
-        async for msg in stress_consumer:
-            body = msg.value
-            event_id = body.get("event_id")
-            if event_id and event_id in published_ids:
-                consumed_ids.add(event_id)
-                if event_id in publish_times:
-                    latency_ms = (time.monotonic() - publish_times[event_id]) * 1000
-                    consume_latencies.append(latency_ms)
+        # Publish audit events
+        for i in range(batch):
+            event = _make_audit_event(tenant_id, i)
+            event_id = event["event_id"]
+            publish_times[event_id] = time.monotonic()
+            await _send_event(producer, AUDIT_TOPIC, event)
+            published_ids.add(event_id)
 
-            if len(consumed_ids) >= total_expected:
-                break
-            if time.monotonic() > deadline:
-                break
-    except Exception as e:
-        logger.warning(f"Consumer stopped early: {e}")
+        # Publish gateway lifecycle events
+        for evt_type in ["gateway.stream.started", "gateway.stream.completed", "gateway.stream.failed"]:
+            event = _make_gateway_event(tenant_id, evt_type)
+            event_id = event["event_id"]
+            publish_times[event_id] = time.monotonic()
+            await _send_event(producer, GATEWAY_TOPIC, event)
+            published_ids.add(event_id)
+
+        total_expected = len(published_ids)
+        consume_latencies = []
+
+        consumed = await _consume_expected_events(
+            consumer,
+            expected_ids=published_ids,
+            timeout_seconds=STRESS_TIMEOUT_SECONDS,
+        )
+    finally:
+        await _stop_kafka_client(consumer, "consumer")
+        await _stop_kafka_client(producer, "producer")
+    consumed_ids = set(consumed.keys())
+    for event_id in consumed_ids:
+        if event_id in publish_times:
+            latency_ms = (time.monotonic() - publish_times[event_id]) * 1000
+            consume_latencies.append(latency_ms)
 
     coverage = len(consumed_ids) / total_expected * 100 if total_expected else 0
     avg_latency = statistics.mean(consume_latencies) if consume_latencies else 0
@@ -281,7 +324,7 @@ async def test_publish_consume_roundtrip(stress_producer, stress_consumer, kafka
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_lifecycle_event_ordering(stress_producer, stress_consumer, kafka_available):
+async def test_lifecycle_event_ordering():
     """
     Validate that gateway lifecycle events (started → completed) are consumable
     and contain required fields:
@@ -318,26 +361,22 @@ async def test_lifecycle_event_ordering(stress_producer, stress_consumer, kafka_
         },
     ]
 
-    published_ids = set()
-    for event in events:
-        await stress_producer.send_and_wait(GATEWAY_TOPIC, value=event)
-        published_ids.add(event["event_id"])
-
-    consumed = {}
-    deadline = time.monotonic() + STRESS_TIMEOUT_SECONDS
-
+    producer = await _start_stress_producer()
+    consumer = await _start_stress_consumer()
     try:
-        async for msg in stress_consumer:
-            body = msg.value
-            event_id = body.get("event_id")
-            if event_id in published_ids:
-                consumed[event_id] = body
-            if len(consumed) >= len(published_ids):
-                break
-            if time.monotonic() > deadline:
-                break
-    except Exception as e:
-        logger.warning(f"Consumer stopped: {e}")
+        published_ids = set()
+        for event in events:
+            await _send_event(producer, GATEWAY_TOPIC, event)
+            published_ids.add(event["event_id"])
+
+        consumed = await _consume_expected_events(
+            consumer,
+            expected_ids=published_ids,
+            timeout_seconds=STRESS_TIMEOUT_SECONDS,
+        )
+    finally:
+        await _stop_kafka_client(consumer, "consumer")
+        await _stop_kafka_client(producer, "producer")
 
     assert len(consumed) == len(published_ids), \
         f"Only consumed {len(consumed)}/{len(published_ids)} lifecycle events"
@@ -355,7 +394,7 @@ async def test_lifecycle_event_ordering(stress_producer, stress_consumer, kafka_
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_burst_publish_stress(stress_producer, kafka_available):
+async def test_burst_publish_stress():
     """
     Publish 3x batches rapidly in succession (simulates traffic bursts).
     Validates producer resilience under spike conditions.
@@ -365,33 +404,37 @@ async def test_burst_publish_stress(stress_producer, kafka_available):
     total_failed = 0
     batch_metrics = []
 
-    for burst_num in range(3):
-        batch_start = time.monotonic()
-        batch_success = 0
-        batch_fail = 0
+    producer = await _start_stress_producer()
+    try:
+        for burst_num in range(3):
+            batch_start = time.monotonic()
+            batch_success = 0
+            batch_fail = 0
 
-        tasks = []
-        for i in range(STRESS_BATCH_SIZE):
-            event = _make_audit_event(tenant_id, burst_num * STRESS_BATCH_SIZE + i)
-            tasks.append(stress_producer.send_and_wait(AUDIT_TOPIC, value=event))
+            tasks = []
+            for i in range(STRESS_BATCH_SIZE):
+                event = _make_audit_event(tenant_id, burst_num * STRESS_BATCH_SIZE + i)
+                tasks.append(_send_event(producer, AUDIT_TOPIC, event))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in results:
-            if isinstance(r, Exception):
-                batch_fail += 1
-            else:
-                batch_success += 1
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    batch_fail += 1
+                else:
+                    batch_success += 1
 
-        elapsed = time.monotonic() - batch_start
-        throughput = batch_success / elapsed if elapsed > 0 else 0
-        batch_metrics.append({"burst": burst_num + 1, "success": batch_success, "fail": batch_fail, "tps": throughput})
-        total_published += batch_success
-        total_failed += batch_fail
+            elapsed = time.monotonic() - batch_start
+            throughput = batch_success / elapsed if elapsed > 0 else 0
+            batch_metrics.append({"burst": burst_num + 1, "success": batch_success, "fail": batch_fail, "tps": throughput})
+            total_published += batch_success
+            total_failed += batch_fail
 
-        print(f"  Burst {burst_num + 1}: success={batch_success} fail={batch_fail} "
-              f"throughput={throughput:.1f} evt/s")
+            print(f"  Burst {burst_num + 1}: success={batch_success} fail={batch_fail} "
+                  f"throughput={throughput:.1f} evt/s")
 
-        await asyncio.sleep(0.5)  # Short pause between bursts
+            await asyncio.sleep(0.5)  # Short pause between bursts
+    finally:
+        await _stop_kafka_client(producer, "producer")
 
     overall_tps = sum(m["tps"] for m in batch_metrics) / len(batch_metrics)
     print(f"\n[BURST-STRESS] Total Published={total_published} Failed={total_failed} "

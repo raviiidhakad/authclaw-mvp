@@ -8,10 +8,11 @@ import uuid
 import pytest
 from sqlalchemy import select, text
 
-from app.api.v1.api import api_router
 from app.api.v1.endpoints import remediation as remediation_api
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from app.main import app
 from app.models.finding import FindingSeverity
 from app.models.integration import CloudIntegration, CloudProvider, IntegrationStatus
 from app.models.remediation import (
@@ -106,6 +107,18 @@ def _serialized(response) -> str:
     return json.dumps(response.model_dump(mode="json"), sort_keys=True).lower()
 
 
+def _registered_api_routes() -> set[tuple[str, str]]:
+    prefix = settings.API_PREFIX.rstrip("/")
+    registered: set[tuple[str, str]] = set()
+    for path, operations in app.openapi()["paths"].items():
+        if not path.startswith(prefix):
+            continue
+        normalized_path = path.removeprefix(prefix) or "/"
+        for method in operations:
+            registered.add((method.upper(), normalized_path))
+    return registered
+
+
 def test_remediation_router_surface_is_registered_under_api_v1():
     expected = {
         ("GET", "/remediation/plans"),
@@ -132,7 +145,7 @@ def test_remediation_router_surface_is_registered_under_api_v1():
         ("GET", "/remediation/verification-results"),
         ("GET", "/remediation/verification-results/{result_id}"),
     }
-    registered = {(method, route.path) for route in api_router.routes for method in getattr(route, "methods", set())}
+    registered = _registered_api_routes()
     assert expected <= registered
     assert set(remediation_api.READ_ROLES) >= {"viewer", "auditor"}
     assert "viewer" not in remediation_api.WRITE_ROLES

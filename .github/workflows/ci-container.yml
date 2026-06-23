@@ -9,8 +9,8 @@ jobs:
   build-and-scan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
-      packages: write
       security-events: write
     steps:
       - uses: actions/checkout@v4
@@ -20,36 +20,20 @@ jobs:
         
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/authclaw-api
-          tags: |
-            type=sha,format=long
-            type=raw,value=latest
-            
-      - name: Build and push
-        id: build-and-push
+
+      - name: Build image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ./apps/api
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: false
+          load: true
+          tags: authclaw-api:${{ github.sha }}
           
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/authclaw-api:sha-${{ github.sha }}
+          image-ref: authclaw-api:${{ github.sha }}
           format: "sarif"
           output: "trivy-image.sarif"
           severity: "CRITICAL,HIGH"
@@ -67,7 +51,7 @@ jobs:
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository_owner }}/authclaw-api:sha-${{ github.sha }}
+          image: authclaw-api:${{ github.sha }}
           artifact-name: sbom.spdx.json
           
       # Note: SBOM attestation is informational, not a blocker.

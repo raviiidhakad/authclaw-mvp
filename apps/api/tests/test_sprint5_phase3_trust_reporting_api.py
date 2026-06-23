@@ -8,12 +8,13 @@ import uuid
 import pytest
 from sqlalchemy import select, text
 
-from app.api.v1.api import api_router
 from app.api.v1.endpoints import evidence_packages as evidence_api
 from app.api.v1.endpoints import reports as reports_api
 from app.api.v1.endpoints import trust as trust_api
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.exceptions import ForbiddenException, NotFoundException
+from app.main import app
 from app.models.trust import ReportAccessLog, ReportRunStatus
 from app.schemas.trust import (
     EvidencePackageCreateRequest,
@@ -49,6 +50,18 @@ def _json(value) -> dict | list:
     return value
 
 
+def _registered_api_routes() -> set[tuple[str, str]]:
+    prefix = settings.API_PREFIX.rstrip("/")
+    registered: set[tuple[str, str]] = set()
+    for path, operations in app.openapi()["paths"].items():
+        if not path.startswith(prefix):
+            continue
+        normalized_path = path.removeprefix(prefix) or "/"
+        for method in operations:
+            registered.add((method.upper(), normalized_path))
+    return registered
+
+
 def test_sprint5_phase3_routes_registered_without_public_share_surface():
     expected = {
         ("GET", "/trust/overview"),
@@ -70,7 +83,7 @@ def test_sprint5_phase3_routes_registered_without_public_share_surface():
         ("GET", "/evidence-packages"),
         ("GET", "/evidence-packages/{package_id}"),
     }
-    registered = {(method, route.path) for route in api_router.routes for method in getattr(route, "methods", set())}
+    registered = _registered_api_routes()
     assert expected <= registered
     forbidden_fragments = ("/public", "/share/")
     for _, path in registered:

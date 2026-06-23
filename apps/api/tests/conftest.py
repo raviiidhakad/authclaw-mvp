@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from app.core.clickhouse import clickhouse_manager
 from app.core.redis import RedisClient
 import os
@@ -14,6 +13,11 @@ async def reset_singletons():
     await clickhouse_manager.disconnect()
     clickhouse_manager.client = None
     clickhouse_manager.session = None
-    if RedisClient._instance is not None:
-        await RedisClient._instance.aclose()
-        RedisClient._instance = None
+    redis_client = RedisClient._instance
+    RedisClient._instance = None
+    if redis_client is not None:
+        try:
+            await redis_client.aclose()
+        except RuntimeError as exc:
+            if "different loop" not in str(exc):
+                raise

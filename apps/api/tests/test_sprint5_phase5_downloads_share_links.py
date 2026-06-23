@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from app.api.v1.api import api_router
 from app.api.v1.endpoints import reports as reports_api
 from app.api.v1.endpoints import trust as trust_api
 from app.core.config import settings
@@ -20,7 +19,7 @@ from app.models.trust import ExternalShareLink, ReportAccessLog, ReportRunStatus
 from app.schemas.trust import ReportRunCreateRequest, ShareLinkCreateRequest
 from app.services.trust_reporting import hash_share_token
 from tests.test_sprint5_phase2_report_generation import _assert_safe_export, _dataset, _tenant
-from tests.test_sprint5_phase3_trust_reporting_api import _cleanup_all, _users
+from tests.test_sprint5_phase3_trust_reporting_api import _cleanup_all, _registered_api_routes, _users
 
 
 def _request(ip: str = "127.0.0.1", user_agent: str = "AuthClawTest/1.0"):
@@ -36,7 +35,7 @@ class FakeProducer:
 
 
 def test_sprint5_phase5_routes_registered_without_public_token_consumption():
-    registered = {(method, route.path) for route in api_router.routes for method in getattr(route, "methods", set())}
+    registered = _registered_api_routes()
     expected = {
         ("GET", "/reports/artifacts/{artifact_id}/download"),
         ("POST", "/trust/share-links"),

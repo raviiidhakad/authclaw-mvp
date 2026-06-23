@@ -34,7 +34,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/authclaw-api
           tags: |
-            type=sha
+            type=sha,format=long
             type=raw,value=latest
             
       - name: Build and push

@@ -41,6 +41,9 @@ jobs:
 
   semgrep:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: Run Semgrep
@@ -66,17 +69,20 @@ jobs:
           fi
 
   osv-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run OSV-Scanner
-        uses: google/osv-scanner-action@v1.9.0
-        with:
-          scan-args: --lockfile=apps/api/requirements.txt
-        continue-on-error: true
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      scan-args: |-
+        --lockfile=requirements.txt:apps/api/requirements.txt
 
   trivy-filesystem:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner

@@ -23,7 +23,12 @@ jobs:
           pip install -r requirements.txt
       - name: Run contract tests
         env:
-          PYTHONPATH: apps/api
+          PYTHONPATH: .
+          APP_DEBUG: "false"
+          DATABASE_URL: postgresql+asyncpg://authclaw_app:authclaw_app_password@localhost:5434/authclaw
+          ALEMBIC_DATABASE_URL: postgresql+asyncpg://postgres:password@localhost:5434/authclaw
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET_KEY: test-jwt-secret-at-least-32-bytes-long
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY || '0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

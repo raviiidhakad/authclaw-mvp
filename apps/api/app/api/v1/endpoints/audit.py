@@ -12,7 +12,7 @@ from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.exceptions import NotFoundException
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.models.audit import EventType
+from app.models.audit import AuditLog, EventType
 from app.models.policy import PolicyViolation
 from app.core.audit.repository import PostgresAuditRepository
 from app.core.audit.verification import HashVerificationService

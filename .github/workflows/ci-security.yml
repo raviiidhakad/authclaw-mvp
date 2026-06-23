@@ -71,17 +71,33 @@ jobs:
 
   osv-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      # Use the scanner action directly so CI fails on vulnerabilities without
-      # depending on the reusable workflow's SARIF reporter path.
+      # OSV Scanner v2 requires the scan subcommand. Keep OSV bounded to direct
+      # lockfile entries; pip-audit and Trivy cover transitive Python packages.
       - name: Run OSV scanner
         uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
-            --lockfile=requirements.txt:./apps/api/requirements.txt
+            scan source --lockfile=apps/api/requirements.txt --no-resolve
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+      - name: Audit Python dependencies
+        run: pip-audit -r apps/api/requirements.txt
 
   trivy-filesystem:
     runs-on: ubuntu-latest

@@ -18,8 +18,9 @@ from app.core.database import AsyncSessionLocal
 @pytest.fixture(scope="module", autouse=True)
 def setup_kafka_topics():
     import os
-    # Use the existing Redpanda container from docker-compose
-    settings.KAFKA_BROKERS = "127.0.0.1:19092"
+    # Use the Redpanda endpoint configured by the caller. CI runs tests on the
+    # host via localhost; containerized repros use the compose service name.
+    settings.KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "127.0.0.1:19092")
     # Use random topics to avoid poison pills from previous runs
     os.environ["KAFKA_AUDIT_TOPIC"] = f"test.audit.events.{uuid.uuid4().hex[:8]}"
     os.environ["KAFKA_SECURITY_TOPIC"] = f"test.security.events.{uuid.uuid4().hex[:8]}"

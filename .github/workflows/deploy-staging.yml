@@ -29,12 +29,14 @@ env:
   ECS_SERVICE_SECURITY: authclaw-security-worker-staging
 
 jobs:
-  # ── Guard: only run on successful container build ───────────────────
+  # ── Guard: only run when staging CD is explicitly enabled ───────────
   check-gate:
     runs-on: ubuntu-latest
     if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      vars.ENABLE_STAGING_DEPLOY == 'true' && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.workflow_run.conclusion == 'success'
+      )
     outputs:
       should_deploy: ${{ steps.gate.outputs.should_deploy }}
     steps:

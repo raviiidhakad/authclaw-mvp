@@ -344,8 +344,8 @@ class GitHubConnector(BaseConnector):
                     break
         except httpx.HTTPStatusError as exc:
             logger.warning(
-                "GitHubConnector: secret-scanning alerts error (HTTP %d): %s",
-                exc.response.status_code, exc,
+                "GitHubConnector: secret-scanning alerts request failed.",
+                extra={"status_code": exc.response.status_code},
             )
 
         return findings[:limit]

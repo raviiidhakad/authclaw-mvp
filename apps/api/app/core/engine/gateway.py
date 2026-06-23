@@ -173,7 +173,10 @@ class AIProviderClient:
                     provider_type=provider.type.value,
                     latency_ms=0,
                 )
-            logger.error("Failed to decrypt API key or fetch token for provider %s: %s", provider.id, exc)
+            logger.error(
+                "Failed to decrypt API key or fetch provider token.",
+                extra={"provider_id": str(provider.id)},
+            )
             return ProviderResponse(
                 status_code=500,
                 body={"error": {"message": "Gateway configuration error: cannot authenticate provider.", "type": "gateway_error", "code": "auth_failed"}},

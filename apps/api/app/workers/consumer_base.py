@@ -100,7 +100,11 @@ class KafkaConsumerBase:
 
             # Apply RLS Context if tenant_id is present
             if tenant_id_str:
-                await db.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant_id_str}';"))
+                await db.execute(
+                    text("SELECT set_config('app.current_tenant_id', :tenant_id, true)").bindparams(
+                        tenant_id=tenant_id_str
+                    )
+                )
 
             # Actually process the business logic
             await self.process(payload, db)

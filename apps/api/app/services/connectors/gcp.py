@@ -12,7 +12,7 @@ Fetches active security findings from GCP via:
 
 Credential dict structure (stored in Vault):
   {
-    "type":                       "service_account",   # Required
+    "type":                       "<GCP service account type>",  # Required
     "project_id":                 str,                  # Required
     "private_key_id":             str,                  # Required
     "private_key":                str,                  # Required (PEM)

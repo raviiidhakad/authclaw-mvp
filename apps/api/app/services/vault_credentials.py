@@ -95,13 +95,10 @@ class VaultCredentialService:
                     path=self._mount,
                     options={"version": "2"},
                 )
-                logger.info(
-                    "VaultCredentialService: enabled KV v2 at mount '%s'.",
-                    self._mount,
-                )
+                logger.info("VaultCredentialService: enabled KV v2 mount.")
         except Exception as exc:
             # Non-fatal in dev — Vault may not be running
-            logger.warning("VaultCredentialService: could not ensure KV mount: %s", exc)
+            logger.warning("VaultCredentialService: could not ensure KV mount.")
 
     def _make_path(self, tenant_id: uuid.UUID, integration_id: uuid.UUID) -> str:
         """
@@ -156,7 +153,7 @@ class VaultCredentialService:
             secret=credentials,
             mount_point=self._mount,
         )
-        logger.info("VaultCredentialService: stored credentials at path '%s'.", path)
+        logger.info("VaultCredentialService: stored integration credentials.")
 
     def _sync_retrieve(self, path: str) -> Dict[str, Any]:
         """Read credentials dict from Vault KV v2 (latest version)."""
@@ -173,7 +170,7 @@ class VaultCredentialService:
             path=path,
             mount_point=self._mount,
         )
-        logger.info("VaultCredentialService: deleted all versions at path '%s'.", path)
+        logger.info("VaultCredentialService: deleted integration credentials.")
 
     def _sync_path_exists(self, path: str) -> bool:
         """Return True if the KV path has at least one non-deleted version."""
@@ -215,8 +212,8 @@ class VaultCredentialService:
             return path
         except Exception as exc:
             logger.error(
-                "VaultCredentialService.store failed for tenant=%s integration=%s: %s",
-                tenant_id, integration_id, exc,
+                "VaultCredentialService.store failed.",
+                extra={"tenant_id": str(tenant_id), "integration_id": str(integration_id)},
             )
             raise RuntimeError(
                 f"Failed to store integration credentials in Vault: {exc}"
@@ -253,8 +250,8 @@ class VaultCredentialService:
             ) from exc
         except Exception as exc:
             logger.error(
-                "VaultCredentialService.retrieve failed for tenant=%s path=%s: %s",
-                tenant_id, vault_reference_id, exc,
+                "VaultCredentialService.retrieve failed.",
+                extra={"tenant_id": str(tenant_id)},
             )
             raise RuntimeError(
                 f"Failed to retrieve integration credentials from Vault: {exc}"
@@ -278,8 +275,8 @@ class VaultCredentialService:
             await asyncio.to_thread(self._sync_delete, vault_reference_id)
         except Exception as exc:
             logger.error(
-                "VaultCredentialService.delete failed for tenant=%s path=%s: %s",
-                tenant_id, vault_reference_id, exc,
+                "VaultCredentialService.delete failed.",
+                extra={"tenant_id": str(tenant_id)},
             )
             raise RuntimeError(
                 f"Failed to delete integration credentials from Vault: {exc}"
@@ -315,7 +312,7 @@ class VaultCredentialService:
             # requests.Response
             return result.status_code in (200, 429)  # 429 = standby (still healthy)
         except Exception as exc:
-            logger.warning("VaultCredentialService health check failed: %s", exc)
+            logger.warning("VaultCredentialService health check failed.")
             return False
 
 

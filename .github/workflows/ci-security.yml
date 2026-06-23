@@ -58,6 +58,7 @@ jobs:
             apps/api/app/ || true
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -77,6 +78,8 @@ jobs:
     with:
       scan-args: |-
         --lockfile=requirements.txt:apps/api/requirements.txt
+      upload-sarif: false
+      fail-on-vuln: true
 
   trivy-filesystem:
     runs-on: ubuntu-latest
@@ -94,8 +97,11 @@ jobs:
           output: "trivy-fs.sarif"
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
+          exit-code: "1"
       - name: Upload Trivy scan results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
         with:
           sarif_file: trivy-fs.sarif
           category: trivy

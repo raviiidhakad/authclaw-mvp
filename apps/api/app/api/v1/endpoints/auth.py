@@ -216,7 +216,11 @@ async def signup(
     
     # Set the tenant context for RLS before inserting the user
     from sqlalchemy import text
-    await db.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant.id}'"))
+    await db.execute(
+        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)").bindparams(
+            tenant_id=str(tenant.id)
+        )
+    )
 
     # Create user
     user = User(
@@ -240,7 +244,11 @@ async def signup(
     await db.commit()
     
     # Re-set tenant context for the new transaction implicitly started by refresh
-    await db.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant.id}'"))
+    await db.execute(
+        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)").bindparams(
+            tenant_id=str(tenant.id)
+        )
+    )
     await db.refresh(user)
 
     await producer.publish("authclaw.user.events", UserEvent(

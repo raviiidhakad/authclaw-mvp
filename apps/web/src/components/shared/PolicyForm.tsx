@@ -11,6 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 export type RuleType =
   | 'pii_block'
   | 'pii_redact'
+  | 'pii_synthetic'
   | 'content_filter'
   | 'rate_limit'
   | 'model_restrict'
@@ -77,6 +78,7 @@ export interface PolicySubmitPayload {
 const RULE_TYPE_LABELS: Record<RuleType, string> = {
   pii_block: 'PII Block',
   pii_redact: 'PII Redact',
+  pii_synthetic: 'PII Synthetic',
   content_filter: 'Content Filter',
   rate_limit: 'Rate Limit',
   model_restrict: 'Model Restrict',
@@ -102,6 +104,7 @@ function buildConditionsFromVisual(
   switch (ruleType) {
     case 'pii_block':
     case 'pii_redact':
+    case 'pii_synthetic':
       return {
         pii_types: visual.pii_types
           ? visual.pii_types.split(',').map((s) => s.trim()).filter(Boolean)
@@ -136,6 +139,7 @@ function conditionsToVisual(
   switch (ruleType) {
     case 'pii_block':
     case 'pii_redact':
+    case 'pii_synthetic':
       return { pii_types: ((conditions.pii_types as string[]) || []).join(', ') };
     case 'rate_limit':
       return {
@@ -218,6 +222,7 @@ function ConditionsEditor({ rule, onChange }: ConditionsEditorProps) {
     switch (rule.rule_type) {
       case 'pii_block':
       case 'pii_redact':
+      case 'pii_synthetic':
         return (
           <div className="space-y-1">
             <label className="text-xs text-neutral-500">PII Types (comma-separated, e.g. EMAIL, PHONE)</label>
@@ -332,6 +337,7 @@ function RuleCard({ rule, index, total, onChange, onRemove, onMoveUp, onMoveDown
     const built = buildConditionsFromVisual(newType, {});
     onChange(index, {
       rule_type: newType,
+      action: newType === 'pii_synthetic' || newType === 'pii_redact' ? 'allow' : rule.action,
       conditions: built,
       conditionsRaw: JSON.stringify(built, null, 2),
     });

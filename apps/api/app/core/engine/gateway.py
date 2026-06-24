@@ -421,6 +421,7 @@ class GatewayService:
             try:
                 from app.core.detection.presidio_engine import presidio_engine
                 from app.core.detection.classification import classifier
+                from app.core.engine.pii import PIIRedactor
                 from app.core.policy.cache import policy_cache
                 from app.core.policy.evaluator import evaluator as policy_evaluator
                 from app.schemas.security_events import (
@@ -535,6 +536,16 @@ class GatewayService:
                         }
 
                     if decision.should_redact and scan_result.sanitized_text != full_prompt:
+                        entity_actions = compiled_policy.get("entity_actions", {})
+                        uses_synthetic = any(
+                            entity_actions.get(str(detection.get("entity_type", "")).upper()) == "SYNTHETIC"
+                            for detection in scan_result.detections
+                        )
+                        transformed_prompt = (
+                            PIIRedactor.synthesize_detections(full_prompt, scan_result.detections)
+                            if uses_synthetic
+                            else scan_result.sanitized_text
+                        )
                         asyncio.create_task(event_producer.publish_security_event(
                             ContentRedactedEvent(
                                 event_type="prompt.redacted",
@@ -543,18 +554,17 @@ class GatewayService:
                                 direction="INBOUND",
                                 shadow_mode=False,
                                 payload={
-                                    "redaction_mode": "MASK",
+                                    "redaction_mode": "SYNTHETIC" if uses_synthetic else "MASK",
                                     "entities_redacted": decision.redact_entities,
                                     "entity_count": len(decision.redact_entities),
                                 },
                             )
                         ))
-                        redacted_prompt = scan_result.sanitized_text
                         messages = [
-                            {**m, "content": redacted_prompt} if m.get("role") == "user" else m
+                            {**m, "content": transformed_prompt} if m.get("role") == "user" else m
                             for m in messages
                         ]
-                        full_prompt = redacted_prompt
+                        full_prompt = transformed_prompt
 
             except Exception as security_exc:
                 logger.error("Inbound security pipeline error (continuing unredacted): %s", security_exc)

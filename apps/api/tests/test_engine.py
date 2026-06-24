@@ -23,6 +23,13 @@ def test_pii_redactor():
     redacted = PIIRedactor.redact(text, findings)
     assert redacted == "My SSN is [SSN]!"
 
+def test_pii_synthetic_replacement():
+    text = "Email me at bob@test.com"
+    findings = [PIIFinding("EMAIL", "bob@test.com", 12, 24)]
+    synthetic = PIIRedactor.synthesize(text, findings)
+    assert synthetic == "Email me at synthetic-email-1@example.test"
+    assert "bob@test.com" not in synthetic
+
 def test_policy_engine_allow():
     engine = PolicyEngine()
     policy = Policy(is_active=True, priority=1, rules=[])
@@ -49,6 +56,25 @@ def test_policy_engine_pii_redact():
     assert result.modified_prompt == "Email me at [EMAIL]"
     assert len(result.violations) == 1
     assert result.violations[0].rule_type == RuleType.pii_redact
+
+def test_policy_engine_pii_synthetic():
+    engine = PolicyEngine()
+    rule = PolicyRule(
+        is_active=True,
+        rule_type=RuleType.pii_synthetic,
+        action=PolicyAction.allow,
+        conditions={"pii_types": ["EMAIL"]}
+    )
+    policy = Policy(id="test-id", is_active=True, priority=1, rules=[rule])
+
+    result = engine.evaluate("Email me at bob@test.com", [policy])
+
+    assert result.allowed is True
+    assert result.action_taken == "warn"
+    assert result.modified_prompt == "Email me at synthetic-email-1@example.test"
+    assert "bob@test.com" not in result.modified_prompt
+    assert len(result.violations) == 1
+    assert result.violations[0].rule_type == RuleType.pii_synthetic
 
 def test_policy_engine_content_filter_block():
     engine = PolicyEngine()

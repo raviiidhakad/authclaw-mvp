@@ -36,6 +36,7 @@ interface Policy {
 const RULE_TYPE_COLORS: Record<string, string> = {
   pii_block: 'bg-red-500/10 text-red-400 border-red-500/20',
   pii_redact: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  pii_synthetic: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
   content_filter: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   rate_limit: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
   model_restrict: 'bg-blue-500/10 text-blue-400 border-blue-500/20',

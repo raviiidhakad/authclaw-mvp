@@ -51,6 +51,8 @@ class PolicyEngine:
                     self._evaluate_pii_block(policy, rule, current_prompt, result)
                 elif rule.rule_type == RuleType.pii_redact:
                     current_prompt = self._evaluate_pii_redact(policy, rule, current_prompt, result)
+                elif rule.rule_type == RuleType.pii_synthetic:
+                    current_prompt = self._evaluate_pii_synthetic(policy, rule, current_prompt, result)
                 elif rule.rule_type == RuleType.content_filter:
                     self._evaluate_content_filter(policy, rule, current_prompt, result)
                 elif rule.rule_type == RuleType.model_restrict:
@@ -100,6 +102,26 @@ class PolicyEngine:
             
         return prompt
 
+    def _evaluate_pii_synthetic(self, policy: Policy, rule: PolicyRule, prompt: str, result: EvaluationResult) -> str:
+        pii_types = rule.conditions.get("pii_types", [])
+        findings = self.pii_detector.detect(prompt, pii_types)
+
+        if findings:
+            result.violations.append(RuleViolation(
+                policy_id=str(policy.id),
+                rule_id=str(rule.id),
+                rule_type=rule.rule_type,
+                action=rule.action,
+                message=rule.message or "PII replaced with synthetic values by policy.",
+                context={"findings": [f.pii_type for f in findings], "synthetic_count": len(findings)}
+            ))
+            if rule.action == PolicyAction.block:
+                result.action_taken = "block"
+                return prompt
+            return self.pii_redactor.synthesize(prompt, findings)
+
+        return prompt
+
     def _evaluate_content_filter(self, policy: Policy, rule: PolicyRule, prompt: str, result: EvaluationResult):
         # MVP: simple exact keyword match
         blocked_keywords = rule.conditions.get("keywords", rule.conditions.get("blocked_terms", []))
@@ -143,4 +165,3 @@ class PolicyEngine:
             ))
             if rule.action == PolicyAction.block:
                 result.action_taken = "block"
-

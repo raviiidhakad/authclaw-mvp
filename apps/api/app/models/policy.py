@@ -11,6 +11,7 @@ from app.models.base import Base, UUIDMixin, TimestampMixin
 class RuleType(str, enum.Enum):
     pii_block = "pii_block"
     pii_redact = "pii_redact"
+    pii_synthetic = "pii_synthetic"
     content_filter = "content_filter"
     rate_limit = "rate_limit"
     model_restrict = "model_restrict"

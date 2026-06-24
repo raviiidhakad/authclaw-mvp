@@ -195,6 +195,12 @@ class PolicyCache:
                         if et not in entity_actions:
                             entity_actions[et] = mode
 
+                elif rule.rule_type == RuleType.pii_synthetic:
+                    for entity_type in rule.conditions.get("pii_types", []):
+                        et = entity_type.upper()
+                        if et not in entity_actions:
+                            entity_actions[et] = "SYNTHETIC"
+
                 elif rule.rule_type == RuleType.content_filter:
                     for kw in rule.conditions.get("keywords", []):
                         if kw not in keyword_blocklist:

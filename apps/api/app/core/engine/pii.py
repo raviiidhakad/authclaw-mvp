@@ -70,3 +70,44 @@ class PIIRedactor:
             result = result[:finding.start] + placeholder + result[finding.end:]
             
         return result
+
+    @staticmethod
+    def synthetic_value(pii_type: str, index: int) -> str:
+        normalized = pii_type.upper()
+        if normalized == "EMAIL":
+            return f"synthetic-email-{index}@example.test"
+        if normalized == "PHONE":
+            return f"+1 202-555-{1000 + index:04d}"
+        if normalized == "SSN":
+            return f"000-00-{1000 + index:04d}"
+        if normalized == "CREDIT_CARD":
+            return "4111 1111 1111 1111"
+        if normalized == "ADDRESS":
+            return f"{100 + index} Synthetic Test Ave"
+        if normalized == "PASSWORD":
+            return f"synthetic-password-{index}"
+        return f"synthetic-{normalized.lower()}-{index}"
+
+    @classmethod
+    def synthesize(cls, text: str, findings: List[PIIFinding]) -> str:
+        result = text
+        sorted_findings = sorted(findings, key=lambda x: x.start, reverse=True)
+
+        for index, finding in enumerate(sorted_findings, start=1):
+            replacement = cls.synthetic_value(finding.pii_type, index)
+            result = result[:finding.start] + replacement + result[finding.end:]
+
+        return result
+
+    @classmethod
+    def synthesize_detections(cls, text: str, detections: List[Dict[str, Any]]) -> str:
+        findings = [
+            PIIFinding(
+                pii_type=str(detection.get("entity_type", "PII")),
+                value=text[int(detection.get("start", 0)):int(detection.get("end", 0))],
+                start=int(detection.get("start", 0)),
+                end=int(detection.get("end", 0)),
+            )
+            for detection in detections
+        ]
+        return cls.synthesize(text, findings)

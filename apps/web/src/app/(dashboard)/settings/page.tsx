@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { Plus, Server, Trash2, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
+import { Copy, Eye, EyeOff, Plus, Server, Trash2, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -68,7 +68,7 @@ export default function SettingsPage() {
   const revokeKeyMutation = useRevokeApiKey();
 
   const [showCreateKey, setShowCreateKey] = useState(false);
-  const [generatedKeyNotice, setGeneratedKeyNotice] = useState<string | null>(null);
+  const [generatedApiKey, setGeneratedApiKey] = useState<{ rawKey?: string; keyPrefix?: string; visible: boolean } | null>(null);
   const [newApiKey, setNewApiKey] = useState({
     name: '',
     expires_in_days: 0,
@@ -113,12 +113,25 @@ export default function SettingsPage() {
     try {
       const result = await createKeyMutation.mutateAsync(newApiKey) as CreatedApiKey;
       toast.success('API Key created');
-      setGeneratedKeyNotice(result.key_prefix ? `Created key prefix: ${result.key_prefix}` : 'API key created. Raw secret value is not displayed in the console.');
+      setGeneratedApiKey({ rawKey: result.raw_key, keyPrefix: result.key_prefix, visible: false });
       setShowCreateKey(false);
       setNewApiKey({ name: '', expires_in_days: 0 });
     } catch (err: unknown) {
       const apiError = err as ApiError;
       toast.error(apiError.response?.data?.detail || 'Failed to create API key');
+    }
+  };
+
+  const copyGeneratedApiKey = async () => {
+    if (!generatedApiKey?.rawKey) {
+      toast.error('Raw API key is not available after creation');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(generatedApiKey.rawKey);
+      toast.success('Gateway API key copied');
+    } catch {
+      toast.error('Could not copy API key');
     }
   };
 
@@ -437,22 +450,61 @@ export default function SettingsPage() {
           )}
         </AnimatePresence>
 
-        <Dialog open={!!generatedKeyNotice} onOpenChange={(open) => !open && setGeneratedKeyNotice(null)}>
+        <Dialog open={!!generatedApiKey} onOpenChange={(open) => !open && setGeneratedApiKey(null)}>
           <DialogContent className="sm:max-w-md bg-[#0a0a0a] border-white/10 text-neutral-100 shadow-2xl p-0 overflow-hidden">
             <DialogHeader className="p-6 border-b border-white/5 bg-white/[0.02]">
               <DialogTitle className="text-xl flex items-center gap-2">
                 <KeyRound className="w-5 h-5 text-amber-400" />
-                API Key Created
+                Gateway API Key Created
               </DialogTitle>
               <DialogDescription className="text-neutral-400 mt-2 text-sm leading-relaxed">
-                Raw API keys are not displayed in the admin console. Store and rotate secrets through your approved secret-management process.
+                Copy this key now and store it securely. AuthClaw only shows the real gateway key once, immediately after generation.
               </DialogDescription>
             </DialogHeader>
-            <div className="p-6">
-              <p className="rounded-md border border-white/10 bg-black/40 p-3 text-sm text-neutral-300">{generatedKeyNotice}</p>
+            <div className="p-6 space-y-4">
+              {generatedApiKey?.rawKey ? (
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">AuthClaw Gateway API Key</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      readOnly
+                      type={generatedApiKey.visible ? 'text' : 'password'}
+                      value={generatedApiKey.rawKey}
+                      className="bg-black/40 border-white/10 text-emerald-300 font-mono text-xs h-11"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setGeneratedApiKey((current) => current ? { ...current, visible: !current.visible } : current)}
+                      className="h-11 w-11 shrink-0"
+                      title={generatedApiKey.visible ? 'Hide API key' : 'Show API key'}
+                    >
+                      {generatedApiKey.visible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={copyGeneratedApiKey}
+                      className="h-11 w-11 shrink-0"
+                      title="Copy API key"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <p className="text-xs text-amber-300/90">
+                    One-time reveal. Existing keys will only show their prefix later.
+                  </p>
+                </div>
+              ) : (
+                <p className="rounded-md border border-white/10 bg-black/40 p-3 text-sm text-neutral-300">
+                  Created key prefix: {generatedApiKey?.keyPrefix || 'available in key list'}. Raw key was not returned by the API.
+                </p>
+              )}
             </div>
             <DialogFooter className="p-4 border-t border-white/5 bg-white/[0.02]">
-              <Button type="button" onClick={() => setGeneratedKeyNotice(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white">
+              <Button type="button" onClick={() => setGeneratedApiKey(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white">
                 Close
               </Button>
             </DialogFooter>

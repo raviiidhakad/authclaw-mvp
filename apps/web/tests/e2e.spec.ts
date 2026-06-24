@@ -65,6 +65,7 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   const providerSummary = { id: 'provider-1', name: 'OpenAI production', provider_type: 'openai', is_active: true, key_prefix: 'prov_live' };
   const frameworkSummary = { id: 'fw-1', key: 'soc2', version: '2026.1', name: 'SOC 2', description: 'Internal summarized framework', source_url: null, license_note: 'Internal summary', status: 'active', metadata: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
 
+  await page.route(/\/api\/v1\/(?!auth\/me).*/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 }));
   await page.route(/\/api\/v1\/tenants\/stats$/, async (route) => fulfillJson(route, { total: 1 }));
   await page.route(/\/api\/v1\/audit\/stats$/, async (route) => fulfillJson(route, { total_events: 1, events_by_type: { 'policy.violation': 1 }, gateway_by_status: { blocked: 1 } }));
   await page.route(/\/api\/v1\/compliance\/dashboard$/, async (route) => fulfillJson(route, {
@@ -88,7 +89,14 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' } }], total: 1 }));
   await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0 }));
   await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: [], circuit_breakers: {}, items: [] }));
-  await page.route(/\/api\/v1\/api-keys(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 }));
+  const generatedGatewayKey = 'ac_testgatewaykey1234567890abcdef';
+  await page.route(/\/api\/v1\/api-keys(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await fulfillJson(route, { id: 'api-key-1', name: 'Agent key', key_prefix: 'ac_testgate', raw_key: generatedGatewayKey, is_active: true, created_at: '2026-06-24T10:00:00Z' }, 201);
+      return;
+    }
+    await fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 });
+  });
 
   await page.goto('/');
   for (const label of ['Overview', 'Gateway', 'Policies & Guardrails', 'Agent & Remediation', 'Frameworks', 'Audit & Trust Center', 'Risk & Red Teaming', 'Integrations', 'Settings']) {
@@ -123,6 +131,15 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
 
   await page.goto('/settings');
   await expect(page.getByText(/Organization Profile/i)).toBeVisible();
+  await page.getByRole('button', { name: /^Generate Key$/i }).first().click();
+  await page.getByPlaceholder(/Production Application Server/i).fill('Agent key');
+  await page.getByRole('button', { name: /^Generate Token$/i }).click();
+  await expect(page.getByRole('dialog', { name: /Gateway API Key Created/i })).toBeVisible();
+  const generatedKeyInput = page.locator(`input[value="${generatedGatewayKey}"]`);
+  await expect(generatedKeyInput).toHaveAttribute('type', 'password');
+  await page.getByTitle('Show API key').click();
+  await expect(generatedKeyInput).toHaveAttribute('type', 'text');
+  await page.getByTitle('Copy API key').click();
   await expect(page.getByText(/Secret Key Generated/i)).toHaveCount(0);
 
   await expect(page.getByText(/SuperSecret|raw_provider_payload|vault:\/\/|certified|guaranteed compliant|audit-ready guaranteed|Client IP/i)).toHaveCount(0);

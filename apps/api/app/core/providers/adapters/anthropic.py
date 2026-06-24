@@ -4,6 +4,7 @@ from typing import Dict, Any, AsyncGenerator, Tuple
 from app.models.provider import Provider
 from app.core.providers.base import BaseProviderAdapter
 from app.core.encryption import decrypt_value
+from app.services.api_safety import sanitize_text
 
 class AnthropicAdapter(BaseProviderAdapter):
     def validate_configuration(self, config: Dict[str, Any]) -> None:
@@ -100,9 +101,17 @@ class AnthropicAdapter(BaseProviderAdapter):
             body = {"error": {"message": response_body}}
             
         error_info = body.get("error", {})
+        if status_code == 401:
+            return {
+                "error": {
+                    "message": "Provider authentication failed. Update the provider credential in Settings.",
+                    "type": "provider_auth_error",
+                    "code": "invalid_provider_credentials",
+                }
+            }
         return {
             "error": {
-                "message": error_info.get("message", "Anthropic provider error"),
+                "message": sanitize_text(error_info.get("message", "Anthropic provider error")),
                 "type": error_info.get("type", "provider_error"),
                 "code": str(status_code),
             }

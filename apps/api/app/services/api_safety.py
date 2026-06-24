@@ -30,6 +30,7 @@ SECRET_PATTERNS = [
     re.compile(r"\bASIA[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9*_=-]{8,}|gsk_[A-Za-z0-9*_=-]{8,})\b", re.I),
     re.compile(
         r"\b(?:aws_secret_access_key|aws_session_token|github_token|private_key|"
         r"client_secret|access_token|refresh_token|id_token|password|api[_-]?key|token)\s*"

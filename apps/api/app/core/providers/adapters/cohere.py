@@ -4,6 +4,7 @@ from typing import Dict, Any, AsyncGenerator, Tuple
 from app.models.provider import Provider
 from app.core.providers.base import BaseProviderAdapter
 from app.core.encryption import decrypt_value
+from app.services.api_safety import sanitize_text
 
 class CohereAdapter(BaseProviderAdapter):
     def validate_configuration(self, config: Dict[str, Any]) -> None:
@@ -107,10 +108,19 @@ class CohereAdapter(BaseProviderAdapter):
             body = json.loads(response_body)
         except Exception:
             body = {"message": response_body}
+
+        if status_code == 401:
+            return {
+                "error": {
+                    "message": "Provider authentication failed. Update the provider credential in Settings.",
+                    "type": "provider_auth_error",
+                    "code": "invalid_provider_credentials",
+                }
+            }
             
         return {
             "error": {
-                "message": body.get("message", "Cohere provider error"),
+                "message": sanitize_text(body.get("message", "Cohere provider error")),
                 "type": "provider_error",
                 "code": str(status_code),
             }

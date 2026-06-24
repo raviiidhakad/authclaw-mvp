@@ -6,8 +6,10 @@ import pytest
 
 from app.api.v1.endpoints.gateway import _extract_gateway_token, _sanitize_trace_text
 from app.core.exceptions import UnauthorizedException
+from app.core.providers.adapters.openai import OpenAIAdapter
 from app.models.gateway import RequestStatus
 from app.schemas.gateway import GatewayRequestDetail
+from app.services.api_safety import sanitize_text
 
 
 def test_gateway_token_extraction_accepts_bearer_and_x_api_key():
@@ -59,3 +61,27 @@ def test_gateway_trace_preview_redacts_sensitive_patterns():
     assert "4111 1111 1111 1111" not in text
     assert "[redacted-email]" in text
     assert "token=[redacted]" in text
+
+
+def test_provider_auth_error_does_not_expose_provider_key_fragments():
+    raw_error = (
+        '{"error":{"message":"Incorrect API key provided: '
+        'gsk_sIF7***************************************hBBJ. You can find your API key '
+        'at https://platform.openai.com/account/api-keys.","type":"invalid_request_error"}}'
+    )
+
+    normalized = OpenAIAdapter().normalize_error(401, raw_error)
+
+    assert normalized["error"]["type"] == "provider_auth_error"
+    assert normalized["error"]["code"] == "invalid_provider_credentials"
+    assert "gsk_" not in normalized["error"]["message"]
+    assert "sIF7" not in normalized["error"]["message"]
+    assert "hBBJ" not in normalized["error"]["message"]
+
+
+def test_sanitize_text_redacts_openai_and_groq_key_fragments():
+    sanitized = sanitize_text("bad keys sk-proj-abc1234567890 and gsk_sIF7********hBBJ")
+
+    assert "sk-proj" not in sanitized
+    assert "gsk_" not in sanitized
+    assert sanitized.count("[redacted]") >= 2

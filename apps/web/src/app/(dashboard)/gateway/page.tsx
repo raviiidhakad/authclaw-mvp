@@ -90,6 +90,7 @@ function safeText(value: unknown) {
     .replace(/(token|secret|password|credential|api[_-]?key)\s*[:=]\s*[^,\s}]+/gi, '$1=[redacted]')
     .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----/g, '[redacted-private-key]')
     .replace(/gh[pousr]_[a-z0-9_]+/gi, '[redacted-token]')
+    .replace(/\b(?:sk-[a-z0-9*_=-]{8,}|gsk_[a-z0-9*_=-]{8,})\b/gi, '[redacted-provider-key]')
     .replace(/AKIA[0-9A-Z]{12,}/g, '[redacted-key]');
 }
 
@@ -307,7 +308,7 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
       const nestedType = typeof data?.error?.type === 'string' ? data.error.type : '';
       const providerAuthError =
         resp.status === 401 &&
-        (nestedType.includes('auth') || /invalid api key|authentication|unauthorized/i.test(nestedMessage));
+        (nestedType.includes('auth') || /invalid api key|incorrect api key|authentication|unauthorized/i.test(nestedMessage));
       const gatewayAuthError =
         resp.status === 401 &&
         !data?.error &&
@@ -330,7 +331,7 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
       } else if (providerAuthError) {
         toast.warning('Provider credential rejected', { description: 'AuthClaw accepted the gateway key, but the selected model provider returned 401.' });
       } else if (!resp.ok) {
-        toast.warning('⚠️ Gateway Error', { description: data?.error?.message || 'An error occurred.' });
+        toast.warning('⚠️ Gateway Error', { description: safeText(data?.error?.message || 'An error occurred.') });
       } else {
         toast.success('✅ Request Allowed & Forwarded', { description: `Model: ${model}` });
       }
@@ -547,7 +548,7 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                             ? 'The AuthClaw gateway key was rejected. Create a new key in Settings and copy the full ac_ value shown once.'
                             : result.providerAuthError
                             ? 'AuthClaw accepted this gateway key, but the upstream provider credential for the selected model is invalid or missing. Update the provider key in Settings before forwarding non-blocked requests.'
-                            : result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2)}
+                            : safeText(result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2))}
                         </div>
                       )}
 
@@ -739,7 +740,7 @@ export default function GatewayPage() {
                     </td>
                     <td className="p-4 text-neutral-500 text-xs flex items-center justify-between group-hover:text-neutral-300 transition-colors">
                       <span className="truncate max-w-[200px]">
-                        {log.error_message ? <span className="text-red-400/80">{log.error_message}</span> : log.status === 'completed' ? 'Forwarded to upstream' : 'Blocked by policy layer'}
+                        {log.error_message ? <span className="text-red-400/80">{safeText(log.error_message)}</span> : log.status === 'completed' ? 'Forwarded to upstream' : 'Blocked by policy layer'}
                       </span>
                       <ArrowUpRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
                     </td>

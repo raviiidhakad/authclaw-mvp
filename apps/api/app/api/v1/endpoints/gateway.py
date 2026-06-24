@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
 from app.core.engine.gateway import GatewayService
 from app.schemas.gateway import GatewayRequestListResponse, GatewayRequestDetail
+from app.services.api_safety import sanitize_text
 
 router = APIRouter()
 
@@ -127,10 +128,17 @@ async def chat_completions(
             
         data = result.get("data", {})
         return JSONResponse(status_code=status_code, content=data)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": "Gateway request failed before completion.",
+                    "type": "gateway_error",
+                    "code": "gateway_request_failed",
+                }
+            },
+        )
 
 
 @router.get("/requests", response_model=GatewayRequestListResponse)
@@ -154,6 +162,9 @@ async def list_gateway_requests(
     
     items_q = base.order_by(GatewayRequest.created_at.desc()).offset(skip).limit(limit)
     items = (await db.execute(items_q)).scalars().all()
+    for item in items:
+        if item.error_message:
+            item.error_message = sanitize_text(item.error_message)
     
     return GatewayRequestListResponse(items=items, total=total)
 

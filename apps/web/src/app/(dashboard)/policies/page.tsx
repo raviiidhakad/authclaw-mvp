@@ -5,7 +5,7 @@ import { Plus, ShieldCheck, Trash2, Edit, ChevronRight, Search, ShieldAlert, Shi
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { usePolicies, useCreatePolicy, useDeletePolicy, useUpdatePolicy } from '@/hooks/use-data';
+import { usePolicies, useCreatePolicy, useDeletePolicy, useUpdatePolicy, useImportPolicyYaml, useTestPolicyYaml, useValidatePolicyYaml } from '@/hooks/use-data';
 import { PolicyForm, type PolicyAction, type PolicySubmitPayload, type RuleType } from '@/components/shared/PolicyForm';
 import { CardSkeleton } from '@/components/shared/loaders';
 import { EmptyState } from '@/components/shared/states';
@@ -52,9 +52,29 @@ const ACTION_COLORS: Record<string, string> = {
 const GUARDRAIL_TAXONOMY = [
   ['Prompt injection', 'Detect and block instruction override attempts.'],
   ['Data disclosure', 'Prevent sensitive data egress and unsafe disclosure.'],
+  ['Credential leakage', 'Block or redact tokens, passwords, and API-key markers.'],
   ['Harmful content', 'Route unsafe content to block or review actions.'],
-  ['Policy violations', 'Track tenant policy failures and review status.'],
+  ['Policy violation', 'Track tenant policy failures and review status.'],
 ];
+
+const DEFAULT_YAML_POLICY = `version: authclaw.policy/v1
+name: Credential leakage block
+description: Blocks demo credential markers before provider egress.
+enabled: true
+priority: 10
+rules:
+  - type: content_filter
+    action: block
+    message: Credential marker blocked.
+    conditions:
+      keywords:
+        - token=
+  - type: pii_redact
+    action: warn
+    conditions:
+      pii_types: [EMAIL_ADDRESS]
+      redaction_mode: MASK
+`;
 
 function RuleSummaryBadges({ rules }: { rules: PolicyRule[] }) {
   if (!rules?.length) {
@@ -129,11 +149,18 @@ export default function PoliciesPage() {
   const createMutation = useCreatePolicy();
   const updateMutation = useUpdatePolicy();
   const deleteMutation = useDeletePolicy();
+  const validateYamlMutation = useValidatePolicyYaml();
+  const testYamlMutation = useTestPolicyYaml();
+  const importYamlMutation = useImportPolicyYaml();
 
   const [showCreate, setShowCreate] = useState(false);
   const [editingPolicy, setEditingPolicy] = useState<Policy | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [yamlDraft, setYamlDraft] = useState(DEFAULT_YAML_POLICY);
+  const [sampleText, setSampleText] = useState('A demo token=sample should be blocked.');
+  const [validationResult, setValidationResult] = useState<Record<string, unknown> | null>(null);
+  const [policyTestResult, setPolicyTestResult] = useState<Record<string, unknown> | null>(null);
 
   // ─── Handlers ───────────────────────────────────────────────────────────────
 
@@ -182,6 +209,42 @@ export default function PoliciesPage() {
       if (expandedId === id) setExpandedId(null);
     } catch {
       toast.error('Failed to delete policy');
+    }
+  };
+
+  const handleValidateYaml = async () => {
+    try {
+      const result = await validateYamlMutation.mutateAsync(yamlDraft);
+      setValidationResult(result);
+      if (result.valid) {
+        toast.success('Policy YAML is valid');
+      } else {
+        toast.error('Policy YAML needs review');
+      }
+    } catch {
+      toast.error('Failed to validate policy YAML');
+    }
+  };
+
+  const handleTestYaml = async () => {
+    try {
+      const result = await testYamlMutation.mutateAsync({ yamlSource: yamlDraft, sampleText });
+      setPolicyTestResult(result);
+      toast.success(result.blocked ? 'Sample blocked by policy' : 'Sample allowed by policy');
+    } catch {
+      toast.error('Failed to test policy YAML');
+    }
+  };
+
+  const handleImportYaml = async () => {
+    if (!window.confirm('Save this validated YAML policy?')) return;
+    try {
+      await importYamlMutation.mutateAsync(yamlDraft);
+      toast.success('YAML policy imported');
+    } catch (err: unknown) {
+      const apiError = err as { response?: { data?: { detail?: string | { message?: string } } } };
+      const detail = apiError.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : detail?.message || 'Failed to import YAML policy');
     }
   };
 
@@ -251,6 +314,57 @@ export default function PoliciesPage() {
               <p className="text-xs text-neutral-400 mt-1">Policies are validated by the backend when saved. Enforcement changes require explicit confirmation; no unsafe auto-apply is performed by this console.</p>
             </div>
             <Badge variant="outline" className="bg-blue-500/10 text-blue-300 border-blue-500/20">Backend validated on save</Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="glass-card border-purple-500/20">
+        <CardContent className="p-4 space-y-4">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-neutral-100">YAML policy-as-code</p>
+              <p className="text-xs text-neutral-400 mt-1">Validate and test policy YAML before saving. Runtime uses the backend policy engine with an OPA-compatible adapter seam.</p>
+            </div>
+            <Badge variant="outline" className="bg-purple-500/10 text-purple-300 border-purple-500/20">OPA adapter seam</Badge>
+          </div>
+          <div className="grid lg:grid-cols-[1.2fr_0.8fr] gap-4">
+            <textarea
+              value={yamlDraft}
+              onChange={(event) => setYamlDraft(event.target.value)}
+              spellCheck={false}
+              className="min-h-72 w-full resize-y rounded-lg border border-white/10 bg-black/40 p-3 font-mono text-xs leading-5 text-neutral-200 outline-none focus:ring-2 focus:ring-purple-500/40"
+              aria-label="YAML policy editor"
+            />
+            <div className="space-y-3">
+              <textarea
+                value={sampleText}
+                onChange={(event) => setSampleText(event.target.value)}
+                className="min-h-24 w-full resize-y rounded-lg border border-white/10 bg-black/40 p-3 text-sm text-neutral-200 outline-none focus:ring-2 focus:ring-purple-500/40"
+                aria-label="Policy test sample"
+                placeholder="Sample text for policy test"
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" onClick={handleValidateYaml} disabled={validateYamlMutation.isPending}>Validate</Button>
+                <Button type="button" variant="outline" onClick={handleTestYaml} disabled={testYamlMutation.isPending}>Test Prompt</Button>
+                <Button type="button" onClick={handleImportYaml} disabled={importYamlMutation.isPending} className="bg-purple-600 hover:bg-purple-500 text-white">Save YAML</Button>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-xs text-neutral-300 min-h-28">
+                <p className="font-semibold text-neutral-100 mb-2">Validation result</p>
+                {validationResult ? (
+                  <pre className="whitespace-pre-wrap font-mono text-[11px] text-neutral-400">{JSON.stringify(validationResult, null, 2)}</pre>
+                ) : (
+                  <p className="text-neutral-500">No validation run yet.</p>
+                )}
+              </div>
+              <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-xs text-neutral-300 min-h-24">
+                <p className="font-semibold text-neutral-100 mb-2">Test result</p>
+                {policyTestResult ? (
+                  <pre className="whitespace-pre-wrap font-mono text-[11px] text-neutral-400">{JSON.stringify(policyTestResult, null, 2)}</pre>
+                ) : (
+                  <p className="text-neutral-500">No test run yet.</p>
+                )}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -99,9 +99,9 @@ class TestStreamingBuffer:
         # Shadow mode: original content preserved
         assert "user@example.com" in output
 
-    def test_scan_failure_yields_original(self):
-        """If the scanner raises, the buffer should yield the original chunk (fail open on stream)."""
-        from app.core.detection.streaming_buffer import StreamingBuffer
+    def test_scan_failure_fails_closed(self):
+        """If the scanner raises, the buffer should terminate without yielding raw content."""
+        from app.core.detection.streaming_buffer import StreamingBuffer, StreamingScanError
         
         failing = FailingScanner()
         buffer = StreamingBuffer(scan_fn=failing.scan, buffer_size=10)
@@ -113,9 +113,8 @@ class TestStreamingBuffer:
                 result.append(chunk)
             return "".join(result)
 
-        # Should not raise — scanner failure yields original
-        output = self._run(run())
-        assert len(output) > 0
+        with pytest.raises(StreamingScanError):
+            self._run(run())
 
     def test_empty_stream(self):
         """Empty stream should produce empty output."""

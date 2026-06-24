@@ -171,12 +171,20 @@ class PolicyCache:
             .order_by(Policy.priority.desc())
         )
         policies: List[Policy] = list(result.scalars().all())
+        return self.compile_policies(policies)
 
+    @staticmethod
+    def compile_policies(policies: List[Policy]) -> Dict[str, Any]:
+        """Compile already-loaded policy ORM objects into the gateway runtime format."""
         entity_actions: Dict[str, str] = {}
         classification_overrides: Dict[str, str] = {}
         keyword_blocklist: List[str] = []
+        policy_ids: List[str] = []
 
-        for policy in policies:
+        for policy in sorted(policies, key=lambda item: item.priority, reverse=True):
+            if not policy.is_active:
+                continue
+            policy_ids.append(str(policy.id))
             for rule in policy.rules:
                 if not rule.is_active:
                     continue
@@ -215,6 +223,7 @@ class PolicyCache:
             "entity_actions": entity_actions,
             "classification_overrides": classification_overrides,
             "keyword_blocklist": keyword_blocklist,
+            "policy_ids": policy_ids,
             "compiled_at": datetime.now(timezone.utc).isoformat(),
         }
 

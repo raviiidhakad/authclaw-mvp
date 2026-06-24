@@ -61,8 +61,9 @@ async function mockAuthenticatedUser(page: Page, role = 'admin') {
 test('pdf admin console navigation aligns with safe connected surfaces', async ({ page }) => {
   await mockAuthenticatedUser(page, 'admin');
 
-  const routeSummary = { id: 'route-1', name: 'Production GPT route', provider_id: 'provider-1', is_default: true, is_active: true, redaction: 'mask', created_at: '2026-06-23T10:00:00Z' };
+  const routeSummary = { id: 'route-1', name: 'Production GPT route', provider_id: 'provider-1', is_default: true, is_active: true, redaction: 'mask', config: { model: 'gpt-4o-mini', policy_id: 'policy-1' }, created_at: '2026-06-23T10:00:00Z' };
   const providerSummary = { id: 'provider-1', name: 'OpenAI production', provider_type: 'openai', is_active: true, key_prefix: 'prov_live' };
+  const policySummary = { id: 'policy-1', name: 'Credential leakage block', description: 'Blocks demo credential markers.', is_active: true, priority: 10, rules: [], created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
   const frameworkSummary = { id: 'fw-1', key: 'soc2', version: '2026.1', name: 'SOC 2', description: 'Internal summarized framework', source_url: null, license_note: 'Internal summary', status: 'active', metadata: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
 
   await page.route(/\/api\/v1\/(?!auth\/me).*/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 }));
@@ -81,7 +82,9 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/providers(?:\?.*)?$/, async (route) => fulfillJson(route, [providerSummary]));
   await page.route(/\/api\/v1\/gateway\/providers(?:\?.*)?$/, async (route) => fulfillJson(route, [providerSummary]));
   await page.route(/\/api\/v1\/gateway\/providers\/provider-1\/validate$/, async (route) => fulfillJson(route, { provider_id: 'provider-1', valid: true, provider_type: 'openai' }));
-  await page.route(/\/api\/v1\/policies(?:\?.*)?$/, async (route) => fulfillJson(route, []));
+  await page.route(/\/api\/v1\/policies(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [policySummary], total: 1 }));
+  await page.route(/\/api\/v1\/policies\/validate$/, async (route) => fulfillJson(route, { valid: true, schema_version: 'authclaw.policy/v1', normalized: { name: 'Credential leakage block' }, errors: [], warnings: [], opa: { runtime: 'adapter_seam', full_opa_runtime: false } }));
+  await page.route(/\/api\/v1\/policies\/test$/, async (route) => fulfillJson(route, { allowed: false, blocked: true, action: 'block', matched_rules: [{ rule_type: 'content_filter', action: 'block', message: 'Credential marker blocked.' }], redaction_required: false, reason: 'Policy matched sample text.' }));
   await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
@@ -124,6 +127,7 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.goto('/gateway/routes');
   await expect(page.getByText(/Gateway Routes/i)).toBeVisible();
   await expect(page.getByText(/Production GPT route/i)).toBeVisible();
+  await expect(page.getByText(/Policy: Credential leakage block/i)).toBeVisible();
 
   await page.goto('/gateway/api-keys');
   await expect(page.getByText(/Gateway API Keys/i)).toBeVisible();
@@ -135,6 +139,12 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
 
   await page.goto('/policies');
   await expect(page.getByText(/Prompt injection/i)).toBeVisible();
+  await expect(page.getByText('Credential leakage', { exact: true })).toBeVisible();
+  await expect(page.getByText(/YAML policy-as-code/i)).toBeVisible();
+  await page.getByRole('button', { name: /^Validate$/i }).click();
+  await expect(page.getByText(/authclaw.policy\/v1/i)).toBeVisible();
+  await page.getByRole('button', { name: /^Test Prompt$/i }).click();
+  await expect(page.getByText(/Credential marker blocked/i)).toBeVisible();
   await expect(page.getByText(/Backend validated on save/i)).toBeVisible();
 
   await page.goto('/agent-remediation');

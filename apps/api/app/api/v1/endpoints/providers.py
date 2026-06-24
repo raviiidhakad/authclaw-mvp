@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.api.dependencies import get_db, get_current_user, get_current_tenant, require_roles
+from app.core.config import settings
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.models.provider import Provider, ProviderType
 from app.models.user import User
@@ -106,6 +107,24 @@ def _provider_config_with_defaults(provider_type: ProviderType, config: dict | N
     return normalized
 
 
+def _safe_validation_response(
+    provider: Provider,
+    *,
+    valid: bool,
+    error_code: str | None = None,
+    validation_mode: str = "metadata_only",
+) -> dict:
+    body = {
+        "provider_id": str(provider.id),
+        "valid": valid,
+        "provider_type": provider.type.value,
+        "validation_mode": validation_mode,
+    }
+    if error_code:
+        body["error_code"] = error_code
+    return body
+
+
 @router.post("/{provider_id}/validate")
 async def validate_provider(
     provider_id: uuid.UUID,
@@ -116,11 +135,17 @@ async def validate_provider(
     """Validate stored provider credentials without returning secret material."""
     provider = await _get_provider_or_404(provider_id, tenant.id, db)
     if not provider.is_active:
-        return {"provider_id": str(provider.id), "valid": False, "error_code": "provider_disabled"}
+        return _safe_validation_response(provider, valid=False, error_code="provider_disabled")
 
     try:
         adapter = ProviderAdapterFactory.get_adapter(provider.type)
-        await retrieve_provider_api_key(provider)
+        stored_key = await retrieve_provider_api_key(provider)
+        if not stored_key:
+            return _safe_validation_response(provider, valid=False, error_code="missing_provider_credential")
+        if not settings.ENABLE_PROVIDER_LIVE_VALIDATION:
+            adapter.validate_configuration(provider.config or {})
+            return _safe_validation_response(provider, valid=True)
+
         url, headers = await adapter.get_connection_details(provider)
         request_payload = adapter.transform_request(
             {
@@ -136,27 +161,22 @@ async def validate_provider(
             response = await client.post(url, json=request_payload, headers=headers)
 
         if 200 <= response.status_code < 300:
-            return {"provider_id": str(provider.id), "valid": True, "provider_type": provider.type.value}
+            return _safe_validation_response(provider, valid=True, validation_mode="live")
         if response.status_code == 401:
-            return {
-                "provider_id": str(provider.id),
-                "valid": False,
-                "provider_type": provider.type.value,
-                "error_code": "invalid_provider_credentials",
-            }
-        return {
-            "provider_id": str(provider.id),
-            "valid": False,
-            "provider_type": provider.type.value,
-            "error_code": f"provider_http_{response.status_code}",
-        }
+            return _safe_validation_response(
+                provider,
+                valid=False,
+                error_code="invalid_provider_credentials",
+                validation_mode="live",
+            )
+        return _safe_validation_response(
+            provider,
+            valid=False,
+            error_code=f"provider_http_{response.status_code}",
+            validation_mode="live",
+        )
     except Exception:
-        return {
-            "provider_id": str(provider.id),
-            "valid": False,
-            "provider_type": provider.type.value,
-            "error_code": "provider_validation_failed",
-        }
+        return _safe_validation_response(provider, valid=False, error_code="provider_validation_failed")
 
 
 @router.get("/{provider_id}", response_model=ProviderResponse)

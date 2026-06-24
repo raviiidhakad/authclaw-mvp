@@ -65,6 +65,46 @@ class PolicyListResponse(BaseModel):
 
 
 # ── Violation schemas ────────────────────────────────────────────
+class PolicyYamlRequest(BaseModel):
+    yaml_source: str = Field(..., min_length=1)
+
+
+class PolicyYamlValidationResponse(BaseModel):
+    valid: bool
+    schema_version: Optional[str] = None
+    normalized: Optional[Dict[str, Any]] = None
+    errors: List[Dict[str, str]] = Field(default_factory=list)
+    warnings: List[Dict[str, str]] = Field(default_factory=list)
+    opa: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PolicyYamlImportResponse(BaseModel):
+    policy: PolicyResponse
+    validation: PolicyYamlValidationResponse
+
+
+class PolicyYamlExportResponse(BaseModel):
+    policy_id: uuid.UUID
+    schema_version: str
+    yaml_source: str
+
+
+class PolicyTestRequest(BaseModel):
+    yaml_source: Optional[str] = None
+    policy_id: Optional[uuid.UUID] = None
+    sample_text: str = Field(..., min_length=1, max_length=4000)
+
+
+class PolicyTestResponse(BaseModel):
+    allowed: bool
+    blocked: bool
+    action: str
+    matched_rules: List[Dict[str, Any]] = Field(default_factory=list)
+    redaction_required: bool = False
+    reason: str
+    validation: Optional[PolicyYamlValidationResponse] = None
+
+
 class ViolationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

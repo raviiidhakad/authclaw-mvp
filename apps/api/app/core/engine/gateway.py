@@ -7,6 +7,7 @@ AI chat-completion requests proxied through the AuthClaw gateway.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -72,6 +73,15 @@ class ProviderResponse:
             if code is not None:
                 return str(code)
         return None
+
+
+@dataclass
+class GatewayRouteResolution:
+    """Resolved route/provider metadata for one gateway request."""
+    provider: Provider
+    route: GatewayRoute
+    model: str
+    redaction_mode: str
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +232,7 @@ class AIProviderClient:
         except Exception as exc:
             logger.exception("Unexpected error calling provider %s", provider.id)
             status_code = 500
-            body = {"error": {"message": f"Internal gateway error: {exc}", "type": "gateway_error", "code": "internal_error"}}
+            body = {"error": {"message": "Internal gateway error while calling provider.", "type": "gateway_error", "code": "internal_error"}}
 
         latency_ms = int((time.monotonic() - start_time) * 1000)
         return ProviderResponse(
@@ -247,36 +257,70 @@ class GatewayService:
         self.audit_engine = AuditEngine(db)
         self.ai_client = AIProviderClient()
 
-    # ── Provider selection ──────────────────────────────────────────────────
+    _SUPPORTED_ROUTE_REDACTION_MODES = {"NONE", "MASK", "HASH", "SYNTHETIC"}
 
-    async def _select_provider(self, tenant_id: uuid.UUID) -> Optional[Provider]:
-        """
-        Deterministic provider selection:
-        1. Active provider with is_default=True   (future)
-        2. Active provider, oldest created first  (most stable / manually configured)
-        3. None → 503
-        """
-        result = await self.db.execute(
-            select(Provider)
-            .where(Provider.tenant_id == tenant_id, Provider.is_active == True)
-            .order_by(Provider.created_at.asc())   # oldest = intentionally configured
-        )
-        providers = result.scalars().all()
-        if not providers:
-            return None
-        # Prefer providers whose name does NOT contain "bad" or "mock" (heuristic for test env)
-        # In production every provider is real — this just improves local dev experience.
-        preferred = [p for p in providers if "bad" not in p.name.lower() and "mock" not in p.name.lower()]
-        return preferred[0] if preferred else providers[0]
+    @staticmethod
+    def _error_body(message: str, error_type: str, code: str) -> Dict[str, Any]:
+        return {"error": {"message": message, "type": error_type, "code": code}}
 
-    async def _select_provider_for_route(
+    @staticmethod
+    def _route_redaction_mode(route: GatewayRoute) -> str:
+        value = getattr(getattr(route, "redaction", None), "value", None) or str(getattr(route, "redaction", "none"))
+        mode = value.upper()
+        return mode if mode in GatewayService._SUPPORTED_ROUTE_REDACTION_MODES else "UNSUPPORTED"
+
+    @staticmethod
+    def _hash_detections(text: str, detections: List[Dict[str, Any]]) -> str:
+        result = text
+        for detection in sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True):
+            start = int(detection.get("start", 0))
+            end = int(detection.get("end", 0))
+            if start < 0 or end < start or end > len(text):
+                continue
+            entity_type = str(detection.get("entity_type", "PII")).upper()
+            digest = hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()[:16]
+            result = result[:start] + f"<HASHED_{entity_type}_{digest}>" + result[end:]
+        return result
+
+    @classmethod
+    def _apply_redaction(
+        cls,
+        text: str,
+        detections: List[Dict[str, Any]],
+        sanitized_text: str,
+        route_mode: str,
+        entity_actions: Dict[str, str],
+    ) -> tuple[str, str]:
+        requested_modes = {
+            entity_actions.get(str(detection.get("entity_type", "")).upper(), "").upper()
+            for detection in detections
+        }
+        mode = route_mode if route_mode in {"MASK", "HASH", "SYNTHETIC"} else ""
+        if not mode:
+            if "SYNTHETIC" in requested_modes:
+                mode = "SYNTHETIC"
+            elif "HASH" in requested_modes:
+                mode = "HASH"
+            else:
+                mode = "MASK"
+
+        if mode == "SYNTHETIC":
+            from app.core.engine.pii import PIIRedactor
+
+            return PIIRedactor.synthesize_detections(text, detections), mode
+        if mode == "HASH":
+            return cls._hash_detections(text, detections), mode
+        return sanitized_text, "MASK"
+
+    async def _resolve_gateway_route(
         self,
         tenant_id: uuid.UUID,
-        requested_model: str = "",
-        route_id: Optional[uuid.UUID] = None,
-        route_name: Optional[str] = None,
-    ) -> Tuple[Optional[Provider], Optional[GatewayRoute], Optional[str]]:
+        requested_model: str,
+        route_id: Optional[uuid.UUID],
+        route_name: Optional[str],
+    ) -> tuple[Optional[GatewayRouteResolution], Optional[str], int, str]:
         route: Optional[GatewayRoute] = None
+        explicit_route = bool(route_id or route_name)
 
         if route_id:
             result = await self.db.execute(
@@ -288,93 +332,79 @@ class GatewayService:
                 select(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.name == route_name)
             )
             route = result.scalars().first()
-        elif requested_model:
+        else:
             result = await self.db.execute(
-                select(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.name == requested_model)
+                select(GatewayRoute)
+                .where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.is_default == True)
+                .order_by(GatewayRoute.created_at.asc())
             )
             route = result.scalars().first()
 
-        if route and not route.is_active:
-            return None, route, "route_disabled"
+        if route is None:
+            code = "route_not_found" if explicit_route else "no_default_route"
+            message = "Gateway route not found." if explicit_route else "No default gateway route configured for this tenant."
+            return None, code, 404 if explicit_route else 503, message
+        if not route.is_active:
+            return None, "route_disabled", 403, "Gateway route is disabled."
+        if not route.provider_id:
+            return None, "route_provider_missing", 503, "Gateway route has no provider configured."
 
-        if route and route.provider_id:
-            provider_result = await self.db.execute(
-                select(Provider).where(
-                    Provider.tenant_id == tenant_id,
-                    Provider.id == route.provider_id,
-                    Provider.is_active == True,
-                )
+        provider_result = await self.db.execute(
+            select(Provider).where(
+                Provider.tenant_id == tenant_id,
+                Provider.id == route.provider_id,
+                Provider.is_active == True,
             )
-            provider = provider_result.scalars().first()
-            if provider:
-                return provider, route, None
-            return None, route, "route_provider_unavailable"
-
-        if not route:
-            default_result = await self.db.execute(
-                select(GatewayRoute).where(
-                    GatewayRoute.tenant_id == tenant_id,
-                    GatewayRoute.is_default == True,
-                    GatewayRoute.is_active == True,
-                )
-            )
-            route = default_result.scalars().first()
-            if route and route.provider_id:
-                provider_result = await self.db.execute(
-                    select(Provider).where(
-                        Provider.tenant_id == tenant_id,
-                        Provider.id == route.provider_id,
-                        Provider.is_active == True,
-                    )
-                )
-                provider = provider_result.scalars().first()
-                if provider:
-                    return provider, route, None
-
-        provider, route, route_error = await self._select_provider_for_route(
-            tenant_id=tenant_id,
-            requested_model=model,
-            route_id=route_id,
-            route_name=route_name,
         )
-        if route and route.config:
-            route_model = route.config.get("model") or route.config.get("default_model")
-            if route_model and (route_id or route_name or model == route.name):
-                model = str(route_model)
-                modified_payload["model"] = model
+        provider = provider_result.scalars().first()
+        if not provider:
+            return None, "route_provider_unavailable", 503, "Gateway route provider is unavailable."
 
-        if route_error == "route_disabled":
+        redaction_mode = self._route_redaction_mode(route)
+        if redaction_mode == "UNSUPPORTED":
+            return None, "unsupported_redaction_mode", 400, "Gateway route redaction mode is not supported."
+
+        route_config = route.config or {}
+        model = str(route_config.get("model") or route_config.get("default_model") or requested_model)
+        return GatewayRouteResolution(provider=provider, route=route, model=model, redaction_mode=redaction_mode), None, 200, ""
+
+    async def _log_safe_error(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        api_key_id: uuid.UUID,
+        provider_id: Optional[uuid.UUID],
+        model: str,
+        payload: Dict[str, Any],
+        modified_payload: Optional[Dict[str, Any]],
+        status_code: int,
+        message: str,
+        error_type: str,
+        error_code: str,
+        evaluation_result: Any = None,
+    ) -> None:
+        try:
             await self.audit_engine.log_request(
                 tenant_id=tenant_id,
                 user_id=user_id,
-                provider_id=None,
+                provider_id=provider_id,
                 api_key_id=api_key_id,
                 model=model,
                 original_payload=payload,
-                modified_payload=modified_payload,
-                response_payload={},
+                modified_payload=modified_payload or payload,
+                response_payload=self._error_body(message, error_type, error_code),
                 tokens_prompt=0,
                 tokens_completion=0,
                 latency_ms=0,
-                status_code=403,
-                error_message="Gateway route is disabled.",
-                error_type="configuration_error",
-                error_code="route_disabled",
-                evaluation_result=eval_result,
+                status_code=status_code,
+                error_message=message,
+                error_type=error_type,
+                error_code=error_code,
+                evaluation_result=evaluation_result,
             )
-            return {
-                "status_code": 403,
-                "data": {
-                    "error": {
-                        "message": "Gateway route is disabled.",
-                        "type": "configuration_error",
-                        "code": "route_disabled",
-                    }
-                },
-            }
-        if not provider:
-            return None, route, "no_provider"
-        return provider, route, None
+        except Exception as exc:
+            logger.warning("Failed to write safe gateway error audit record: %s", exc)
 
     # ── Main entrypoint ─────────────────────────────────────────────────────
 
@@ -403,9 +433,97 @@ class GatewayService:
             try:
                 route_id = uuid.UUID(str(payload.get("route_id")))
             except ValueError:
-                route_id = None
+                message = "Gateway route_id must be a valid UUID."
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=None,
+                    model=model,
+                    payload=payload,
+                    modified_payload=None,
+                    status_code=400,
+                    message=message,
+                    error_type="configuration_error",
+                    error_code="route_id_invalid",
+                )
+                return {
+                    "status_code": 400,
+                    "data": self._error_body(message, "configuration_error", "route_id_invalid"),
+                }
         route_name = payload.get("route_name") or payload.get("route")
         route_name = str(route_name) if route_name else None
+        resolution, route_error, route_status, route_message = await self._resolve_gateway_route(
+            tenant_id=tenant_id,
+            requested_model=model,
+            route_id=route_id,
+            route_name=route_name,
+        )
+        if route_error or resolution is None:
+            await self._log_safe_error(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                api_key_id=api_key_id,
+                provider_id=None,
+                model=model,
+                payload=payload,
+                modified_payload=None,
+                status_code=route_status,
+                message=route_message,
+                error_type="configuration_error",
+                error_code=route_error or "route_resolution_failed",
+            )
+            return {
+                "status_code": route_status,
+                "data": self._error_body(
+                    route_message,
+                    "configuration_error",
+                    route_error or "route_resolution_failed",
+                ),
+            }
+
+        active_route = resolution.route
+        provider = resolution.provider
+        model = resolution.model
+        route_redaction_mode = resolution.redaction_mode
+        route_config = active_route.config or {}
+        route_policy_id = route_config.get("policy_id")
+        route_attached_policies: Optional[List[Policy]] = None
+        if route_policy_id:
+            try:
+                policy_uuid = uuid.UUID(str(route_policy_id))
+                policy_result = await self.db.execute(
+                    select(Policy)
+                    .options(selectinload(Policy.rules))
+                    .where(
+                        Policy.id == policy_uuid,
+                        Policy.tenant_id == tenant_id,
+                        Policy.is_active == True,
+                    )
+                )
+                route_policy = policy_result.scalars().first()
+                if not route_policy:
+                    raise RuntimeError("route policy unavailable")
+                route_attached_policies = [route_policy]
+            except Exception:
+                message = "Gateway route policy is unavailable or disabled."
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=provider.id,
+                    model=model,
+                    payload=payload,
+                    modified_payload=None,
+                    status_code=503,
+                    message=message,
+                    error_type="security_pipeline_error",
+                    error_code="route_policy_unavailable",
+                )
+                return {
+                    "status_code": 503,
+                    "data": self._error_body(message, "security_pipeline_error", "route_policy_unavailable"),
+                }
 
         # Flatten all user messages to a single string for policy evaluation
         full_prompt = "\n".join(
@@ -421,7 +539,6 @@ class GatewayService:
             try:
                 from app.core.detection.presidio_engine import presidio_engine
                 from app.core.detection.classification import classifier
-                from app.core.engine.pii import PIIRedactor
                 from app.core.policy.cache import policy_cache
                 from app.core.policy.evaluator import evaluator as policy_evaluator
                 from app.schemas.security_events import (
@@ -431,8 +548,12 @@ class GatewayService:
                 )
                 from app.core.events.producer import producer as event_producer
 
-                # Fetch compiled policy from Redis cache (sub-ms on warm path)
-                compiled_policy = await policy_cache.get(tenant_id, self.db)
+                # Use route-attached policy when configured; otherwise fall back to tenant compiled policy.
+                compiled_policy = (
+                    policy_cache.compile_policies(route_attached_policies)
+                    if route_attached_policies is not None
+                    else await policy_cache.get(tenant_id, self.db)
+                )
                 classification_overrides = compiled_policy.get("classification_overrides", {})
 
                 # Run Presidio analysis
@@ -535,16 +656,14 @@ class GatewayService:
                             },
                         }
 
-                    if decision.should_redact and scan_result.sanitized_text != full_prompt:
+                    if decision.should_redact and scan_result.detections:
                         entity_actions = compiled_policy.get("entity_actions", {})
-                        uses_synthetic = any(
-                            entity_actions.get(str(detection.get("entity_type", "")).upper()) == "SYNTHETIC"
-                            for detection in scan_result.detections
-                        )
-                        transformed_prompt = (
-                            PIIRedactor.synthesize_detections(full_prompt, scan_result.detections)
-                            if uses_synthetic
-                            else scan_result.sanitized_text
+                        transformed_prompt, redaction_mode = self._apply_redaction(
+                            full_prompt,
+                            scan_result.detections,
+                            scan_result.sanitized_text,
+                            route_redaction_mode,
+                            entity_actions,
                         )
                         asyncio.create_task(event_producer.publish_security_event(
                             ContentRedactedEvent(
@@ -554,7 +673,7 @@ class GatewayService:
                                 direction="INBOUND",
                                 shadow_mode=False,
                                 payload={
-                                    "redaction_mode": "SYNTHETIC" if uses_synthetic else "MASK",
+                                    "redaction_mode": redaction_mode,
                                     "entities_redacted": decision.redact_entities,
                                     "entity_count": len(decision.redact_entities),
                                 },
@@ -567,23 +686,72 @@ class GatewayService:
                         full_prompt = transformed_prompt
 
             except Exception as security_exc:
-                logger.error("Inbound security pipeline error (continuing unredacted): %s", security_exc)
+                logger.error("Inbound security pipeline error (failing closed): %s", security_exc)
+                message = "Gateway security scan failed before provider egress."
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=provider.id,
+                    model=model,
+                    payload=payload,
+                    modified_payload=None,
+                    status_code=503,
+                    message=message,
+                    error_type="security_pipeline_error",
+                    error_code="inbound_security_failed",
+                )
+                return {
+                    "status_code": 503,
+                    "data": self._error_body(message, "security_pipeline_error", "inbound_security_failed"),
+                }
 
 
 
 
         # ── 1. Load active policies ─────────────────────────────────────
-        policy_result = await self.db.execute(
-            select(Policy)
-            .options(selectinload(Policy.rules))
-            .where(Policy.tenant_id == tenant_id, Policy.is_active == True)
-        )
-        policies = list(policy_result.scalars().all())
+        try:
+            if route_attached_policies is not None:
+                policies = route_attached_policies
+            else:
+                policy_result = await self.db.execute(
+                    select(Policy)
+                    .options(selectinload(Policy.rules))
+                    .where(Policy.tenant_id == tenant_id, Policy.is_active == True)
+                )
+                policies = list(policy_result.scalars().all())
 
         # ── 2. Evaluate policies ────────────────────────────────────────
-        eval_result = self.policy_engine.evaluate(full_prompt, policies, target_model=model)
+            eval_result = self.policy_engine.evaluate(full_prompt, policies, target_model=model)
+        except Exception as policy_exc:
+            logger.error("Gateway policy evaluation failed closed: %s", policy_exc)
+            message = "Gateway policy evaluation failed before provider egress."
+            await self._log_safe_error(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                api_key_id=api_key_id,
+                provider_id=provider.id,
+                model=model,
+                payload=payload,
+                modified_payload=None,
+                status_code=503,
+                message=message,
+                error_type="security_pipeline_error",
+                error_code="policy_evaluation_failed",
+            )
+            return {
+                "status_code": 503,
+                "data": self._error_body(message, "security_pipeline_error", "policy_evaluation_failed"),
+            }
 
         # ── 3. Blocked? ─────────────────────────────────────────────────
+        policy_decision_metadata = {
+            "policy_ids": [str(policy.id) for policy in policies],
+            "route_policy_id": str(route_policy_id) if route_policy_id else None,
+            "action": eval_result.action_taken,
+            "matched_rule_count": len(eval_result.violations),
+        }
+
         if not eval_result.allowed:
             logger.info("Gateway blocked request for tenant=%s: %s", tenant_id, [v.message for v in eval_result.violations])
             await self.audit_engine.log_request(
@@ -594,7 +762,7 @@ class GatewayService:
                 model=model,
                 original_payload=payload,
                 modified_payload=payload,
-                response_payload={"error": "Blocked by AuthClaw policy."},
+                response_payload={"error": "Blocked by AuthClaw policy.", "policy_decision": policy_decision_metadata},
                 tokens_prompt=0,
                 tokens_completion=0,
                 latency_ms=0,
@@ -632,9 +800,10 @@ class GatewayService:
                 else:
                     new_messages.append(msg)
             modified_payload["messages"] = new_messages
+        modified_payload["model"] = model
 
         # ── 5. Select provider ───────────────────────────────────────────
-        provider = await self._select_provider(tenant_id)
+        # Provider was resolved from the selected gateway route before security evaluation.
         if not provider:
             logger.warning("No active provider for tenant=%s", tenant_id)
             await self.audit_engine.log_request(
@@ -682,16 +851,77 @@ class GatewayService:
         # Strip internal fields that upstream providers reject
         streaming_mode = modified_payload.pop("streaming_mode", "buffered")
         modified_payload.pop("provider", None)
+        modified_payload.pop("route", None)
+        modified_payload.pop("route_id", None)
+        modified_payload.pop("route_name", None)
         
         if is_stream:
-            if streaming_mode == "strict":
-                modified_payload["stream"] = False
-                is_stream = False
+            if streaming_mode == "passthrough":
+                message = "Gateway passthrough streaming is disabled because it bypasses security filtering."
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=provider.id,
+                    model=model,
+                    payload=payload,
+                    modified_payload=modified_payload,
+                    status_code=400,
+                    message=message,
+                    error_type="security_configuration_error",
+                    error_code="passthrough_streaming_disabled",
+                    evaluation_result=eval_result,
+                )
+                return {
+                    "status_code": 400,
+                    "data": self._error_body(message, "security_configuration_error", "passthrough_streaming_disabled"),
+                }
+            if streaming_mode not in {"buffered", "strict", "safe"}:
+                message = "Gateway streaming mode is unsupported. Use strict safe streaming or non-streaming requests."
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=provider.id,
+                    model=model,
+                    payload=payload,
+                    modified_payload=modified_payload,
+                    status_code=400,
+                    message=message,
+                    error_type="security_configuration_error",
+                    error_code="streaming_mode_unsupported",
+                    evaluation_result=eval_result,
+                )
+                return {
+                    "status_code": 400,
+                    "data": self._error_body(message, "security_configuration_error", "streaming_mode_unsupported"),
+                }
+
             else:
                 from app.core.providers.factory import ProviderAdapterFactory
                 from fastapi import HTTPException
                 
                 adapter = ProviderAdapterFactory.get_adapter(provider.type)
+                if not callable(getattr(adapter, "stream_response", None)):
+                    message = "Selected provider adapter does not support safe streaming."
+                    await self._log_safe_error(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        api_key_id=api_key_id,
+                        provider_id=provider.id,
+                        model=model,
+                        payload=payload,
+                        modified_payload=modified_payload,
+                        status_code=400,
+                        message=message,
+                        error_type="security_configuration_error",
+                        error_code="safe_streaming_unsupported",
+                        evaluation_result=eval_result,
+                    )
+                    return {
+                        "status_code": 400,
+                        "data": self._error_body(message, "security_configuration_error", "safe_streaming_unsupported"),
+                    }
                 
                 try:
                     url, headers = await adapter.get_connection_details(provider)
@@ -739,6 +969,7 @@ class GatewayService:
         # ── Sprint 1: Outbound Security Pipeline ────────────────────────────
         security_scan_count_outbound = 0
         outbound_response_body = provider_resp.body
+        final_status_code = provider_resp.status_code
         if settings.FF_SECURITY_PIPELINE and settings.FF_OUTBOUND_SCAN and provider_resp.is_success:
             try:
                 from app.core.detection.presidio_engine import presidio_engine
@@ -828,6 +1059,7 @@ class GatewayService:
                                         "code": "response_blocked",
                                     }
                                 }
+                                final_status_code = 403
                             else:
                                 # Redact completion and patch back into body
                                 sanitized_body = dict(provider_resp.body)
@@ -855,9 +1087,24 @@ class GatewayService:
                                     )
                                 ))
             except Exception as security_exc:
-                logger.error("Outbound security pipeline error (failing open): %s", security_exc)
+                logger.error("Outbound security pipeline error (failing closed): %s", security_exc)
+                outbound_response_body = self._error_body(
+                    "Gateway response security scan failed. Upstream response was not released.",
+                    "security_pipeline_error",
+                    "outbound_security_failed",
+                )
+                final_status_code = 502
 
         # ── 7. Log audit trail ───────────────────────────────────────────
+        final_error = outbound_response_body.get("error") if isinstance(outbound_response_body, dict) else None
+        final_error_message = provider_resp.error_message
+        final_error_type = provider_resp.error_type
+        final_error_code = provider_resp.error_code
+        if final_status_code >= 400 and isinstance(final_error, dict):
+            final_error_message = final_error.get("message")
+            final_error_type = final_error.get("type")
+            final_error_code = str(final_error.get("code")) if final_error.get("code") is not None else None
+
         await self.audit_engine.log_request(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -870,10 +1117,10 @@ class GatewayService:
             tokens_prompt=tokens_prompt,
             tokens_completion=tokens_completion,
             latency_ms=provider_resp.latency_ms,
-            status_code=provider_resp.status_code,  # always int
-            error_message=provider_resp.error_message,
-            error_type=provider_resp.error_type,
-            error_code=provider_resp.error_code,     # always str or None
+            status_code=final_status_code,
+            error_message=final_error_message,
+            error_type=final_error_type,
+            error_code=final_error_code,
             evaluation_result=eval_result,
         )
 
@@ -887,7 +1134,7 @@ class GatewayService:
             gw_event = GatewayEvent(
                 event_type=(
                     "gateway.request.completed"
-                    if provider_resp.is_success
+                    if 200 <= final_status_code < 300
                     else "gateway.request.error"
                 ),
                 tenant_id=str(tenant_id),
@@ -897,7 +1144,7 @@ class GatewayService:
                 request_id=str(api_key_id),
                 provider=provider.name if provider else None,
                 model=model,
-                status=provider_resp.status_code,
+                status=final_status_code,
                 latency_ms=provider_resp.latency_ms,
                 tokens_prompt=tokens_prompt,
                 tokens_completion=tokens_completion,
@@ -907,6 +1154,7 @@ class GatewayService:
                     # Sprint 1: security event counts for real-time dashboards
                     "security_events_inbound": security_scan_count_inbound,
                     "security_events_outbound": security_scan_count_outbound,
+                    "policy_decision": policy_decision_metadata,
                 },
             )
             await producer.publish("authclaw.gateway.events", gw_event)
@@ -918,7 +1166,7 @@ class GatewayService:
 
         # ── 8. Return response ───────────────────────────────────────────
         return {
-            "status_code": provider_resp.status_code,
+            "status_code": final_status_code,
             "data": outbound_response_body,
         }
 

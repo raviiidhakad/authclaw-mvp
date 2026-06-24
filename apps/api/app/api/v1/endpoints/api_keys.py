@@ -8,12 +8,34 @@ from sqlalchemy import select
 
 from app.api.dependencies import get_db, get_current_tenant, get_current_user, require_roles
 from app.core.exceptions import NotFoundException
-from app.models.api_key import ApiKey
+from app.models.api_key import ApiKey, ApiKeyScope
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.api_key import ApiKeyCreate, ApiKeyResponse, ApiKeyCreateResponse
 
 router = APIRouter()
+
+GATEWAY_CAPABLE_SCOPES = (ApiKeyScope.full, ApiKeyScope.gateway_only)
+
+
+def _is_gateway_capable(scope: ApiKeyScope) -> bool:
+    return scope in GATEWAY_CAPABLE_SCOPES
+
+
+async def _revoke_existing_gateway_keys(db: AsyncSession, tenant_id: uuid.UUID) -> int:
+    result = await db.execute(
+        select(ApiKey)
+        .where(
+            ApiKey.tenant_id == tenant_id,
+            ApiKey.is_active == True,
+            ApiKey.scope.in_(GATEWAY_CAPABLE_SCOPES),
+        )
+        .with_for_update()
+    )
+    existing_keys = result.scalars().all()
+    for existing_key in existing_keys:
+        existing_key.is_active = False
+    return len(existing_keys)
 
 @router.get("", response_model=List[ApiKeyResponse])
 async def list_api_keys(
@@ -40,7 +62,15 @@ async def create_api_key(
 ):
     """
     Create a new API key. The raw key is returned ONLY once in the response.
+
+    For gateway-capable keys, each tenant can have only one active key. Creating
+    a replacement automatically revokes any previous active gateway key.
     """
+    revoked_key_count = 0
+    if _is_gateway_capable(body.scope):
+        await db.execute(select(Tenant).where(Tenant.id == tenant.id).with_for_update())
+        revoked_key_count = await _revoke_existing_gateway_keys(db, tenant.id)
+
     raw_key = f"ac_{secrets.token_hex(24)}"
     key_prefix = raw_key[:12]
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -64,6 +94,7 @@ async def create_api_key(
     # Inject the raw key into the response model
     response_data = ApiKeyCreateResponse.model_validate(api_key)
     response_data.raw_key = raw_key
+    response_data.revoked_key_count = revoked_key_count
     
     return response_data
 

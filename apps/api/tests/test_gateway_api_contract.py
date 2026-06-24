@@ -136,7 +136,7 @@ async def test_openai_compatible_adapter_defaults_groq_named_provider_to_groq_ur
 
 
 def test_gateway_mvp_routes_are_registered():
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
 
     assert "/v1/chat/completions" in paths
     assert "/api/v1/gateway/providers" in paths

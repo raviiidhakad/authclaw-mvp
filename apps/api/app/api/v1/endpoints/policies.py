@@ -4,7 +4,7 @@ All operations are tenant-scoped.
 """
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -18,10 +18,24 @@ from app.schemas.policy import (
     PolicyCreate,
     PolicyUpdate,
     PolicyResponse,
+    PolicyRuleResponse,
     PolicyListResponse,
+    PolicyTestRequest,
+    PolicyTestResponse,
+    PolicyYamlExportResponse,
+    PolicyYamlImportResponse,
+    PolicyYamlRequest,
+    PolicyYamlValidationResponse,
     ViolationResponse,
     ViolationListResponse,
     ViolationUpdateResolution,
+)
+from app.core.policy.yaml_policy import (
+    PythonPolicyAdapter,
+    export_policy_yaml,
+    normalized_from_policy,
+    policy_from_normalized,
+    validate_policy_yaml,
 )
 
 router = APIRouter()
@@ -81,7 +95,115 @@ async def _get_policy_or_404(
     return policy
 
 
+def _build_policy_response(policy: Policy, rules: list[PolicyRule]) -> PolicyResponse:
+    return PolicyResponse(
+        id=policy.id,
+        tenant_id=policy.tenant_id,
+        name=policy.name,
+        description=policy.description,
+        is_active=policy.is_active,
+        priority=policy.priority,
+        rules=[PolicyRuleResponse.model_validate(rule) for rule in rules],
+        created_at=policy.created_at,
+        updated_at=policy.updated_at,
+    )
+
+
 # ── Policy routes ────────────────────────────────────────────────
+def _validation_response(yaml_source: str) -> PolicyYamlValidationResponse:
+    return PolicyYamlValidationResponse(**validate_policy_yaml(yaml_source).as_response())
+
+
+@router.post("/validate", response_model=PolicyYamlValidationResponse)
+async def validate_policy(
+    body: PolicyYamlRequest,
+    _tenant: Tenant = Depends(get_current_tenant),
+    _user: User = Depends(require_roles(["owner", "admin", "operator", "auditor", "viewer"])),
+):
+    """Validate YAML policy-as-code without saving it."""
+    return _validation_response(body.yaml_source)
+
+
+@router.post("/test", response_model=PolicyTestResponse)
+async def test_policy(
+    body: PolicyTestRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_roles(["owner", "admin", "operator", "auditor"])),
+):
+    """Evaluate sample text against a YAML or stored policy without echoing the text."""
+    validation_payload: PolicyYamlValidationResponse | None = None
+    if body.yaml_source:
+        validation_payload = _validation_response(body.yaml_source)
+        if not validation_payload.valid or not validation_payload.normalized:
+            return PolicyTestResponse(
+                allowed=False,
+                blocked=True,
+                action="validation_failed",
+                matched_rules=[],
+                redaction_required=False,
+                reason="Policy validation failed.",
+                validation=validation_payload,
+            )
+        normalized = validation_payload.normalized
+    elif body.policy_id:
+        policy = await _get_policy_or_404(body.policy_id, tenant.id, db)
+        normalized = normalized_from_policy(policy)
+    else:
+        raise HTTPException(status_code=400, detail="Provide yaml_source or policy_id.")
+
+    decision = PythonPolicyAdapter().evaluate(body.sample_text, normalized)
+    return PolicyTestResponse(
+        allowed=bool(decision["allowed"]),
+        blocked=not bool(decision["allowed"]),
+        action=str(decision["action"]),
+        matched_rules=decision["matched_rules"],
+        redaction_required=bool(decision["redaction_required"]),
+        reason=str(decision["reason"]),
+        validation=validation_payload,
+    )
+
+
+@router.post("/import-yaml", response_model=PolicyYamlImportResponse, status_code=201)
+async def import_policy_yaml(
+    body: PolicyYamlRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["owner", "admin"])),
+):
+    """Import YAML policy-as-code into the existing policy/rule tables."""
+    validation = _validation_response(body.yaml_source)
+    if not validation.valid or not validation.normalized:
+        raise HTTPException(status_code=400, detail={"message": "Policy YAML validation failed.", "errors": validation.errors})
+
+    policy = policy_from_normalized(validation.normalized, tenant.id)
+    db.add(policy)
+    await db.flush()
+    await db.refresh(policy)
+    response = _build_policy_response(policy, list(policy.rules))
+    await db.commit()
+    await _publish_policy_event("policy.created", tenant.id, current_user.id, policy.id, policy.name)
+    from app.core.policy.cache import policy_cache
+    await policy_cache.invalidate(tenant.id)
+    return PolicyYamlImportResponse(policy=response, validation=validation)
+
+
+@router.get("/{policy_id}/export-yaml", response_model=PolicyYamlExportResponse)
+async def export_policy(
+    policy_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_roles(["owner", "admin", "operator", "auditor"])),
+):
+    """Export a stored policy as AuthClaw YAML policy-as-code."""
+    policy = await _get_policy_or_404(policy_id, tenant.id, db)
+    return PolicyYamlExportResponse(
+        policy_id=policy.id,
+        schema_version="authclaw.policy/v1",
+        yaml_source=export_policy_yaml(policy),
+    )
+
+
 @router.get("", response_model=PolicyListResponse)
 async def list_policies(
     skip: int = 0,
@@ -125,6 +247,7 @@ async def create_policy(
     await db.flush()
 
     # Create inline rules if provided
+    created_rules: list[PolicyRule] = []
     for rule_data in body.rules:
         rule = PolicyRule(
             policy_id=policy.id,
@@ -135,7 +258,10 @@ async def create_policy(
             is_active=rule_data.is_active,
         )
         db.add(rule)
+        created_rules.append(rule)
 
+    await db.flush()
+    response = _build_policy_response(policy, created_rules)
     await db.commit()
     await _publish_policy_event(
         "policy.created", tenant.id, current_user.id, policy.id, policy.name
@@ -144,8 +270,7 @@ async def create_policy(
     from app.core.policy.cache import policy_cache
     await policy_cache.invalidate(tenant.id)
 
-    # Re-fetch with eager-loaded rules
-    return await _get_policy_or_404(policy.id, tenant.id, db)
+    return response
 
 
 @router.get("/{policy_id}", response_model=PolicyResponse)
@@ -211,8 +336,7 @@ async def update_policy(
     # Sprint 1: Invalidate Redis policy cache for this tenant
     from app.core.policy.cache import policy_cache
     await policy_cache.invalidate(tenant.id)
-    # Refresh to ensure relationships are loaded
-    return await _get_policy_or_404(policy.id, tenant.id, db)
+    return policy
 
 
 @router.delete("/{policy_id}", status_code=204)

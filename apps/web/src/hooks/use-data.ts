@@ -66,6 +66,37 @@ export function useUpdatePolicy() {
 }
 
 // ── Policy Violations (dedicated violations endpoint) ──
+export function useValidatePolicyYaml() {
+  return useMutation({
+    mutationFn: async (yamlSource: string) => {
+      const res = await apiClient.post('/policies/validate', { yaml_source: yamlSource });
+      return res.data;
+    },
+  });
+}
+
+export function useTestPolicyYaml() {
+  return useMutation({
+    mutationFn: async ({ yamlSource, sampleText }: { yamlSource: string; sampleText: string }) => {
+      const res = await apiClient.post('/policies/test', { yaml_source: yamlSource, sample_text: sampleText });
+      return res.data;
+    },
+  });
+}
+
+export function useImportPolicyYaml() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (yamlSource: string) => {
+      const res = await apiClient.post('/policies/import-yaml', { yaml_source: yamlSource });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['policies'] });
+    },
+  });
+}
+
 export function usePolicyViolations(skip = 0, limit = 100) {
   return useQuery({
     queryKey: ['policy-violations', skip, limit],
@@ -289,6 +320,19 @@ export function useDeleteProvider() {
   return useMutation({
     mutationFn: async (id: string) => {
       await apiClient.delete(`/providers/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] });
+    },
+  });
+}
+
+export function useUpdateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
+      const res = await apiClient.patch(`/providers/${id}`, data);
+      return res.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers'] });

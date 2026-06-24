@@ -97,10 +97,69 @@ def build_insurance_id_recognizer() -> PatternRecognizer:
     )
 
 
+def build_phone_recognizer() -> PatternRecognizer:
+    """
+    Phone number recognizer.
+
+    Presidio's built-in phone recognizer can miss local/demo formats depending
+    on runtime context. This deterministic recognizer covers AuthClaw gateway
+    policy tests and common North American phone formats.
+    """
+    patterns = [
+        Pattern(
+            name="north_american_phone",
+            regex=r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)",
+            score=0.90,
+        ),
+    ]
+    return PatternRecognizer(
+        supported_entity="PHONE_NUMBER",
+        patterns=patterns,
+        context=["phone", "caller", "mobile", "contact", "support"],
+        name="AuthClawPhoneRecognizer",
+    )
+
+
+def build_credential_recognizer() -> PatternRecognizer:
+    """
+    Credential marker recognizer.
+
+    Catches key-value credential leaks before they are forwarded to a provider,
+    including demo/test marker strings such as token=demo-token-redacted.
+    """
+    patterns = [
+        Pattern(
+            name="credential_key_value",
+            regex=(
+                r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+                r"auth(?:orization)?|client[_-]?secret|credential|secret|token)"
+                r"\s*[:=]\s*['\"]?([A-Za-z0-9._~+/=@:-]{6,})['\"]?"
+            ),
+            score=0.92,
+        ),
+    ]
+    return PatternRecognizer(
+        supported_entity="CREDENTIAL",
+        patterns=patterns,
+        context=[
+            "api key",
+            "token",
+            "secret",
+            "credential",
+            "authorization",
+            "client secret",
+            "bearer",
+        ],
+        name="CredentialRecognizer",
+    )
+
+
 def get_all_custom_recognizers() -> list:
-    """Return all custom PHI recognizers for registration with Presidio."""
+    """Return all custom recognizers for registration with Presidio."""
     return [
         build_mrn_recognizer(),
         build_npi_recognizer(),
         build_insurance_id_recognizer(),
+        build_phone_recognizer(),
+        build_credential_recognizer(),
     ]

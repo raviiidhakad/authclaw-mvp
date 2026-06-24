@@ -25,3 +25,4 @@ class ApiKeyResponse(BaseModel):
 
 class ApiKeyCreateResponse(ApiKeyResponse):
     raw_key: Optional[str] = None
+    revoked_key_count: int = 0

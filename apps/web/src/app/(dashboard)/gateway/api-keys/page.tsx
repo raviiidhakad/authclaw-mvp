@@ -19,6 +19,11 @@ type ApiKeyRecord = {
   created_at: string;
 };
 
+type CreatedApiKey = {
+  raw_key?: string;
+  revoked_key_count?: number;
+};
+
 export default function GatewayApiKeysPage() {
   const { data, isLoading } = useApiKeys(0, 100);
   const createApiKey = useCreateApiKey();
@@ -29,11 +34,13 @@ export default function GatewayApiKeysPage() {
   const [copied, setCopied] = useState(false);
 
   const create = async () => {
-    const result = await createApiKey.mutateAsync({ name, scope: 'gateway_only' }) as { raw_key?: string };
+    const result = await createApiKey.mutateAsync({ name, scope: 'gateway_only' }) as CreatedApiKey;
     if (result.raw_key) {
       setGenerated({ rawKey: result.raw_key, visible: false });
       setName('Gateway agent key');
-      toast.success('Gateway API key generated');
+      toast.success('Gateway API key generated', {
+        description: (result.revoked_key_count || 0) > 0 ? 'Previous active gateway key was revoked automatically.' : undefined,
+      });
     }
   };
 
@@ -48,7 +55,7 @@ export default function GatewayApiKeysPage() {
     <div className="space-y-6 max-w-[1400px] mx-auto pb-10">
       <div>
         <h2 className="text-2xl font-bold text-neutral-100">Gateway API Keys</h2>
-        <p className="text-sm text-neutral-400 mt-1">Generate tenant-scoped AuthClaw keys for agents and apps. Raw keys are shown once.</p>
+        <p className="text-sm text-neutral-400 mt-1">Generate the tenant-scoped AuthClaw gateway key for agents and apps. Creating a new key revokes the previous active key.</p>
       </div>
 
       {generated && (

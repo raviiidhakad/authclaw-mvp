@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from 'react';
-import { CheckCircle, KeyRound, Plus, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle, KeyRound, PauseCircle, PlayCircle, Plus, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
-import { useCreateProvider, useDeleteProvider, useProviders } from '@/hooks/use-data';
+import { useCreateProvider, useDeleteProvider, useProviders, useUpdateProvider } from '@/hooks/use-data';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TableSkeleton } from '@/components/shared/loaders';
@@ -23,6 +23,7 @@ export default function GatewayProvidersPage() {
   const { data = [], isLoading } = useProviders();
   const createProvider = useCreateProvider();
   const deleteProvider = useDeleteProvider();
+  const updateProvider = useUpdateProvider();
   const providers = data as Provider[];
   const [form, setForm] = useState({
     name: 'Groq Default',
@@ -57,7 +58,8 @@ export default function GatewayProvidersPage() {
       const response = await apiClient.post(`/gateway/providers/${id}/validate`);
       const valid = Boolean(response.data?.valid);
       setValidation((current) => ({ ...current, [id]: valid }));
-      toast[valid ? 'success' : 'warning'](valid ? 'Provider credential validated' : 'Provider validation failed');
+      const mode = response.data?.validation_mode === 'live' ? 'live check' : 'metadata check';
+      toast[valid ? 'success' : 'warning'](valid ? `Provider credential validated (${mode})` : 'Provider validation failed');
     } catch {
       setValidation((current) => ({ ...current, [id]: false }));
       toast.error('Provider validation failed');
@@ -117,6 +119,13 @@ export default function GatewayProvidersPage() {
                   <td className="p-4 flex gap-2">
                     <button onClick={() => validate(provider.id)} className="p-2 rounded-lg border border-white/10 text-neutral-300 hover:text-white" title="Validate credential">
                       {validation[provider.id] ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <XCircle className="w-4 h-4" />}
+                    </button>
+                    <button
+                      onClick={() => updateProvider.mutate({ id: provider.id, data: { is_active: !provider.is_active } })}
+                      className="p-2 rounded-lg border border-white/10 text-neutral-300 hover:text-white"
+                      title={provider.is_active ? 'Disable provider' : 'Enable provider'}
+                    >
+                      {provider.is_active ? <PauseCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
                     </button>
                     <button onClick={() => deleteProvider.mutate(provider.id)} className="p-2 rounded-lg border border-red-500/20 text-red-300 hover:text-red-200" title="Delete provider">
                       <Trash2 className="w-4 h-4" />

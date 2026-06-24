@@ -13,6 +13,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "live: opt-in tests that call real external providers and require local credentials",
+]
 
 [tool.ruff]
 target-version = "py311"

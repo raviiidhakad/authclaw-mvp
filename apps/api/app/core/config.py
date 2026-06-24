@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # AI Providers
     OPENAI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    ENABLE_PROVIDER_LIVE_VALIDATION: bool = False
+    ENABLE_GATEWAY_LIVE_E2E: bool = False
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -128,6 +130,11 @@ class Settings(BaseSettings):
     # exposes owner-gated create/list/revoke foundations when explicitly enabled.
     ENABLE_EXTERNAL_TRUST_SHARING: bool = False
     EXTERNAL_TRUST_SHARING_MAX_EXPIRY_DAYS: int = 30
+
+    # Gateway raw audit retention is disabled by default. When False, legacy
+    # prompt_original/response_original columns receive sanitized previews plus
+    # hash metadata instead of raw prompt/response bodies.
+    ENABLE_RAW_GATEWAY_AUDIT_RETENTION: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

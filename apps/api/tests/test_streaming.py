@@ -78,17 +78,16 @@ async def test_streaming_engine_buffered_success(streaming_engine, mock_audit_en
         # Iterate through the async generator
         chunks = [chunk async for chunk in response.body_iterator]
         
-        assert len(chunks) == 3
-        assert "Hello" in chunks[0]
-        assert "World" in chunks[1]
-        assert "[DONE]" in chunks[2]
+        assert len(chunks) == 2
+        assert "Hello World" in chunks[0]
+        assert "[DONE]" in chunks[1]
 
         mock_audit_engine.publish_stream_started.assert_called_once()
         mock_audit_engine.publish_stream_completed.assert_called_once()
         mock_audit_engine.publish_stream_failed.assert_not_called()
 
 @pytest.mark.asyncio
-async def test_streaming_engine_passthrough_failure(streaming_engine, mock_audit_engine):
+async def test_streaming_engine_failure_is_sanitized(streaming_engine, mock_audit_engine):
     # Mock httpx client stream that throws exception midway
     class MockStreamContext:
         status_code = 200
@@ -135,13 +134,10 @@ async def test_streaming_engine_passthrough_failure(streaming_engine, mock_audit
             window_size=2
         )
         
-        chunks = []
-        with pytest.raises(ConnectionError):
-            async for chunk in response.body_iterator:
-                chunks.append(chunk)
+        chunks = [chunk async for chunk in response.body_iterator]
 
-        assert len(chunks) == 1
-        assert "Hello" in chunks[0]
+        assert "Hello" not in "".join(chunks)
+        assert "Gateway streaming failed safely" in "".join(chunks)
         
         mock_audit_engine.publish_stream_started.assert_called_once()
         mock_audit_engine.publish_stream_completed.assert_not_called()

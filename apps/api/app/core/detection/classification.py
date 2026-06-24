@@ -55,6 +55,7 @@ DEFAULT_ENTITY_RISK_MAP: Dict[str, RiskLevel] = {
     "US_DRIVER_LICENSE":   RiskLevel.HIGH,
     "US_ITIN":             RiskLevel.HIGH,
     "UK_NHS":              RiskLevel.HIGH,
+    "CREDENTIAL":          RiskLevel.HIGH,
 
     # CRITICAL — Protected Health Information (PHI) under HIPAA
     "MEDICAL_RECORD":      RiskLevel.CRITICAL,

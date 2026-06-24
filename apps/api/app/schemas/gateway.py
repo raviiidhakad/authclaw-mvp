@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List, Any, Dict
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from app.models.gateway import RequestStatus
 from app.models.policy import ViolationSeverity, ViolationResolution
+from app.services.api_safety import sanitize_text
 
 class GatewayResponseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -16,6 +17,10 @@ class GatewayResponseSchema(BaseModel):
     token_count_completion: int
     latency_ms: int
     created_at: datetime
+
+    @field_serializer("response_original", "response_redacted")
+    def serialize_response_text(self, value: Optional[str]) -> Optional[str]:
+        return sanitize_text(value) if value else value
 
 class PolicyViolationSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -30,6 +35,10 @@ class PolicyViolationSchema(BaseModel):
     context: Dict[str, Any]
     resolution: ViolationResolution
     created_at: datetime
+
+    @field_serializer("description")
+    def serialize_description(self, value: str) -> str:
+        return sanitize_text(value)
 
 class GatewayRequestResponseBrief(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -46,6 +55,10 @@ class GatewayRequestResponseBrief(BaseModel):
     error_type: Optional[str] = None
     error_code: Optional[str] = None
     created_at: datetime
+
+    @field_serializer("error_message")
+    def serialize_error_message(self, value: Optional[str]) -> Optional[str]:
+        return sanitize_text(value) if value else value
 
 class GatewayRequestDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -70,6 +83,10 @@ class GatewayRequestDetail(BaseModel):
     response_payload: Optional[Dict[str, Any]] = None
     response: Optional[GatewayResponseSchema] = None
     violations: List[PolicyViolationSchema] = Field(default_factory=list)
+
+    @field_serializer("prompt_original", "prompt_redacted", "error_message")
+    def serialize_sensitive_text(self, value: Optional[str]) -> Optional[str]:
+        return sanitize_text(value) if value else value
 
 class GatewayRequestListResponse(BaseModel):
     items: List[GatewayRequestResponseBrief]

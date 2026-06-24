@@ -26,8 +26,8 @@ Configuration:
   to generate the buffer length in tokens (~15 tokens @ GPT-4 speed ≈ 5-10ms).
 
 Failure behavior:
-  - If Presidio scan raises an exception in a stream, the buffer is flushed
-    WITHOUT redaction and the exception is logged (never silently swallowed).
+  - If scanning raises an exception in a stream, processing fails closed and
+    the unscanned buffer is never yielded to the client.
   - If FF_SECURITY_SHADOW_MODE is active, detections are emitted but the
     original content is always yielded unchanged.
 """
@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 # Maximum entity length a single PII pattern can span (chars).
 # Used to determine the minimum safe lead before yielding from the buffer.
 MAX_ENTITY_LENGTH = 64
+
+
+class StreamingScanError(RuntimeError):
+    """Raised when a stream chunk cannot be scanned safely."""
 
 
 class StreamingBuffer:
@@ -96,8 +100,8 @@ class StreamingBuffer:
                     total_entities += entity_count
                     yield sanitized if not self._shadow_mode else safe_portion
                 except Exception as exc:
-                    logger.error("StreamingBuffer scan failed mid-stream: %s. Flushing unredacted.", exc)
-                    yield safe_portion  # Fail open on mid-stream to avoid broken SSE
+                    logger.error("StreamingBuffer scan failed mid-stream: %s. Terminating safely.", exc)
+                    raise StreamingScanError("stream_security_scan_failed") from exc
 
         # Flush the final buffer — scan in full, no further window needed
         if buffer:
@@ -106,8 +110,8 @@ class StreamingBuffer:
                 total_entities += entity_count
                 yield sanitized if not self._shadow_mode else buffer
             except Exception as exc:
-                logger.error("StreamingBuffer scan failed on final flush: %s. Flushing unredacted.", exc)
-                yield buffer
+                logger.error("StreamingBuffer scan failed on final flush: %s. Terminating safely.", exc)
+                raise StreamingScanError("stream_security_scan_failed") from exc
 
         logger.debug(
             "StreamingBuffer complete. Total entities detected in stream: %d", total_entities

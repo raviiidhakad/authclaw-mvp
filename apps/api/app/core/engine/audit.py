@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import logging
 import uuid
+import hashlib
 from typing import Any, Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.engine.evaluator import EvaluationResult
 from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
 from app.models.policy import PolicyViolation, ViolationSeverity, ViolationResolution
 from app.models.audit import AuditLog, EventType, AuditAction
+from app.services.api_safety import sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,18 @@ logger = logging.getLogger(__name__)
 class AuditEngine:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _hash_text(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _safe_preview(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return sanitize_text(value)
 
     async def log_request(
         self,
@@ -64,8 +79,19 @@ class AuditEngine:
             for m in modified_payload.get("messages", [])
             if isinstance(m.get("content"), str)
         )
+        prompt_original_hash = self._hash_text(prompt_original)
         if prompt_original == prompt_redacted:
             prompt_redacted = None
+
+        if not settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION:
+            sanitized_original_prompt = self._safe_preview(prompt_original) or ""
+            sanitized_modified_prompt = self._safe_preview(prompt_redacted) if prompt_redacted else None
+            prompt_original = sanitized_original_prompt
+            prompt_redacted = (
+                sanitized_modified_prompt
+                if sanitized_modified_prompt and sanitized_modified_prompt != sanitized_original_prompt
+                else None
+            )
 
         # ── Determine request status ─────────────────────────────────────
         if evaluation_result and evaluation_result.action_taken == "block":
@@ -109,10 +135,20 @@ class AuditEngine:
             elif "error" in response_payload:
                 err = response_payload["error"]
                 response_original = err.get("message") if isinstance(err, dict) else str(err)
+        response_original_hash = self._hash_text(response_original)
+        response_redacted = None
+        if not settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION:
+            sanitized_response = self._safe_preview(response_original)
+            response_original = sanitized_response
+        else:
+            sanitized_response = self._safe_preview(response_original)
+            if sanitized_response != response_original:
+                response_redacted = sanitized_response
 
         gw_response = GatewayResponse(
             request_id=gw_request.id,
             response_original=response_original,
+            response_redacted=response_redacted,
             security_event_count=0,  # incremented by security pipeline
             token_count_completion=tokens_completion,
             latency_ms=latency_ms,
@@ -169,7 +205,12 @@ class AuditEngine:
                 "tokens_completion": tokens_completion,
                 "error_type": error_type,
                 "error_code": error_code,
-                "error_message": error_message,
+                "error_message": sanitize_text(error_message) if error_message else None,
+                "raw_gateway_audit_retention": bool(settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION),
+                "prompt_original_hash": prompt_original_hash,
+                "response_original_hash": response_original_hash,
+                "stored_prompt": "raw" if settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION else "sanitized_preview",
+                "stored_response": "raw" if settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION else "sanitized_preview",
                 "action_taken": evaluation_result.action_taken if evaluation_result else "allow",
                 "violations": violation_summary,
             },
@@ -303,4 +344,3 @@ class AuditEngine:
             event_id=str(uuid.uuid4())
         )
         await producer.publish("authclaw.audit.events", event)
-

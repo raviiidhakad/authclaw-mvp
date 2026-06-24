@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from dataclasses import dataclass
 
 @dataclass
@@ -19,7 +19,12 @@ class PIIDetector:
         "PHONE": r"\b(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b",
         "CREDIT_CARD": r"\b(?:\d[ -]*?){13,16}\b",
         "ADDRESS": r"\b\d{1,5}\s+[A-Z][A-Za-z0-9\s\.,#-]*?\s+(?:[Ss]treet|[Ss]t|[Aa]venue|[Aa]ve|[Rr]oad|[Rr]d|[Dd]rive|[Dd]r|[Cc]ourt|[Cc]t|[Bb]oulevard|[Bb]lvd|[Ll]ane|[Ll]n|[Ww]ay|[Pp]arkway|[Pp]kwy)\b",
-        "PASSWORD": r"(?i)(?:password\s*(?:is|=|:)?\s*)(\S+)"
+        "PASSWORD": r"(?i)(?:password\s*(?:is|=|:)?\s*)(\S+)",
+        "CREDENTIAL": (
+            r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+            r"auth(?:orization)?|client[_-]?secret|credential|secret|token)"
+            r"\s*[:=]\s*['\"]?[^\s,;}]+['\"]?"
+        ),
     }
 
 
@@ -76,7 +81,7 @@ class PIIRedactor:
         normalized = pii_type.upper()
         if normalized == "EMAIL":
             return f"synthetic-email-{index}@example.test"
-        if normalized == "PHONE":
+        if normalized in ("PHONE", "PHONE_NUMBER"):
             return f"+1 202-555-{1000 + index:04d}"
         if normalized == "SSN":
             return f"000-00-{1000 + index:04d}"
@@ -86,6 +91,8 @@ class PIIRedactor:
             return f"{100 + index} Synthetic Test Ave"
         if normalized == "PASSWORD":
             return f"synthetic-password-{index}"
+        if normalized == "CREDENTIAL":
+            return f"synthetic-credential-{index}"
         return f"synthetic-{normalized.lower()}-{index}"
 
     @classmethod

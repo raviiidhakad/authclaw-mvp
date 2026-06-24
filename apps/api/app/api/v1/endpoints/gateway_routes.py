@@ -14,8 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db, get_current_tenant, get_current_user, require_roles
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.models.gateway_route import GatewayRoute, RedactionStrategy
+from app.models.policy import Policy
+from app.models.provider import Provider
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.api_safety import SECRET_FIELD_NAMES, sanitize_text
 
 router = APIRouter()
 
@@ -26,7 +29,7 @@ class GatewayRouteCreate(BaseModel):
     """Request body for creating a new gateway route."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    provider_id: Optional[uuid.UUID] = None
+    provider_id: uuid.UUID
     is_default: bool = False
     is_active: bool = True
     redaction: RedactionStrategy = RedactionStrategy.none
@@ -59,6 +62,21 @@ class GatewayRouteResponse(BaseModel):
     updated_at: str
 
     model_config = {"from_attributes": True}
+
+
+SAFE_ROUTE_CONFIG_FIELDS = {"model", "default_model", "temperature", "max_tokens", "policy_id"}
+
+
+def _sanitize_route_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(config or {}).items():
+        lowered = str(key).lower()
+        if lowered in SECRET_FIELD_NAMES or "vault" in lowered or "raw" in lowered:
+            continue
+        if key not in SAFE_ROUTE_CONFIG_FIELDS:
+            continue
+        sanitized[key] = sanitize_text(value) if isinstance(value, str) else value
+    return sanitized
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -105,9 +123,45 @@ async def _ensure_single_default(
 def _serialize(route: GatewayRoute) -> GatewayRouteResponse:
     """Convert an ORM instance to the response schema."""
     data = {c.key: getattr(route, c.key) for c in route.__table__.columns}
+    data["config"] = _sanitize_route_config(data.get("config"))
     data["created_at"] = route.created_at.isoformat()
     data["updated_at"] = route.updated_at.isoformat()
     return GatewayRouteResponse(**data)
+
+
+async def _ensure_tenant_provider(provider_id: uuid.UUID, tenant_id: uuid.UUID, db: AsyncSession) -> Provider:
+    result = await db.execute(
+        select(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id)
+    )
+    provider = result.scalars().first()
+    if not provider:
+        raise BadRequestException(detail="Gateway route provider must belong to this tenant.")
+    return provider
+
+
+async def _ensure_tenant_policy(policy_id_value: Any, tenant_id: uuid.UUID, db: AsyncSession) -> Policy | None:
+    if not policy_id_value:
+        return None
+    try:
+        policy_id = uuid.UUID(str(policy_id_value))
+    except ValueError as exc:
+        raise BadRequestException(detail="Gateway route policy_id must be a valid UUID.") from exc
+    result = await db.execute(
+        select(Policy).where(
+            Policy.id == policy_id,
+            Policy.tenant_id == tenant_id,
+            Policy.is_active == True,
+        )
+    )
+    policy = result.scalars().first()
+    if not policy:
+        raise BadRequestException(detail="Gateway route policy must belong to this tenant and be active.")
+    return policy
+
+
+def _validate_redaction(redaction: RedactionStrategy) -> None:
+    if redaction not in {RedactionStrategy.mask, RedactionStrategy.hash, RedactionStrategy.synthetic}:
+        raise BadRequestException(detail="Gateway route redaction must be mask, hash, or synthetic.")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -141,51 +195,49 @@ async def create_gateway_route(
     first so the invariant of a single default per tenant is maintained.
     Fires an audit event to Kafka on success.
     """
-    try:
-        if body.is_default:
-            await _ensure_single_default(tenant.id, None, db)
+    _validate_redaction(body.redaction)
+    await _ensure_tenant_provider(body.provider_id, tenant.id, db)
+    sanitized_config = _sanitize_route_config(body.config)
+    await _ensure_tenant_policy(sanitized_config.get("policy_id"), tenant.id, db)
+    if body.is_default:
+        await _ensure_single_default(tenant.id, None, db)
 
-        route = GatewayRoute(
-            tenant_id=tenant.id,
-            provider_id=body.provider_id,
-            name=body.name,
-            description=body.description,
-            is_default=body.is_default,
-            is_active=body.is_active,
-            redaction=body.redaction,
-            config=body.config,
-        )
-        db.add(route)
-        await db.flush()
-        await db.refresh(route)
-        await db.commit()
+    route = GatewayRoute(
+        tenant_id=tenant.id,
+        provider_id=body.provider_id,
+        name=body.name,
+        description=body.description,
+        is_default=body.is_default,
+        is_active=body.is_active,
+        redaction=body.redaction,
+        config=sanitized_config,
+    )
+    db.add(route)
+    await db.flush()
+    await db.refresh(route)
+    await db.commit()
 
-        # Publish audit event
-        from app.core.events.producer import producer
-        from app.schemas.events import AuditEvent
-        from datetime import datetime
-        await producer.publish(
-            "authclaw.audit.events",
-            AuditEvent(
-                event_type="admin.gateway_route_created",
-                tenant_id=str(tenant.id),
-                actor_id=str(current_user.id),
-                timestamp=datetime.utcnow().isoformat() + "Z",
-                payload={
-                    "action": "create",
-                    "resource": "gateway_route",
-                    "resource_id": str(route.id),
-                    "name": route.name,
-                },
-            ),
-        )
+    # Publish audit event
+    from app.core.events.producer import producer
+    from app.schemas.events import AuditEvent
+    from datetime import datetime
+    await producer.publish(
+        "authclaw.audit.events",
+        AuditEvent(
+            event_type="admin.gateway_route_created",
+            tenant_id=str(tenant.id),
+            actor_id=str(current_user.id),
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            payload={
+                "action": "create",
+                "resource": "gateway_route",
+                "resource_id": str(route.id),
+                "name": route.name,
+            },
+        ),
+    )
 
-        return _serialize(route)
-    except Exception as e:
-        print("ERROR IN GATEWAY ROUTE CREATE:", repr(e))
-        import traceback
-        traceback.print_exc()
-        raise e
+    return _serialize(route)
 
 
 @router.get("/{route_id}", response_model=GatewayRouteResponse)
@@ -219,6 +271,10 @@ async def update_gateway_route(
 
     if body.is_default is True:
         await _ensure_single_default(tenant.id, route_id, db)
+    if body.redaction is not None:
+        _validate_redaction(body.redaction)
+    if body.provider_id is not None:
+        await _ensure_tenant_provider(body.provider_id, tenant.id, db)
 
     if body.name is not None:
         route.name = body.name
@@ -233,7 +289,9 @@ async def update_gateway_route(
     if body.redaction is not None:
         route.redaction = body.redaction
     if body.config is not None:
-        route.config = body.config
+        sanitized_config = _sanitize_route_config(body.config)
+        await _ensure_tenant_policy(sanitized_config.get("policy_id"), tenant.id, db)
+        route.config = sanitized_config
 
     await db.flush()
     await db.refresh(route)

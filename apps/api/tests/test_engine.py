@@ -23,12 +23,30 @@ def test_pii_redactor():
     redacted = PIIRedactor.redact(text, findings)
     assert redacted == "My SSN is [SSN]!"
 
+def test_pii_detector_credential_marker():
+    detector = PIIDetector()
+    text = "A demo credential marker token=demo-token-redacted should be blocked or redacted."
+
+    findings = detector.detect(text)
+
+    assert any(f.pii_type == "CREDENTIAL" for f in findings)
+    assert all("demo-token-redacted" not in f.value or f.pii_type == "CREDENTIAL" for f in findings)
+
 def test_pii_synthetic_replacement():
     text = "Email me at bob@test.com"
     findings = [PIIFinding("EMAIL", "bob@test.com", 12, 24)]
     synthetic = PIIRedactor.synthesize(text, findings)
     assert synthetic == "Email me at synthetic-email-1@example.test"
     assert "bob@test.com" not in synthetic
+
+def test_pii_synthetic_replacement_for_presidio_phone_number():
+    text = "Call +1 202-555-0100"
+    findings = [PIIFinding("PHONE_NUMBER", "+1 202-555-0100", 5, 20)]
+
+    synthetic = PIIRedactor.synthesize(text, findings)
+
+    assert synthetic == "Call +1 202-555-1001"
+    assert "+1 202-555-0100" not in synthetic
 
 def test_policy_engine_allow():
     engine = PolicyEngine()
@@ -56,6 +74,23 @@ def test_policy_engine_pii_redact():
     assert result.modified_prompt == "Email me at [EMAIL]"
     assert len(result.violations) == 1
     assert result.violations[0].rule_type == RuleType.pii_redact
+
+def test_policy_engine_credential_redact():
+    engine = PolicyEngine()
+    rule = PolicyRule(
+        is_active=True,
+        rule_type=RuleType.pii_redact,
+        action=PolicyAction.allow,
+        conditions={"pii_types": ["CREDENTIAL"]}
+    )
+    policy = Policy(id="test-id", is_active=True, priority=1, rules=[rule])
+
+    result = engine.evaluate("Forward token=demo-token-redacted to the model", [policy])
+
+    assert result.allowed is True
+    assert result.modified_prompt == "Forward [CREDENTIAL] to the model"
+    assert "demo-token-redacted" not in result.modified_prompt
+    assert result.violations[0].context["findings"] == ["CREDENTIAL"]
 
 def test_policy_engine_pii_synthetic():
     engine = PolicyEngine()

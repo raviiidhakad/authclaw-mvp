@@ -35,6 +35,7 @@ type ApiKeyRecord = {
 type CreatedApiKey = {
   key_prefix?: string;
   raw_key?: string;
+  revoked_key_count?: number;
 };
 
 type ApiError = {
@@ -111,8 +112,10 @@ export default function SettingsPage() {
 
   const createApiKey = async () => {
     try {
-      const result = await createKeyMutation.mutateAsync(newApiKey) as CreatedApiKey;
-      toast.success('API Key created');
+      const result = await createKeyMutation.mutateAsync({ ...newApiKey, scope: 'gateway_only' }) as CreatedApiKey;
+      toast.success('Gateway API key created', {
+        description: (result.revoked_key_count || 0) > 0 ? 'Previous active gateway key was revoked automatically.' : undefined,
+      });
       setGeneratedApiKey({ rawKey: result.raw_key, keyPrefix: result.key_prefix, visible: false });
       setShowCreateKey(false);
       setNewApiKey({ name: '', expires_in_days: 0 });
@@ -406,7 +409,7 @@ export default function SettingsPage() {
               <KeyRound className="w-5 h-5 text-neutral-500" />
               Gateway API Keys
             </h3>
-            <p className="text-sm text-neutral-400 mt-1">Manage authentication tokens for the AuthClaw proxy.</p>
+            <p className="text-sm text-neutral-400 mt-1">Manage the organization gateway token for the AuthClaw proxy. Creating a new key revokes the previous active gateway key.</p>
           </div>
           <Button onClick={() => setShowCreateKey(!showCreateKey)} className="bg-white/10 hover:bg-white/20 text-white border border-white/5" disabled={createKeyMutation.isPending}>
             <Plus className="w-4 h-4 mr-2" />

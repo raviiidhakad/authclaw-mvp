@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Activity, Clock, CheckCircle, XCircle, AlertTriangle, Shield, Server, ArrowRightLeft, ArrowUpRight, Copy, Send, Play, Key, MessageSquare, Zap, Lock, CheckCheck, ChevronDown, ChevronUp, Network } from 'lucide-react';
+import { Activity, Clock, CheckCircle, XCircle, AlertTriangle, Shield, Server, ArrowRightLeft, ArrowUpRight, Copy, Send, Play, Key, MessageSquare, Zap, Lock, CheckCheck, ChevronDown, ChevronUp, Network, Eye, EyeOff } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -11,6 +11,7 @@ import { TableSkeleton } from '@/components/shared/loaders';
 import { EmptyState } from '@/components/shared/states';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import { apiClient } from '@/lib/api-client';
 
 type GatewayViolation = {
   description?: string;
@@ -264,6 +265,27 @@ const QUICK_TESTS = [
   { label: 'Content filter', prompt: 'Explain why bypassing security controls is unsafe.' },
 ];
 
+const FULL_AUTHCLAW_KEY_RE = /^ac_[a-f0-9]{48}$/i;
+
+function normalizeGatewayKey(value: string) {
+  return value.trim().replace(/^Bearer\s+/i, '').replace(/^['"]|['"]$/g, '');
+}
+
+function getGatewayKeyValidationMessage(value: string) {
+  const normalized = normalizeGatewayKey(value);
+  if (!normalized) return null;
+  if (/[*.\u2022]/.test(normalized)) {
+    return 'This looks like a masked key or prefix. Create a new key and use the full one-time ac_ value.';
+  }
+  if (!normalized.startsWith('ac_')) {
+    return 'AuthClaw gateway keys start with ac_. Do not paste a provider key here.';
+  }
+  if (!FULL_AUTHCLAW_KEY_RE.test(normalized)) {
+    return 'This is not the full AuthClaw gateway key. Existing key metadata cannot be used for gateway calls.';
+  }
+  return null;
+}
+
 function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
   const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -272,10 +294,20 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
   const [result, setResult] = useState<GatewayResult | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [keyVisible, setKeyVisible] = useState(false);
+  const [isCreatingKey, setIsCreatingKey] = useState(false);
+  const apiKeyValidationMessage = getGatewayKeyValidationMessage(apiKey);
 
   const sendRequest = async () => {
-    if (!apiKey.trim()) {
+    const gatewayKey = normalizeGatewayKey(apiKey);
+
+    if (!gatewayKey) {
       toast.error('API Key required', { description: 'Please enter your AuthClaw API key from Settings → API Keys.' });
+      return;
+    }
+    const keyProblem = getGatewayKeyValidationMessage(apiKey);
+    if (keyProblem) {
+      toast.error('Invalid AuthClaw gateway key', { description: keyProblem });
       return;
     }
     if (!prompt.trim()) {
@@ -292,8 +324,8 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
       const resp = await fetch(`${apiBase}/api/v1/gateway/chat/completions`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey.trim()}`,
-          'X-API-Key': apiKey.trim(),
+          'Authorization': `Bearer ${gatewayKey}`,
+          'X-API-Key': gatewayKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -353,6 +385,33 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const createAndUseGatewayKey = async () => {
+    try {
+      setIsCreatingKey(true);
+      const response = await apiClient.post('/api-keys', {
+        name: `Gateway playground ${new Date().toLocaleString()}`,
+        scope: 'gateway_only',
+      });
+      const rawKey = response.data?.raw_key;
+      if (!rawKey) {
+        toast.error('Gateway key was created but the raw key was not returned.');
+        return;
+      }
+      setApiKey(rawKey);
+      setKeyVisible(true);
+      setResult(null);
+      await navigator.clipboard.writeText(rawKey);
+      const revokedCount = Number(response.data?.revoked_key_count || 0);
+      toast.success('Fresh AuthClaw key created and copied', {
+        description: revokedCount > 0 ? 'Previous active gateway key was revoked automatically.' : undefined,
+      });
+    } catch {
+      toast.error('Could not create gateway key');
+    } finally {
+      setIsCreatingKey(false);
+    }
+  };
+
   return (
     <Card className="glass-card overflow-hidden">
       {/* Header */}
@@ -396,6 +455,14 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                 >
                   {copied ? <CheckCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
+                <button
+                  onClick={createAndUseGatewayKey}
+                  disabled={isCreatingKey}
+                  className="shrink-0 px-2.5 py-1.5 rounded-lg bg-violet-600/80 hover:bg-violet-500 disabled:bg-violet-900 text-white text-[11px] font-medium transition-colors"
+                  title="Create and fill a fresh gateway key"
+                >
+                  {isCreatingKey ? 'Creating...' : 'Create key'}
+                </button>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -406,13 +473,41 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                     <label className="text-[11px] text-neutral-400 uppercase tracking-wider font-medium mb-1.5 flex items-center gap-1.5">
                       <Key className="w-3 h-3" /> AuthClaw API Key
                     </label>
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="ac_xxxxxxxxxxxxxxxxx"
-                      className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/20 transition-all"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type={keyVisible ? 'text' : 'password'}
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder="ac_ followed by the full one-time key"
+                        className={`flex-1 bg-black/30 border rounded-lg px-3 py-2 text-xs font-mono text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-1 transition-all ${
+                          apiKeyValidationMessage
+                            ? 'border-amber-500/50 focus:border-amber-500/60 focus:ring-amber-500/20'
+                            : 'border-white/10 focus:border-violet-500/50 focus:ring-violet-500/20'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setKeyVisible((value) => !value)}
+                        className="px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-neutral-400 hover:text-neutral-200"
+                        title={keyVisible ? 'Hide API key' : 'Show API key'}
+                      >
+                        {keyVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => apiKey && navigator.clipboard.writeText(normalizeGatewayKey(apiKey))}
+                        disabled={!apiKey}
+                        className="px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-neutral-400 hover:text-neutral-200 disabled:opacity-40"
+                        title="Copy current API key"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {apiKeyValidationMessage ? (
+                      <p className="mt-1.5 text-[11px] text-amber-300">{apiKeyValidationMessage}</p>
+                    ) : (
+                      <p className="mt-1.5 text-[11px] text-neutral-500">Use the full key shown once after creation. Prefix-only values will be rejected.</p>
+                    )}
                   </div>
 
                   {/* Model */}
@@ -638,7 +733,7 @@ export default function GatewayPage() {
             <Network className="w-4 h-4 text-blue-400" />
             Route and Provider Configuration
           </CardTitle>
-          <Link href="/gateway-routes" className="text-xs text-blue-300 hover:text-blue-200">
+          <Link href="/gateway/routes" className="text-xs text-blue-300 hover:text-blue-200">
             Manage routes
           </Link>
         </div>

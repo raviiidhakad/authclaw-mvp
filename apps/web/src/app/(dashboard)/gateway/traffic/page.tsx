@@ -13,6 +13,7 @@ type GatewayRequest = {
   created_at: string;
   status: string;
   model?: string | null;
+  provider_id?: string | null;
   latency_ms?: number | null;
   provider_status_code?: number | null;
   error_message?: string | null;
@@ -23,6 +24,8 @@ function safeText(value: unknown) {
   return raw
     .replace(/raw_provider_payload/gi, '[redacted-source]')
     .replace(/vault[:/][^\s,"'}]+/gi, '[redacted-vault-ref]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .replace(/(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)/g, '[redacted-phone]')
     .replace(/(token|secret|password|credential|api[_-]?key)\s*[:=]\s*[^,\s}]+/gi, '$1=[redacted]')
     .replace(/\b(?:sk-[a-z0-9*_=-]{8,}|gsk_[a-z0-9*_=-]{8,})\b/gi, '[redacted-provider-key]');
 }
@@ -70,7 +73,7 @@ export default function GatewayTrafficPage() {
           <table className="w-full text-sm">
             <thead className="bg-neutral-900/80 border-b border-white/5">
               <tr>
-                {['Time', 'Request ID', 'Model', 'Decision', 'Latency', 'Context'].map((header) => <th key={header} className="text-left p-4 text-xs uppercase tracking-wider text-neutral-400">{header}</th>)}
+                {['Time', 'Request ID', 'Provider', 'Model', 'Decision', 'Latency', 'Context'].map((header) => <th key={header} className="text-left p-4 text-xs uppercase tracking-wider text-neutral-400">{header}</th>)}
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -78,6 +81,7 @@ export default function GatewayTrafficPage() {
                 <tr key={row.id}>
                   <td className="p-4 text-neutral-400 whitespace-nowrap"><Clock className="inline w-3.5 h-3.5 mr-2" />{new Date(row.created_at).toLocaleString()}</td>
                   <td className="p-4 font-mono text-xs text-neutral-500">{row.id}</td>
+                  <td className="p-4 font-mono text-xs text-neutral-400">{row.provider_id ? row.provider_id.slice(0, 8) : 'unresolved'}</td>
                   <td className="p-4 font-mono text-xs text-neutral-300">{row.model || 'unknown'}</td>
                   <td className="p-4"><StatusBadge status={row.status} /></td>
                   <td className="p-4 font-mono text-xs text-neutral-400">{row.latency_ms ? `${row.latency_ms}ms` : '-'}</td>

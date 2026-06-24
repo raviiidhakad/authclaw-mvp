@@ -5,7 +5,7 @@ import { Plus, Network, Trash2, Edit, ChevronRight, Server, Search, Shield } fro
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useGatewayRoutes, useCreateGatewayRoute, useUpdateGatewayRoute, useDeleteGatewayRoute, useProviders } from '@/hooks/use-data';
+import { useGatewayRoutes, useCreateGatewayRoute, useUpdateGatewayRoute, useDeleteGatewayRoute, useProviders, usePolicies } from '@/hooks/use-data';
 import { CardSkeleton } from '@/components/shared/loaders';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,6 +18,7 @@ type GatewayRoute = {
   is_default: boolean;
   is_active: boolean;
   redaction: string;
+  config?: Record<string, unknown>;
   created_at: string;
 };
 
@@ -27,10 +28,19 @@ type Provider = {
   type?: string;
 };
 
+type PolicyLite = {
+  id: string;
+  name: string;
+  is_active: boolean;
+  priority: number;
+};
+
 type GatewayRouteForm = {
   name: string;
   description: string;
   provider_id: string;
+  model: string;
+  policy_id: string;
   is_default: boolean;
   is_active: boolean;
   redaction: string;
@@ -96,6 +106,7 @@ function Modal({ title, onClose, children }: ModalProps) {
 export default function GatewayRoutesPage() {
   const { data: routes, isLoading } = useGatewayRoutes();
   const { data: providers } = useProviders();
+  const { data: policies } = usePolicies();
   const createMutation = useCreateGatewayRoute();
   const updateMutation = useUpdateGatewayRoute();
   const deleteMutation = useDeleteGatewayRoute();
@@ -110,9 +121,11 @@ export default function GatewayRoutesPage() {
     name: '',
     description: '',
     provider_id: '',
+    model: 'llama3-8b-8192',
+    policy_id: '',
     is_default: false,
     is_active: true,
-    redaction: 'none',
+    redaction: 'mask',
   };
   const [formData, setFormData] = useState<GatewayRouteForm>(initialFormState);
 
@@ -128,6 +141,8 @@ export default function GatewayRoutesPage() {
       name: route.name,
       description: route.description || '',
       provider_id: route.provider_id || '',
+      model: String(route.config?.model || route.config?.default_model || ''),
+      policy_id: String(route.config?.policy_id || ''),
       is_default: route.is_default,
       is_active: route.is_active,
       redaction: route.redaction,
@@ -136,16 +151,23 @@ export default function GatewayRoutesPage() {
   };
 
   const handleSave = async () => {
+    if (!formData.provider_id) {
+      toast.error('Select a provider before saving this route');
+      return;
+    }
     try {
       const payload: Record<string, unknown> = {
         name: formData.name,
         description: formData.description,
+        provider_id: formData.provider_id,
         is_default: formData.is_default,
         is_active: formData.is_active,
         redaction: formData.redaction,
+        config: {
+          model: formData.model.trim() || undefined,
+          policy_id: formData.policy_id || undefined,
+        },
       };
-      if (formData.provider_id) payload.provider_id = formData.provider_id;
-      else payload.provider_id = null;
       
       if (editingRoute) {
         await updateMutation.mutateAsync({ id: editingRoute.id, data: payload });
@@ -199,17 +221,28 @@ export default function GatewayRoutesPage() {
         </div>
 
         <div className="space-y-2">
-          <label className="text-[11px] uppercase tracking-wider text-neutral-500 font-bold block">Target Provider</label>
+          <label className="text-[11px] uppercase tracking-wider text-neutral-500 font-bold block">Target Provider *</label>
           <select
             value={formData.provider_id}
             onChange={e => setFormData({ ...formData, provider_id: e.target.value })}
             className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
           >
-            <option value="">No Provider (Block/Mock)</option>
+            <option value="">Select provider</option>
             {(providers as Provider[] | undefined)?.map((p) => (
               <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
             ))}
           </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-[11px] uppercase tracking-wider text-neutral-500 font-bold block">Model Override *</label>
+          <input
+            type="text"
+            value={formData.model}
+            onChange={e => setFormData({ ...formData, model: e.target.value })}
+            placeholder="e.g. llama3-8b-8192"
+            className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          />
         </div>
 
         <div className="space-y-2">
@@ -219,11 +252,25 @@ export default function GatewayRoutesPage() {
             onChange={e => setFormData({ ...formData, redaction: e.target.value })}
             className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
           >
-            <option value="none">None (Pass-through)</option>
             <option value="mask">Mask (Replace with Entity)</option>
             <option value="hash">Hash (SHA-256)</option>
             <option value="synthetic">Synthetic (Backend-supported only)</option>
           </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-[11px] uppercase tracking-wider text-neutral-500 font-bold block">Attached Policy</label>
+          <select
+            value={formData.policy_id}
+            onChange={e => setFormData({ ...formData, policy_id: e.target.value })}
+            className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          >
+            <option value="">Tenant active policies</option>
+            {(policies as PolicyLite[] | undefined)?.filter((policy) => policy.is_active).map((policy) => (
+              <option key={policy.id} value={policy.id}>{policy.name} (priority {policy.priority})</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-neutral-500">Disabled or cross-tenant policies are rejected by the backend.</p>
         </div>
 
         <div className="flex items-center gap-6 col-span-2 mt-2">
@@ -253,7 +300,7 @@ export default function GatewayRoutesPage() {
         <Button variant="ghost" onClick={() => { setShowCreate(false); setEditingRoute(null); }} className="text-neutral-400">
           Cancel
         </Button>
-        <Button onClick={handleSave} disabled={!formData.name || createMutation.isPending || updateMutation.isPending} className="bg-blue-600 hover:bg-blue-500 text-white">
+        <Button onClick={handleSave} disabled={!formData.name || !formData.provider_id || createMutation.isPending || updateMutation.isPending} className="bg-blue-600 hover:bg-blue-500 text-white">
           {editingRoute ? 'Save Changes' : 'Create Route'}
         </Button>
       </div>
@@ -318,6 +365,7 @@ export default function GatewayRoutesPage() {
               {filteredRoutes.map((route) => {
                 const isExpanded = expandedId === route.id;
                 const provider = (providers as Provider[] | undefined)?.find((p) => p.id === route.provider_id);
+                const attachedPolicy = (policies as PolicyLite[] | undefined)?.find((p) => p.id === route.config?.policy_id);
                 
                 return (
                   <motion.div 
@@ -368,6 +416,17 @@ export default function GatewayRoutesPage() {
                                <Shield className="w-3 h-3" />
                                <span className="font-medium capitalize text-[10px]">Redaction: {route.redaction}</span>
                             </span>
+                            {Boolean(route.config?.model) && (
+                              <span className="font-mono text-[10px] text-neutral-400">
+                                Model: {String(route.config?.model)}
+                              </span>
+                            )}
+                            {attachedPolicy && (
+                              <span className="flex items-center gap-1.5 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 text-emerald-400">
+                                <Shield className="w-3 h-3" />
+                                <span className="font-medium text-[10px]">Policy: {attachedPolicy.name}</span>
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -416,10 +475,18 @@ export default function GatewayRoutesPage() {
                                 <p className="text-neutral-300 capitalize">{route.redaction}</p>
                               </div>
                               <div>
+                                <p className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold mb-1">Model Override</p>
+                                <p className="text-neutral-300 font-mono text-xs">{String(route.config?.model || route.config?.default_model || 'Route request model')}</p>
+                              </div>
+                              <div>
                                 <p className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold mb-1">Status</p>
                                 <p className={route.is_active ? 'text-emerald-400' : 'text-neutral-500'}>
                                   {route.is_active ? 'Active' : 'Inactive'}
                                 </p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold mb-1">Attached Policy</p>
+                                <p className="text-neutral-300">{attachedPolicy ? `${attachedPolicy.name} (${attachedPolicy.is_active ? 'active' : 'disabled'})` : 'Tenant active policies'}</p>
                               </div>
                             </div>
                           </div>

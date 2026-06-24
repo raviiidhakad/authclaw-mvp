@@ -99,6 +99,9 @@ services:
 
 
   web:
+    # Keep the containerized frontend opt-in so local Next.js dev on port 3000
+    # is not silently replaced by a stale Docker image.
+    profiles: ["docker-web"]
     build:
       context: ./apps/web
       dockerfile: Dockerfile

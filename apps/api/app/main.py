@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import setup_exception_handlers
 from app.api.v1.api import api_router
+from app.api.openai_compat import router as openai_compat_router
 from app.api.middleware import TenantContextMiddleware
 
 # Setup structured logging
@@ -70,6 +71,7 @@ app.add_middleware(
 setup_exception_handlers(app)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
+app.include_router(openai_compat_router, prefix="/v1", tags=["OpenAI-Compatible Gateway"])
 
 @app.get("/health", tags=["Health"])
 async def health_check():

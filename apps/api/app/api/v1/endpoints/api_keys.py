@@ -88,3 +88,28 @@ async def delete_api_key(
         
     await db.delete(api_key)
     await db.commit()
+
+
+@router.post("/{api_key_id}/revoke", response_model=ApiKeyResponse)
+async def revoke_api_key(
+    api_key_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_roles(["owner", "admin"]))
+):
+    """
+    Revoke an API key without deleting its metadata.
+    """
+    result = await db.execute(
+        select(ApiKey).where(ApiKey.id == api_key_id, ApiKey.tenant_id == tenant.id)
+    )
+    api_key = result.scalars().first()
+
+    if not api_key:
+        raise NotFoundException(detail="API key not found")
+
+    api_key.is_active = False
+    await db.flush()
+    await db.refresh(api_key)
+    await db.commit()
+    return api_key

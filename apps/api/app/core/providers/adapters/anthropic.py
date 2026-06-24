@@ -3,7 +3,7 @@ import httpx
 from typing import Dict, Any, AsyncGenerator, Tuple
 from app.models.provider import Provider
 from app.core.providers.base import BaseProviderAdapter
-from app.core.encryption import decrypt_value
+from app.services.provider_credentials import retrieve_provider_api_key
 from app.services.api_safety import sanitize_text
 
 class AnthropicAdapter(BaseProviderAdapter):
@@ -11,7 +11,7 @@ class AnthropicAdapter(BaseProviderAdapter):
         pass
 
     async def get_connection_details(self, provider: Provider) -> Tuple[str, Dict[str, str]]:
-        api_key = decrypt_value(provider.api_key_encrypted)
+        api_key = await retrieve_provider_api_key(provider)
         url = "https://api.anthropic.com/v1/messages"
         headers = {
             "x-api-key": api_key,

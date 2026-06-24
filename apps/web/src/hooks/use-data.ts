@@ -323,7 +323,7 @@ export function useRevokeApiKey() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      await apiClient.delete(`/api-keys/${id}`);
+      await apiClient.post(`/api-keys/${id}/revoke`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });

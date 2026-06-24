@@ -79,6 +79,8 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   }));
   await page.route(/\/api\/v1\/gateway-routes(?:\?.*)?$/, async (route) => fulfillJson(route, [routeSummary]));
   await page.route(/\/api\/v1\/providers(?:\?.*)?$/, async (route) => fulfillJson(route, [providerSummary]));
+  await page.route(/\/api\/v1\/gateway\/providers(?:\?.*)?$/, async (route) => fulfillJson(route, [providerSummary]));
+  await page.route(/\/api\/v1\/gateway\/providers\/provider-1\/validate$/, async (route) => fulfillJson(route, { provider_id: 'provider-1', valid: true, provider_type: 'openai' }));
   await page.route(/\/api\/v1\/policies(?:\?.*)?$/, async (route) => fulfillJson(route, []));
   await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
@@ -97,6 +99,7 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
     }
     await fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 });
   });
+  await page.route(/\/api\/v1\/api-keys\/api-key-1\/revoke$/, async (route) => fulfillJson(route, { id: 'api-key-1', name: 'Agent key', key_prefix: 'ac_testgate', is_active: false, created_at: '2026-06-24T10:00:00Z' }));
 
   await page.goto('/');
   for (const label of ['Overview', 'Gateway', 'Policies & Guardrails', 'Agent & Remediation', 'Frameworks', 'Audit & Trust Center', 'Risk & Red Teaming', 'Integrations', 'Settings']) {
@@ -109,6 +112,26 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await expect(page.getByText(/Route and Provider Configuration/i)).toBeVisible();
   await expect(page.getByText(/Redaction Mode/i)).toBeVisible();
   await expect(page.getByText(/Production GPT route/i)).toBeVisible();
+  for (const label of ['Providers', 'Routes', 'API Keys', 'Traffic']) {
+    await expect(page.getByRole('link', { name: label, exact: true })).toBeVisible();
+  }
+
+  await page.goto('/gateway/providers');
+  await expect(page.getByText(/Gateway Providers/i)).toBeVisible();
+  await expect(page.getByText(/Provider Metadata/i)).toBeVisible();
+  await expect(page.getByText(/OpenAI production/i)).toBeVisible();
+
+  await page.goto('/gateway/routes');
+  await expect(page.getByText(/Gateway Routes/i)).toBeVisible();
+  await expect(page.getByText(/Production GPT route/i)).toBeVisible();
+
+  await page.goto('/gateway/api-keys');
+  await expect(page.getByText(/Gateway API Keys/i)).toBeVisible();
+  await expect(page.getByText(/Create AuthClaw Gateway Key/i)).toBeVisible();
+
+  await page.goto('/gateway/traffic');
+  await expect(page.getByText(/Gateway Traffic/i)).toBeVisible();
+  await expect(page.getByText(/Traffic Inspector/i)).toBeVisible();
 
   await page.goto('/policies');
   await expect(page.getByText(/Prompt injection/i)).toBeVisible();

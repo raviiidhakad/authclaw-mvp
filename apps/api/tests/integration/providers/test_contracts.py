@@ -75,8 +75,9 @@ class TestOpenAIAdapterUnit:
         adapter = OpenAIAdapter()
         raw = json.dumps({"error": {"message": "invalid key", "type": "auth_error", "code": "invalid_api_key"}})
         result = adapter.normalize_error(401, raw)
-        assert result["error"]["message"] == "invalid key"
-        assert result["error"]["type"] == "auth_error"
+        assert result["error"]["message"] == "Provider authentication failed. Update the provider credential in Settings."
+        assert result["error"]["type"] == "provider_auth_error"
+        assert result["error"]["code"] == "invalid_provider_credentials"
 
     def test_normalize_error_non_json(self):
         adapter = OpenAIAdapter()
@@ -131,7 +132,8 @@ class TestAnthropicAdapterUnit:
         adapter = AnthropicAdapter()
         raw = json.dumps({"error": {"type": "authentication_error", "message": "invalid x-api-key"}})
         result = adapter.normalize_error(401, raw)
-        assert result["error"]["message"] == "invalid x-api-key"
+        assert result["error"]["message"] == "Provider authentication failed. Update the provider credential in Settings."
+        assert result["error"]["type"] == "provider_auth_error"
 
 
 class TestCohereAdapterUnit:
@@ -182,7 +184,8 @@ class TestCohereAdapterUnit:
         adapter = CohereAdapter()
         raw = json.dumps({"message": "invalid api key"})
         result = adapter.normalize_error(401, raw)
-        assert "invalid api key" in result["error"]["message"]
+        assert result["error"]["message"] == "Provider authentication failed. Update the provider credential in Settings."
+        assert result["error"]["type"] == "provider_auth_error"
 
 
 class TestGeminiAdapterUnit:

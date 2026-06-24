@@ -9,11 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.api.dependencies import get_db, get_current_user, get_current_tenant, require_roles
-from app.core.encryption import encrypt_value
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.models.provider import Provider
 from app.models.user import User
 from app.models.tenant import Tenant
+from app.core.providers.factory import ProviderAdapterFactory
+from app.services.provider_credentials import (
+    delete_provider_api_key,
+    retrieve_provider_api_key,
+    store_provider_api_key,
+)
 from app.schemas.provider import (
     ProviderCreate,
     ProviderUpdate,
@@ -78,15 +83,70 @@ async def create_provider(
         tenant_id=tenant.id,
         name=body.name,
         type=body.type,
-        api_key_encrypted=encrypt_value(body.api_key),
+        api_key_encrypted="__pending_vault_reference__",
         config=body.config,
         is_active=body.is_active,
     )
     db.add(provider)
     await db.flush()
+    provider.api_key_encrypted = await store_provider_api_key(tenant.id, provider.id, body.api_key)
+    await db.flush()
     await db.refresh(provider)
     await db.commit()
     return provider
+
+
+@router.post("/{provider_id}/validate")
+async def validate_provider(
+    provider_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_roles(["owner", "admin"])),
+):
+    """Validate stored provider credentials without returning secret material."""
+    provider = await _get_provider_or_404(provider_id, tenant.id, db)
+    if not provider.is_active:
+        return {"provider_id": str(provider.id), "valid": False, "error_code": "provider_disabled"}
+
+    try:
+        adapter = ProviderAdapterFactory.get_adapter(provider.type)
+        await retrieve_provider_api_key(provider)
+        url, headers = await adapter.get_connection_details(provider)
+        request_payload = adapter.transform_request(
+            {
+                "model": (provider.config or {}).get("model", "llama3-8b-8192"),
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            }
+        )
+
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, json=request_payload, headers=headers)
+
+        if 200 <= response.status_code < 300:
+            return {"provider_id": str(provider.id), "valid": True, "provider_type": provider.type.value}
+        if response.status_code == 401:
+            return {
+                "provider_id": str(provider.id),
+                "valid": False,
+                "provider_type": provider.type.value,
+                "error_code": "invalid_provider_credentials",
+            }
+        return {
+            "provider_id": str(provider.id),
+            "valid": False,
+            "provider_type": provider.type.value,
+            "error_code": f"provider_http_{response.status_code}",
+        }
+    except Exception:
+        return {
+            "provider_id": str(provider.id),
+            "valid": False,
+            "provider_type": provider.type.value,
+            "error_code": "provider_validation_failed",
+        }
 
 
 @router.get("/{provider_id}", response_model=ProviderResponse)
@@ -114,7 +174,9 @@ async def update_provider(
     if body.name is not None:
         provider.name = body.name
     if body.api_key is not None:
-        provider.api_key_encrypted = encrypt_value(body.api_key)
+        old_reference = provider.api_key_encrypted
+        provider.api_key_encrypted = await store_provider_api_key(tenant.id, provider.id, body.api_key)
+        await delete_provider_api_key(tenant.id, old_reference)
     if body.config is not None:
         provider.config = body.config
     if body.is_active is not None:
@@ -135,5 +197,6 @@ async def delete_provider(
 ):
     """Delete a provider."""
     provider = await _get_provider_or_404(provider_id, tenant.id, db)
+    await delete_provider_api_key(tenant.id, provider.api_key_encrypted)
     await db.delete(provider)
     await db.commit()

@@ -21,9 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.encryption import decrypt_value
 from app.core.engine.audit import AuditEngine
 from app.core.engine.evaluator import PolicyEngine
+from app.models.gateway_route import GatewayRoute
 from app.models.policy import Policy
 from app.models.provider import Provider, ProviderType
 
@@ -269,6 +269,113 @@ class GatewayService:
         preferred = [p for p in providers if "bad" not in p.name.lower() and "mock" not in p.name.lower()]
         return preferred[0] if preferred else providers[0]
 
+    async def _select_provider_for_route(
+        self,
+        tenant_id: uuid.UUID,
+        requested_model: str = "",
+        route_id: Optional[uuid.UUID] = None,
+        route_name: Optional[str] = None,
+    ) -> Tuple[Optional[Provider], Optional[GatewayRoute], Optional[str]]:
+        route: Optional[GatewayRoute] = None
+
+        if route_id:
+            result = await self.db.execute(
+                select(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.id == route_id)
+            )
+            route = result.scalars().first()
+        elif route_name:
+            result = await self.db.execute(
+                select(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.name == route_name)
+            )
+            route = result.scalars().first()
+        elif requested_model:
+            result = await self.db.execute(
+                select(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id, GatewayRoute.name == requested_model)
+            )
+            route = result.scalars().first()
+
+        if route and not route.is_active:
+            return None, route, "route_disabled"
+
+        if route and route.provider_id:
+            provider_result = await self.db.execute(
+                select(Provider).where(
+                    Provider.tenant_id == tenant_id,
+                    Provider.id == route.provider_id,
+                    Provider.is_active == True,
+                )
+            )
+            provider = provider_result.scalars().first()
+            if provider:
+                return provider, route, None
+            return None, route, "route_provider_unavailable"
+
+        if not route:
+            default_result = await self.db.execute(
+                select(GatewayRoute).where(
+                    GatewayRoute.tenant_id == tenant_id,
+                    GatewayRoute.is_default == True,
+                    GatewayRoute.is_active == True,
+                )
+            )
+            route = default_result.scalars().first()
+            if route and route.provider_id:
+                provider_result = await self.db.execute(
+                    select(Provider).where(
+                        Provider.tenant_id == tenant_id,
+                        Provider.id == route.provider_id,
+                        Provider.is_active == True,
+                    )
+                )
+                provider = provider_result.scalars().first()
+                if provider:
+                    return provider, route, None
+
+        provider, route, route_error = await self._select_provider_for_route(
+            tenant_id=tenant_id,
+            requested_model=model,
+            route_id=route_id,
+            route_name=route_name,
+        )
+        if route and route.config:
+            route_model = route.config.get("model") or route.config.get("default_model")
+            if route_model and (route_id or route_name or model == route.name):
+                model = str(route_model)
+                modified_payload["model"] = model
+
+        if route_error == "route_disabled":
+            await self.audit_engine.log_request(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                provider_id=None,
+                api_key_id=api_key_id,
+                model=model,
+                original_payload=payload,
+                modified_payload=modified_payload,
+                response_payload={},
+                tokens_prompt=0,
+                tokens_completion=0,
+                latency_ms=0,
+                status_code=403,
+                error_message="Gateway route is disabled.",
+                error_type="configuration_error",
+                error_code="route_disabled",
+                evaluation_result=eval_result,
+            )
+            return {
+                "status_code": 403,
+                "data": {
+                    "error": {
+                        "message": "Gateway route is disabled.",
+                        "type": "configuration_error",
+                        "code": "route_disabled",
+                    }
+                },
+            }
+        if not provider:
+            return None, route, "no_provider"
+        return provider, route, None
+
     # ── Main entrypoint ─────────────────────────────────────────────────────
 
     async def process_chat_request(
@@ -291,6 +398,14 @@ class GatewayService:
         """
         model: str = str(payload.get("model", "gpt-3.5-turbo"))
         messages: List[Dict[str, Any]] = payload.get("messages", [])
+        route_id: Optional[uuid.UUID] = None
+        if payload.get("route_id"):
+            try:
+                route_id = uuid.UUID(str(payload.get("route_id")))
+            except ValueError:
+                route_id = None
+        route_name = payload.get("route_name") or payload.get("route")
+        route_name = str(route_name) if route_name else None
 
         # Flatten all user messages to a single string for policy evaluation
         full_prompt = "\n".join(
@@ -298,6 +413,7 @@ class GatewayService:
             for m in messages
             if isinstance(m.get("content"), str)
         )
+        original_full_prompt = full_prompt
 
         # ── Sprint 1: Inbound Security Pipeline ─────────────────────────────
         security_scan_count_inbound = 0
@@ -492,7 +608,12 @@ class GatewayService:
 
         # ── 4. Rebuild payload if prompt was redacted ────────────────────
         modified_payload = dict(payload)
-        if eval_result.modified_prompt != full_prompt:
+        if full_prompt != original_full_prompt:
+            modified_payload["messages"] = [
+                {**msg, "content": full_prompt} if msg.get("role") == "user" else msg
+                for msg in messages
+            ]
+        elif eval_result.modified_prompt != full_prompt:
             new_messages = []
             for msg in messages:
                 if msg.get("role") == "user":
@@ -519,18 +640,26 @@ class GatewayService:
                 tokens_completion=0,
                 latency_ms=0,
                 status_code=503,
-                error_message="No active AI provider configured for this tenant.",
+                error_message=(
+                    "Route provider unavailable."
+                    if route_error == "route_provider_unavailable"
+                    else "No active AI provider configured for this tenant."
+                ),
                 error_type="configuration_error",
-                error_code="no_provider",
+                error_code=route_error or "no_provider",
                 evaluation_result=eval_result,
             )
             return {
                 "status_code": 503,
                 "data": {
                     "error": {
-                        "message": "No active AI provider configured for this tenant.",
+                        "message": (
+                            "Route provider unavailable."
+                            if route_error == "route_provider_unavailable"
+                            else "No active AI provider configured for this tenant."
+                        ),
                         "type": "configuration_error",
-                        "code": 503,
+                        "code": route_error or "no_provider",
                     }
                 },
             }

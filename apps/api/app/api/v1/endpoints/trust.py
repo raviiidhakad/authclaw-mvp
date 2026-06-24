@@ -20,23 +20,29 @@ from app.api.v1.endpoints.trust_common import (
 )
 from app.core.config import settings
 from app.core.events.producer import producer as default_event_producer
-from app.core.exceptions import BadRequestException, ForbiddenException
+from app.core.exceptions import BadRequestException, ForbiddenException, NotFoundException
 from app.models.compliance import ComplianceAssessment, ComplianceGap, EvidenceItem
 from app.models.finding import SecurityFinding
 from app.models.integration import CloudIntegration
 from app.models.remediation import RemediationExecutionJob, RemediationPlan, RemediationVerificationResult
 from app.models.tenant import Tenant
-from app.models.trust import ExternalShareLink, ReportAccessLog, ReportRun, ReportRunStatus
+from app.models.trust import ExternalShareLink, ReportAccessLog, ReportRun, ReportRunStatus, TrustNotification
 from app.models.user import User
 from app.schemas.events import ShareLinkCreatedEvent, ShareLinkRevokedEvent, TrustCenterViewedEvent
 from app.schemas.trust import (
+    ActivityTimelineItemResponse,
+    ActivityTimelineListResponse,
     ShareLinkCreateRequest,
     ShareLinkCreateResponse,
     ShareLinkListResponse,
     ShareLinkResponse,
+    TrustNotificationListResponse,
+    TrustNotificationResponse,
+    TrustNotificationUnreadResponse,
     TrustOverviewResponse,
     TrustPostureResponse,
 )
+from app.services.trust_activity import TrustActivityTimelineService
 from app.services.trust_reporting import (
     CREATE_SHARE_LINK,
     REVOKE_SHARE_LINK,
@@ -80,6 +86,47 @@ def _response(tenant_id: uuid.UUID, posture: str, counts=None, status_counts=Non
     )
     payload.pop("sanitization_version", None)
     return TrustPostureResponse(**payload)
+
+
+def _notification_response(row: TrustNotification) -> TrustNotificationResponse:
+    payload = sanitizer.sanitize_payload(
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "recipient_user_id": row.recipient_user_id,
+            "type": row.type,
+            "severity": row.severity,
+            "title": row.title,
+            "body": row.body,
+            "resource_type": row.resource_type,
+            "resource_id": row.resource_id,
+            "read_at": row.read_at,
+            "created_at": row.created_at,
+        }
+    )
+    payload.pop("sanitization_version", None)
+    return TrustNotificationResponse(**payload)
+
+
+def _activity_response(item) -> ActivityTimelineItemResponse:
+    payload = sanitizer.sanitize_payload(
+        {
+            "id": item.id,
+            "tenant_id": item.tenant_id,
+            "occurred_at": item.occurred_at,
+            "source": item.source,
+            "action": item.action,
+            "severity": item.severity,
+            "actor_user_id": item.actor_user_id,
+            "resource_type": item.resource_type,
+            "resource_id": item.resource_id,
+            "title": item.title,
+            "summary": item.summary,
+            "metadata": item.metadata,
+        }
+    )
+    payload.pop("sanitization_version", None)
+    return ActivityTimelineItemResponse(**payload)
 
 
 async def _counts_by(db: AsyncSession, stmt, field_name: str) -> dict[str, int]:
@@ -270,6 +317,128 @@ async def get_integration_health(
     await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
     await _emit_view(tenant.id, current_user.id, "integration-health")
     return await _integration_health(db, tenant.id)
+
+
+@router.get("/notifications", response_model=TrustNotificationListResponse)
+async def list_notifications(
+    unread_only: bool = False,
+    type: str | None = None,
+    severity: str | None = None,
+    resource_type: str | None = None,
+    skip: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    rows, total, unread = await service.notification_rows(
+        tenant.id,
+        current_user.id,
+        unread_only=unread_only,
+        type=type,
+        severity=severity,
+        resource_type=resource_type,
+        skip=skip,
+        limit=limit,
+    )
+    return TrustNotificationListResponse(
+        items=[_notification_response(row) for row in rows],
+        total=total,
+        unread=unread,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/notifications/unread-count", response_model=TrustNotificationUnreadResponse)
+async def get_notification_unread_count(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    _, _, unread = await service.notification_rows(tenant.id, current_user.id, unread_only=True, skip=0, limit=1)
+    return TrustNotificationUnreadResponse(unread=unread)
+
+
+@router.get("/notifications/{notification_id}", response_model=TrustNotificationResponse)
+async def get_notification(
+    notification_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    row = await service.notification_or_none(tenant.id, current_user.id, notification_id)
+    if row is None:
+        raise NotFoundException(detail="Notification not found")
+    return _notification_response(row)
+
+
+@router.post("/notifications/{notification_id}/read", response_model=TrustNotificationResponse)
+async def mark_notification_read(
+    notification_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    row = await service.notification_or_none(tenant.id, current_user.id, notification_id)
+    if row is None:
+        raise NotFoundException(detail="Notification not found")
+    await service.mark_notification_read(row)
+    await db.commit()
+    await set_tenant_context(db, tenant.id)
+    return _notification_response(row)
+
+
+@router.post("/notifications/mark-all-read", response_model=TrustNotificationUnreadResponse)
+async def mark_all_notifications_read(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    await service.mark_all_read(tenant.id, current_user.id)
+    await db.commit()
+    await set_tenant_context(db, tenant.id)
+    return TrustNotificationUnreadResponse(unread=0)
+
+
+@router.get("/activity", response_model=ActivityTimelineListResponse)
+async def list_activity_timeline(
+    source: str | None = None,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: uuid.UUID | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    skip: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    service = TrustActivityTimelineService(db, sanitizer=sanitizer)
+    rows, total = await service.list_timeline(
+        tenant.id,
+        source=source,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        date_from=date_from,
+        date_to=date_to,
+        skip=skip,
+        limit=limit,
+    )
+    return ActivityTimelineListResponse(items=[_activity_response(item) for item in rows], total=total, skip=skip, limit=limit)
 
 
 def _sharing_enabled_or_403() -> None:

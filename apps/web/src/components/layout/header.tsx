@@ -7,11 +7,19 @@ export function Header() {
   const pathname = usePathname();
   const { logout, user } = useAuth();
   
-  // Quick breadcrumb generation
   const segments = pathname?.split('/').filter(Boolean) || [];
-  const title = segments.length > 0 
-    ? segments[0].charAt(0).toUpperCase() + segments[0].slice(1)
-    : 'Dashboard';
+  const titleMap: Record<string, string> = {
+    '': 'Overview',
+    gateway: 'Gateway',
+    policies: 'Policies & Guardrails',
+    'agent-remediation': 'Agent & Remediation',
+    frameworks: 'Frameworks',
+    audit: 'Audit & Trust Center',
+    risk: 'Risk & Red Teaming',
+    integrations: 'Integrations',
+    settings: 'Settings',
+  };
+  const title = titleMap[segments[0] || ''] || segments[0].charAt(0).toUpperCase() + segments[0].slice(1);
 
   return (
     <header className="h-16 border-b border-neutral-800 bg-neutral-950 flex items-center justify-between px-6 sticky top-0 z-10 w-full">

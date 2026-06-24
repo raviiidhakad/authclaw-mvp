@@ -2,7 +2,7 @@
 
 import { ShieldCheck, Activity, AlertTriangle, Network, Server, Cpu, Database, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useDashboardStats, useComplianceDashboard, useGatewayRequests, useProviders } from '@/hooks/use-data';
+import { useDashboardStats, useComplianceDashboard, useGatewayRequests, useProviders, useRemediationApprovals } from '@/hooks/use-data';
 import { CardSkeleton } from '@/components/shared/loaders';
 import { motion } from 'framer-motion';
 import {
@@ -87,6 +87,7 @@ export default function DashboardPage() {
   const { data: compliance, isLoading: compLoading } = useComplianceDashboard();
   const { data: gatewayData, isLoading: gatewayLoading } = useGatewayRequests(0, 200);
   const { data: providers } = useProviders();
+  const { data: approvalsData } = useRemediationApprovals({ status: 'pending', limit: 25 });
 
   const isLoading = statsLoading || compLoading;
 
@@ -113,15 +114,11 @@ export default function DashboardPage() {
   const totalRequests = stats?.audit?.total_events || 0;
   const violations = stats?.audit?.events_by_type?.['policy.violation'] || 0;
   const blocked = stats?.audit?.gateway_by_status?.['blocked'] || stats?.audit?.events_by_type?.['gateway.blocked'] || 0;
-  const activeTenants = stats?.tenants?.total || 1;
+  const openApprovals = approvalsData?.items?.filter((approval) => approval.status === 'pending').length ?? 0;
 
   const chartData = buildChartData((gatewayData?.items || []) as GatewayRequestSummary[]);
-  const providerList: ProviderSummary[] = providers && providers.length > 0 ? providers as ProviderSummary[] : [
-    { name: 'OpenAI', is_active: true },
-    { name: 'Anthropic', is_active: true },
-    { name: 'Cohere', is_active: false },
-    { name: 'Azure', is_active: true },
-  ];
+  const providerList: ProviderSummary[] = providers && providers.length > 0 ? providers as ProviderSummary[] : [];
+  const activeProviders = providerList.filter((provider) => provider.is_active !== false).length;
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
@@ -131,20 +128,18 @@ export default function DashboardPage() {
           <p className="text-sm text-neutral-400 mt-1">Real-time operational visibility and security posture.</p>
         </div>
         
-        {/* Real-time System Health Bar */}
-        <div className="flex items-center gap-4 bg-green-500/10 border border-green-500/20 px-4 py-2 rounded-lg">
+        <div className="flex items-center gap-4 bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-lg">
           <div className="flex items-center gap-2">
             <span className="relative flex h-2.5 w-2.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
             </span>
-            <span className="text-sm font-medium text-green-400">All Systems Operational</span>
+            <span className="text-sm font-medium text-blue-300">Evidence-supported posture</span>
           </div>
-          <div className="h-4 w-[1px] bg-green-500/20" />
-          <div className="flex gap-3 text-xs text-green-400/80">
-            <span className="flex items-center gap-1"><Server className="w-3 h-3" /> Gateway: 14ms</span>
-            <span className="flex items-center gap-1"><Database className="w-3 h-3" /> Audit: Synced</span>
-            <span className="flex items-center gap-1"><Cpu className="w-3 h-3" /> Engine: Idle</span>
+          <div className="h-4 w-[1px] bg-blue-500/20" />
+          <div className="flex gap-3 text-xs text-blue-300/80">
+            <span className="flex items-center gap-1"><Server className="w-3 h-3" /> Providers: {activeProviders}/{providerList.length}</span>
+            <span className="flex items-center gap-1"><Database className="w-3 h-3" /> Audit events: {totalRequests}</span>
+            <span className="flex items-center gap-1"><Cpu className="w-3 h-3" /> Approvals: {openApprovals}</span>
           </div>
         </div>
       </div>
@@ -193,12 +188,12 @@ export default function DashboardPage() {
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
           <Card className="glass-card">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-neutral-400">Active Tenants</CardTitle>
+              <CardTitle className="text-sm font-medium text-neutral-400">Open Approvals</CardTitle>
               <Network className="h-4 w-4 text-emerald-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-neutral-100">{activeTenants}</div>
-              <p className="text-xs text-neutral-500 mt-1">Isolated environments</p>
+              <div className="text-2xl font-bold text-neutral-100">{openApprovals}</div>
+              <p className="text-xs text-neutral-500 mt-1">Human review queue</p>
             </CardContent>
           </Card>
         </motion.div>
@@ -350,7 +345,11 @@ export default function DashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-4 grid grid-cols-2 gap-3">
-              {providerList.slice(0, 4).map((p) => (
+              {providerList.length === 0 ? (
+                <div className="col-span-2 rounded-lg border border-dashed border-white/10 bg-black/20 p-4 text-sm text-neutral-400">
+                  No model providers configured yet. Add provider credentials in Settings before routing live gateway traffic.
+                </div>
+              ) : providerList.slice(0, 4).map((p) => (
                 <div key={p.name} className="flex items-center justify-between p-3 rounded-lg bg-neutral-800/30 border border-white/5">
                   <span className="text-sm font-medium text-neutral-300">{p.name}</span>
                   {p.is_active !== false ? (

@@ -222,6 +222,7 @@ export default function GatewayRoutesPage() {
             <option value="none">None (Pass-through)</option>
             <option value="mask">Mask (Replace with Entity)</option>
             <option value="hash">Hash (SHA-256)</option>
+            <option value="synthetic">Synthetic (Backend-supported only)</option>
           </select>
         </div>
 

@@ -148,6 +148,9 @@ _HASH_FIELD_ALLOWLIST = {
 }
 
 _SECRET_VALUE_PATTERNS = (
+    re.compile(r"\braw[_\s-]?provider[_\s-]?payload\b", re.I),
+    re.compile(r"\braw[_\s-]?artifact\b", re.I),
+    re.compile(r"\braw[_\s-]?payload\b", re.I),
     re.compile(r"AKIA[0-9A-Z]{16}", re.I),
     re.compile(r"AIza[0-9A-Za-z_-]{35}", re.I),
     re.compile(r"gh[pousr]_[0-9A-Za-z_]{20,}", re.I),

@@ -6,31 +6,21 @@ import {
   ShieldCheck, 
   Activity, 
   Settings,
-  AlertTriangle,
-  CheckSquare,
-  Bot,
   Cloud,
-  ShieldAlert,
   Wrench,
-  FileText
+  FlaskConical
 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 
 const NAV_ITEMS = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Gateway Explorer', href: '/gateway', icon: Network },
-  { name: 'Gateway Routes', href: '/gateway-routes', icon: Network },
-  { name: 'Action Center', href: '/approvals', icon: CheckSquare },
+  { name: 'Overview', href: '/', icon: LayoutDashboard },
+  { name: 'Gateway', href: '/gateway', icon: Network },
+  { name: 'Policies & Guardrails', href: '/policies', icon: ShieldCheck },
+  { name: 'Agent & Remediation', href: '/agent-remediation', icon: Wrench },
+  { name: 'Frameworks', href: '/frameworks', icon: ShieldCheck },
+  { name: 'Audit & Trust Center', href: '/audit', icon: Activity },
+  { name: 'Risk & Red Teaming', href: '/risk', icon: FlaskConical },
   { name: 'Integrations', href: '/integrations', icon: Cloud },
-  { name: 'Findings', href: '/findings', icon: ShieldAlert },
-  { name: 'Remediation', href: '/remediation', icon: Wrench },
-  { name: 'Trust Center', href: '/trust', icon: ShieldCheck },
-  { name: 'Report Center', href: '/reports', icon: FileText },
-  { name: 'Policies', href: '/policies', icon: ShieldCheck },
-  { name: 'Violations', href: '/policies/violations', icon: AlertTriangle },
-  { name: 'Compliance', href: '/compliance', icon: ShieldCheck },
-  { name: 'Agent Assistant', href: '/agent', icon: Bot },
-  { name: 'Audit Logs', href: '/audit', icon: Activity },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

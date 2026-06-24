@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from 'react';
-import { Activity, Clock, CheckCircle, XCircle, AlertTriangle, Shield, Server, ArrowRightLeft, ArrowUpRight, Copy, Send, Play, Key, MessageSquare, Zap, Lock, CheckCheck, ChevronDown, ChevronUp } from 'lucide-react';
+import Link from 'next/link';
+import { Activity, Clock, CheckCircle, XCircle, AlertTriangle, Shield, Server, ArrowRightLeft, ArrowUpRight, Copy, Send, Play, Key, MessageSquare, Zap, Lock, CheckCheck, ChevronDown, ChevronUp, Network } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { useGatewayRequests, useGatewayRequestDetail } from '@/hooks/use-data';
+import { useGatewayRequests, useGatewayRequestDetail, useGatewayRoutes, useProviders } from '@/hooks/use-data';
 import { TableSkeleton } from '@/components/shared/loaders';
 import { EmptyState } from '@/components/shared/states';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,10 +33,29 @@ type GatewayRequest = {
 
 type GatewayRequestDetail = GatewayRequest & {
   ip_address?: string | null;
+  ip_hash?: string | null;
+  user_agent_hash?: string | null;
   violations?: GatewayViolation[];
   request_payload?: unknown;
   modified_payload?: unknown;
   response_payload?: unknown;
+};
+
+type GatewayRoute = {
+  id: string;
+  name: string;
+  provider_id?: string | null;
+  is_default?: boolean;
+  is_active?: boolean;
+  redaction?: string | null;
+};
+
+type Provider = {
+  id: string;
+  name: string;
+  provider_type?: string;
+  type?: string;
+  is_active?: boolean;
 };
 
 type GatewayResult = {
@@ -57,6 +77,19 @@ type GatewayResult = {
   blocked: boolean;
   error: boolean;
 };
+
+function safeText(value: unknown) {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value ?? '', null, 2);
+  return raw
+    .replace(/raw_provider_payload/gi, '[redacted-source]')
+    .replace(/vault[:/][^\s,"'}]+/gi, '[redacted-vault-ref]')
+    .replace(/authclaw\/tenants\/[^\s,"'}]+/gi, '[redacted-vault-ref]')
+    .replace(/authorization\s*[:=]\s*bearer\s+[^\s,"'}]+/gi, 'authorization=[redacted]')
+    .replace(/(token|secret|password|credential|api[_-]?key)\s*[:=]\s*[^,\s}]+/gi, '$1=[redacted]')
+    .replace(/-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----/g, '[redacted-private-key]')
+    .replace(/gh[pousr]_[a-z0-9_]+/gi, '[redacted-token]')
+    .replace(/AKIA[0-9A-Z]{12,}/g, '[redacted-key]');
+}
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -146,8 +179,8 @@ function RequestDetailDrawer({
                   <p className="font-mono text-xs text-neutral-300">{detail.model || 'Unknown'}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5">
-                  <p className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Client IP</p>
-                  <p className="font-mono text-xs text-neutral-300">{detail.ip_address || '—'}</p>
+                  <p className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Network Metadata</p>
+                  <p className="font-mono text-xs text-neutral-300">{detail.ip_hash || detail.user_agent_hash || 'redacted'}</p>
                 </div>
               </div>
 
@@ -172,12 +205,12 @@ function RequestDetailDrawer({
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   {v.context.findings && (
                                     <span className={`text-[10px] text-neutral-400 px-2 py-1 rounded-md border ${isBlocked ? 'bg-red-500/10 border-red-500/20' : 'bg-amber-500/10 border-amber-500/20'}`}>
-                                      Detected Data: <span className={`${isBlocked ? 'text-red-300' : 'text-amber-300'} font-mono font-medium`}>{v.context.findings.join(', ')}</span>
+                                      Detected Data: <span className={`${isBlocked ? 'text-red-300' : 'text-amber-300'} font-mono font-medium`}>{safeText(v.context.findings.join(', '))}</span>
                                     </span>
                                   )}
                                   {v.context.keywords && (
                                     <span className={`text-[10px] text-neutral-400 px-2 py-1 rounded-md border ${isBlocked ? 'bg-red-500/10 border-red-500/20' : 'bg-amber-500/10 border-amber-500/20'}`}>
-                                      Blocked Keywords: <span className={`${isBlocked ? 'text-red-300' : 'text-amber-300'} font-mono font-medium`}>{v.context.keywords.join(', ')}</span>
+                                      Blocked Keywords: <span className={`${isBlocked ? 'text-red-300' : 'text-amber-300'} font-mono font-medium`}>{safeText(v.context.keywords.join(', '))}</span>
                                     </span>
                                   )}
                                   {v.context.attempted_model && (
@@ -203,9 +236,9 @@ function RequestDetailDrawer({
                 { label: 'Provider Response', content: detail.response_payload },
               ].filter(s => s.content).map(({ label, content }) => (
                 <div key={label}>
-                  <p className="text-xs text-neutral-500 uppercase tracking-wider mb-2 font-medium">{label}</p>
+                  <p className="text-xs text-neutral-500 uppercase tracking-wider mb-2 font-medium">{label} Sanitized Preview</p>
                   <pre className="text-[11px] font-mono text-neutral-300 bg-white/[0.02] border border-white/5 rounded-xl p-4 overflow-auto max-h-48 whitespace-pre-wrap">
-                    {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
+                    {safeText(content)}
                   </pre>
                 </div>
               ))}
@@ -220,12 +253,12 @@ function RequestDetailDrawer({
 // ─── Gateway Playground ────────────────────────────────────────────────────────
 
 const QUICK_TESTS = [
-  { label: '✅ Normal Request', prompt: 'What is machine learning? Explain in simple terms.' },
-  { label: '🔒 PII — Email', prompt: 'My email is john.doe@company.com and I need help with my account.' },
-  { label: '🔒 PII — Password', prompt: 'My password is SuperSecret@123, please help me reset it.' },
-  { label: '🔒 PII — Phone', prompt: 'Contact me at +91-9876543210 for more details.' },
-  { label: '🔒 PII — Credit Card', prompt: 'My credit card number is 4111 1111 1111 1111 please charge it.' },
-  { label: '🚫 Content Filter', prompt: 'How to be a HACKER and bypass security systems?' },
+  { label: 'Normal request', prompt: 'Explain machine learning in simple terms.' },
+  { label: 'PII email pattern', prompt: 'A user entered an email-like value that should be classified and protected.' },
+  { label: 'Credential-like pattern', prompt: 'A user entered a credential-like value that should be blocked or redacted.' },
+  { label: 'Phone pattern', prompt: 'A user entered a phone-like value that should be classified and protected.' },
+  { label: 'Payment-card pattern', prompt: 'A user entered a payment-card-like value that should be classified and protected.' },
+  { label: 'Content filter', prompt: 'Explain why bypassing security controls is unsafe.' },
 ];
 
 function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
@@ -516,7 +549,11 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
 
 export default function GatewayPage() {
   const { data, isLoading, refetch } = useGatewayRequests(0, 100);
+  const { data: routesData, isLoading: routesLoading } = useGatewayRoutes();
+  const { data: providersData = [] } = useProviders();
   const logs = (data?.items || []) as GatewayRequest[];
+  const routes = ((routesData as GatewayRoute[] | undefined) || []).slice(0, 5);
+  const providers = (providersData as Provider[] | undefined) || [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const total     = data?.total || 0;
@@ -556,6 +593,64 @@ export default function GatewayPage() {
           </motion.div>
         ))}
       </div>
+
+      <Card className="glass-card overflow-hidden">
+        <div className="p-4 border-b border-white/5 bg-black/20 flex items-center justify-between gap-4">
+          <CardTitle className="text-neutral-100 text-base flex items-center gap-2">
+            <Network className="w-4 h-4 text-blue-400" />
+            Route and Provider Configuration
+          </CardTitle>
+          <Link href="/gateway-routes" className="text-xs text-blue-300 hover:text-blue-200">
+            Manage routes
+          </Link>
+        </div>
+        <CardContent className="p-0">
+          {routesLoading ? (
+            <div className="p-4"><TableSkeleton columns={5} rows={4} /></div>
+          ) : routes.length === 0 ? (
+            <EmptyState
+              title="No gateway routes configured"
+              description="Create routes before forwarding tenant traffic to model providers. Redaction modes supported by the console are mask, hash, and synthetic where the backend route supports it."
+              icon={Network}
+            />
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-900/80 border-b border-white/5">
+                <tr>
+                  <th className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">Route</th>
+                  <th className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">Provider</th>
+                  <th className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">Redaction Mode</th>
+                  <th className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {routes.map((route) => {
+                  const provider = providers.find((item) => item.id === route.provider_id);
+                  return (
+                    <tr key={route.id} className="hover:bg-white/[0.02]">
+                      <td className="p-4 text-neutral-200">
+                        <div className="font-medium">{route.name}</div>
+                        {route.is_default && <div className="text-xs text-blue-300 mt-1">Default route</div>}
+                      </td>
+                      <td className="p-4 text-neutral-300">{provider ? `${provider.name} (${provider.provider_type || provider.type || 'provider'})` : 'Needs provider mapping'}</td>
+                      <td className="p-4">
+                        <Badge variant="outline" className="bg-purple-500/10 text-purple-300 border-purple-500/20 text-[10px] uppercase tracking-wider">
+                          {route.redaction || 'not set'}
+                        </Badge>
+                      </td>
+                      <td className="p-4">
+                        <Badge variant="outline" className={route.is_active === false ? 'bg-neutral-500/10 text-neutral-400 border-neutral-700' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}>
+                          {route.is_active === false ? 'Disabled' : 'Active'}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Playground */}
       <GatewayPlayground onRequestSent={() => refetch()} />

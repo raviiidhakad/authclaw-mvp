@@ -1070,6 +1070,35 @@ export interface TrustOverview {
   integration_health: TrustPosture;
 }
 
+export interface TrustNotification {
+  id: string;
+  tenant_id: string;
+  recipient_user_id?: string | null;
+  type: string;
+  severity: string;
+  title: string;
+  body: string;
+  resource_type?: string | null;
+  resource_id?: string | null;
+  read_at?: string | null;
+  created_at: string;
+}
+
+export interface ActivityTimelineItem {
+  id: string;
+  tenant_id: string;
+  occurred_at: string;
+  source: string;
+  action: string;
+  severity: string;
+  actor_user_id?: string | null;
+  resource_type: string;
+  resource_id?: string | null;
+  title: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface ReportTemplate {
   id: string;
   tenant_id: string;
@@ -1199,6 +1228,31 @@ export async function getTrustPosture(kind: 'security' | 'compliance' | 'remedia
   return res.data as TrustPosture;
 }
 
+export async function listTrustNotifications(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/trust/notifications', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<TrustNotification> & { unread: number };
+}
+
+export async function getNotificationUnreadCount() {
+  const res = await apiClient.get('/trust/notifications/unread-count');
+  return res.data as { unread: number };
+}
+
+export async function markTrustNotificationRead(id: string) {
+  const res = await apiClient.post(`/trust/notifications/${id}/read`);
+  return res.data as TrustNotification;
+}
+
+export async function markAllTrustNotificationsRead() {
+  const res = await apiClient.post('/trust/notifications/mark-all-read');
+  return res.data as { unread: number };
+}
+
+export async function listActivityTimeline(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/trust/activity', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ActivityTimelineItem>;
+}
+
 export async function listReportTemplates(params: Record<string, unknown> = {}) {
   const res = await apiClient.get('/reports/templates', { params: cleanParams(params) });
   return res.data as TrustReportListResponse<ReportTemplate>;
@@ -1279,6 +1333,40 @@ export function useTrustOverview() {
 
 export function useTrustPosture(kind: 'security' | 'compliance' | 'remediation' | 'integrations') {
   return useQuery({ queryKey: ['trust-posture', kind], queryFn: () => getTrustPosture(kind), refetchInterval: 15000 });
+}
+
+export function useTrustNotifications(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['trust-notifications', params], queryFn: () => listTrustNotifications(params), refetchInterval: 15000 });
+}
+
+export function useNotificationUnreadCount() {
+  return useQuery({ queryKey: ['trust-notification-unread-count'], queryFn: getNotificationUnreadCount, refetchInterval: 15000 });
+}
+
+export function useMarkTrustNotificationRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: markTrustNotificationRead,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trust-notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['trust-notification-unread-count'] });
+    },
+  });
+}
+
+export function useMarkAllTrustNotificationsRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: markAllTrustNotificationsRead,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['trust-notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['trust-notification-unread-count'] });
+    },
+  });
+}
+
+export function useActivityTimeline(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['trust-activity', params], queryFn: () => listActivityTimeline(params), refetchInterval: 15000 });
 }
 
 export function useReportTemplates(params: Record<string, unknown> = {}) {

@@ -48,6 +48,13 @@ const ACTION_COLORS: Record<string, string> = {
   allow: 'text-emerald-400',
 };
 
+const GUARDRAIL_TAXONOMY = [
+  ['Prompt injection', 'Detect and block instruction override attempts.'],
+  ['Data disclosure', 'Prevent sensitive data egress and unsafe disclosure.'],
+  ['Harmful content', 'Route unsafe content to block or review actions.'],
+  ['Policy violations', 'Track tenant policy failures and review status.'],
+];
+
 function RuleSummaryBadges({ rules }: { rules: PolicyRule[] }) {
   if (!rules?.length) {
     return <span className="text-xs text-neutral-600 italic">No enforced rules</span>;
@@ -153,6 +160,8 @@ export default function PoliciesPage() {
   };
 
   const handleToggleActive = async (policy: Policy) => {
+    const action = policy.is_active ? 'disable' : 'enable';
+    if (!window.confirm(`Confirm ${action} policy "${policy.name}"? This changes gateway enforcement behavior.`)) return;
     try {
       await updateMutation.mutateAsync({
         id: policy.id,
@@ -218,6 +227,32 @@ export default function PoliciesPage() {
           <span className="text-xs font-medium text-neutral-300"><span className="text-emerald-400">{activeCount}</span> Active</span>
         </div>
       </div>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        {GUARDRAIL_TAXONOMY.map(([title, description]) => (
+          <Card key={title} className="glass-card">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-neutral-100">
+                <Shield className="w-4 h-4 text-blue-400" />
+                {title}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-neutral-400">{description}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card className="glass-card border-blue-500/20">
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-neutral-100">Validation status</p>
+              <p className="text-xs text-neutral-400 mt-1">Policies are validated by the backend when saved. Enforcement changes require explicit confirmation; no unsafe auto-apply is performed by this console.</p>
+            </div>
+            <Badge variant="outline" className="bg-blue-500/10 text-blue-300 border-blue-500/20">Backend validated on save</Badge>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Policy list */}
       {loading ? (

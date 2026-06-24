@@ -58,6 +58,76 @@ async function mockAuthenticatedUser(page: Page, role = 'admin') {
   });
 }
 
+test('pdf admin console navigation aligns with safe connected surfaces', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'admin');
+
+  const routeSummary = { id: 'route-1', name: 'Production GPT route', provider_id: 'provider-1', is_default: true, is_active: true, redaction: 'mask', created_at: '2026-06-23T10:00:00Z' };
+  const providerSummary = { id: 'provider-1', name: 'OpenAI production', provider_type: 'openai', is_active: true, key_prefix: 'prov_live' };
+  const frameworkSummary = { id: 'fw-1', key: 'soc2', version: '2026.1', name: 'SOC 2', description: 'Internal summarized framework', source_url: null, license_note: 'Internal summary', status: 'active', metadata: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
+
+  await page.route(/\/api\/v1\/tenants\/stats$/, async (route) => fulfillJson(route, { total: 1 }));
+  await page.route(/\/api\/v1\/audit\/stats$/, async (route) => fulfillJson(route, { total_events: 1, events_by_type: { 'policy.violation': 1 }, gateway_by_status: { blocked: 1 } }));
+  await page.route(/\/api\/v1\/compliance\/dashboard$/, async (route) => fulfillJson(route, {
+    soc2: { score: 82, status: 'calculated' },
+    gdpr: { score: 74, status: 'calculated' },
+    hipaa: { score: 69, status: 'calculated' },
+  }));
+  await page.route(/\/api\/v1\/gateway\/requests(?:\?.*)?$/, async (route) => fulfillJson(route, {
+    items: [{ id: 'gw-1', created_at: '2026-06-23T10:00:00Z', status: 'completed', model: 'gpt-4', latency_ms: 42, error_message: null }],
+    total: 1,
+  }));
+  await page.route(/\/api\/v1\/gateway-routes(?:\?.*)?$/, async (route) => fulfillJson(route, [routeSummary]));
+  await page.route(/\/api\/v1\/providers(?:\?.*)?$/, async (route) => fulfillJson(route, [providerSummary]));
+  await page.route(/\/api\/v1\/policies(?:\?.*)?$/, async (route) => fulfillJson(route, []));
+  await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/compliance\/frameworks(?:\?.*)?$/, async (route) => fulfillJson(route, [frameworkSummary]));
+  await page.route(/\/api\/v1\/compliance\/assessments(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 20 }));
+  await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' } }], total: 1 }));
+  await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0 }));
+  await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: [], circuit_breakers: {}, items: [] }));
+  await page.route(/\/api\/v1\/api-keys(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 }));
+
+  await page.goto('/');
+  for (const label of ['Overview', 'Gateway', 'Policies & Guardrails', 'Agent & Remediation', 'Frameworks', 'Audit & Trust Center', 'Risk & Red Teaming', 'Integrations', 'Settings']) {
+    await expect(page.getByRole('link', { name: label })).toBeVisible();
+  }
+  await expect(page.getByText(/Evidence-supported posture/i)).toBeVisible();
+  await expect(page.getByText(/Open Approvals/i)).toBeVisible();
+
+  await page.goto('/gateway');
+  await expect(page.getByText(/Route and Provider Configuration/i)).toBeVisible();
+  await expect(page.getByText(/Redaction Mode/i)).toBeVisible();
+  await expect(page.getByText(/Production GPT route/i)).toBeVisible();
+
+  await page.goto('/policies');
+  await expect(page.getByText(/Prompt injection/i)).toBeVisible();
+  await expect(page.getByText(/Backend validated on save/i)).toBeVisible();
+
+  await page.goto('/agent-remediation');
+  await expect(page.getByText(/Safe execution only/i)).toBeVisible();
+  await expect(page.getByText(/^Assistant$/i)).toBeVisible();
+  await expect(page.getByRole('link', { name: /^Open$/i }).first()).toBeVisible();
+
+  await page.goto('/frameworks');
+  await expect(page.getByText(/SOC 2/i)).toBeVisible();
+  await expect(page.getByText(/View controls/i)).toBeVisible();
+
+  await page.goto('/audit');
+  await expect(page.getByText(/Backend proof needed/i)).toBeVisible();
+
+  await page.goto('/risk');
+  await expect(page.getByText(/Red-team backend not implemented/i)).toBeVisible();
+
+  await page.goto('/settings');
+  await expect(page.getByText(/Organization Profile/i)).toBeVisible();
+  await expect(page.getByText(/Secret Key Generated/i)).toHaveCount(0);
+
+  await expect(page.getByText(/SuperSecret|raw_provider_payload|vault:\/\/|certified|guaranteed compliant|audit-ready guaranteed|Client IP/i)).toHaveCount(0);
+});
+
 const integration = {
   id: '11111111-1111-1111-1111-111111111111',
   tenant_id: 'tenant-1',
@@ -1040,6 +1110,79 @@ const reportAccessLog = {
   created_at: '2026-06-22T10:03:00Z',
 };
 
+const trustNotification = {
+  id: '99999999-aaaa-4444-8888-999999999999',
+  tenant_id: 'tenant-1',
+  recipient_user_id: 'user-1',
+  type: 'report_run_completed',
+  severity: 'info',
+  title: 'Report run completed',
+  body: 'Evidence-supported posture package needs review.',
+  resource_type: 'report_run',
+  resource_id: reportRun.id,
+  read_at: null,
+  created_at: '2026-06-22T10:05:00Z',
+};
+
+const activityTimeline = [
+  {
+    id: 'report:artifact:downloaded',
+    tenant_id: 'tenant-1',
+    occurred_at: '2026-06-22T10:06:00Z',
+    source: 'report',
+    action: 'downloaded',
+    severity: 'info',
+    actor_user_id: 'user-1',
+    resource_type: 'report_artifact',
+    resource_id: reportArtifact.id,
+    title: 'Report artifact downloaded',
+    summary: 'Metadata-only report access event.',
+    metadata: { ip_hash: 'ip_hash_abc123', user_agent_hash: 'ua_hash_def456' },
+  },
+  {
+    id: 'remediation:approval:approved',
+    tenant_id: 'tenant-1',
+    occurred_at: '2026-06-22T10:04:00Z',
+    source: 'remediation',
+    action: 'approval_approved',
+    severity: 'info',
+    actor_user_id: 'user-1',
+    resource_type: 'remediation_approval',
+    resource_id: remediationApproval.id,
+    title: 'Remediation approval approved',
+    summary: 'Human approval state changed for a remediation plan.',
+    metadata: { plan_id: remediationPlanValidated.id, mfa_verified: true },
+  },
+  {
+    id: 'evidence:item:active',
+    tenant_id: 'tenant-1',
+    occurred_at: '2026-06-22T10:02:00Z',
+    source: 'evidence',
+    action: 'evidence_active',
+    severity: 'info',
+    actor_user_id: null,
+    resource_type: 'evidence_item',
+    resource_id: evidence.id,
+    title: 'Evidence active',
+    summary: 'Mapped control evidence needs review.',
+    metadata: { proof_hash: 'abcdef1234567890' },
+  },
+  {
+    id: 'integration:health:active',
+    tenant_id: 'tenant-1',
+    occurred_at: '2026-06-22T10:01:00Z',
+    source: 'integration',
+    action: 'integration_active',
+    severity: 'info',
+    actor_user_id: null,
+    resource_type: 'cloud_integration',
+    resource_id: integration.id,
+    title: 'Integration active',
+    summary: 'aws integration health updated.',
+    metadata: { provider_type: 'aws', status: 'active' },
+  },
+];
+
 async function mockTrustReportApi(page: Page) {
   await page.route(/\/api\/v1\/trust\/overview$/, async (route) => fulfillJson(route, {
     tenant_id: 'tenant-1',
@@ -1054,6 +1197,11 @@ async function mockTrustReportApi(page: Page) {
   await page.route(/\/api\/v1\/trust\/compliance-posture$/, async (route) => fulfillJson(route, trustCompliancePosture));
   await page.route(/\/api\/v1\/trust\/remediation-posture$/, async (route) => fulfillJson(route, trustRemediationPosture));
   await page.route(/\/api\/v1\/trust\/integration-health$/, async (route) => fulfillJson(route, trustIntegrationPosture));
+  await page.route(/\/api\/v1\/trust\/activity(?:\?.*)?$/, async (route) => fulfillJson(route, { items: activityTimeline, total: activityTimeline.length, skip: 0, limit: 50 }));
+  await page.route(/\/api\/v1\/trust\/notifications\/unread-count$/, async (route) => fulfillJson(route, { unread: 1 }));
+  await page.route(`**/api/v1/trust/notifications/${trustNotification.id}/read`, async (route) => fulfillJson(route, { ...trustNotification, read_at: '2026-06-22T10:07:00Z' }));
+  await page.route(/\/api\/v1\/trust\/notifications\/mark-all-read$/, async (route) => fulfillJson(route, { unread: 0 }));
+  await page.route(/\/api\/v1\/trust\/notifications(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [trustNotification], total: 1, unread: 1, skip: 0, limit: 50 }));
   await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}/manifest`, async (route) => fulfillJson(route, reportManifest));
   await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}/download`, async (route) => fulfillJson(route, {
     artifact_id: reportArtifact.id,
@@ -1127,6 +1275,47 @@ test('trust center pages render posture summaries without legal overclaim copy o
   }
 
   await expect(page.getByText(/legally compliant|certified|guaranteed|audit-ready guaranteed|AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+});
+
+test('trust activity timeline renders sanitized enterprise events and filters', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'auditor');
+  await mockTrustReportApi(page);
+  let requestedUrl = '';
+  await page.route(/\/api\/v1\/trust\/activity(?:\?.*)?$/, async (route) => {
+    requestedUrl = route.request().url();
+    await fulfillJson(route, { items: activityTimeline, total: activityTimeline.length, skip: 0, limit: 50 });
+  });
+
+  await page.goto('/trust/activity', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Activity timeline')).toBeVisible();
+  await expect(page.getByText('Report artifact downloaded')).toBeVisible();
+  await expect(page.getByText('Remediation approval approved')).toBeVisible();
+  await expect(page.getByText('Mapped control evidence needs review.')).toBeVisible();
+  await page.getByLabel('Source', { exact: true }).selectOption('report');
+  await expect.poll(() => requestedUrl).toContain('source=report');
+  await expect(page.getByText('ip_hash_abc123')).toBeVisible();
+  await expect(page.getByText(/192\.168\.|Mozilla\/5\.0|legally compliant|certified|guaranteed|AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
+});
+
+test('notification center lists and marks sanitized notifications read', async ({ page }) => {
+  await mockAuthenticatedUser(page, 'viewer');
+  let markReadCalled = false;
+  await mockTrustReportApi(page);
+  await page.route(`**/api/v1/trust/notifications/${trustNotification.id}/read`, async (route) => {
+    markReadCalled = true;
+    await fulfillJson(route, { ...trustNotification, read_at: '2026-06-22T10:07:00Z' });
+  });
+
+  await page.goto('/notifications', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Notification Center')).toBeVisible();
+  await expect(page.getByText('Evidence-supported posture package needs review.')).toBeVisible();
+  await page.getByRole('button', { name: /mark read/i }).click();
+  expect(markReadCalled).toBeTruthy();
+  await expect(page.getByText('Notification marked read')).toBeVisible();
+  await expect(page.getByText(/raw provider payloads/i)).toBeVisible();
+  await expect(page.getByText(/legally compliant|certified|guaranteed|audit-ready guaranteed|AKIA|ghp_|super-secret|raw_provider_payload|vault:\/\//i)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /download|share|public/i })).toHaveCount(0);
 });
 
 test('report templates page supports admin create and edit while avoiding share and file actions', async ({ page }) => {
@@ -1219,4 +1408,92 @@ test('access logs display hashed network metadata and RBAC gates viewer report a
   await expect(page.getByText('Artifact download controls are hidden for this role.')).toBeVisible();
   await expect(page.getByRole('button', { name: /^download$/i })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
+});
+
+test('sprint 5 demo acceptance walks trust reporting UX with demo login safely', async ({ page }) => {
+  await mockTrustReportApi(page);
+  await page.route('**/auth/login', async (route) => {
+    if (route.request().method() === 'OPTIONS') {
+      await fulfillJson(route, {}, 204);
+      return;
+    }
+    const body = route.request().postDataJSON() as { email: string; password: string };
+    expect(body.email).toBe('demo.admin@authclaw-demo.com');
+    expect(body.password).toBe('demo-only-password');
+    await fulfillJson(route, { access_token: 'sprint5-demo-token', refresh_token: 'sprint5-demo-refresh', token_type: 'bearer' });
+  });
+  await page.route('**/auth/me', async (route) => fulfillJson(route, {
+    id: 'demo-admin-user',
+    email: 'demo.admin@authclaw-demo.com',
+    first_name: 'Demo',
+    last_name: 'Admin',
+    tenant_id: 'authclaw-sprint5-demo',
+    role: 'owner',
+    roles: ['owner'],
+  }));
+
+  await page.goto('/login', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(250);
+  await page.locator('input[type="email"]').fill('demo.admin@authclaw-demo.com');
+  await page.locator('input[type="password"]').fill('demo-only-password');
+  await page.evaluate(() => {
+    window.localStorage.setItem('authclaw_tokens', JSON.stringify({ accessToken: 'sprint5-demo-token', refreshToken: 'sprint5-demo-refresh' }));
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem('authclaw_tokens')))
+    .toContain('sprint5-demo-token');
+
+  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
+  await expect(page.getByText('evidence-supported posture').first()).toBeVisible();
+  await expect(page.getByText('Mapped controls', { exact: true })).toBeVisible();
+
+  for (const path of ['/trust/security', '/trust/compliance', '/trust/remediation', '/trust/integrations']) {
+    await page.goto(path, { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText(/last updated/i).first()).toBeVisible();
+  }
+
+  await page.goto('/reports/runs', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /create run/i }).click();
+  await page.getByLabel(/template/i).selectOption(reportTemplate.id);
+  await page.getByLabel(/scope/i).fill('sprint5-demo');
+  await page.getByRole('dialog').getByRole('button', { name: /create run/i }).click();
+  await expect(page.getByText('Report run created')).toBeVisible();
+  await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
+
+  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /manifest/i }).click();
+  await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /^download$/i }).click();
+  await expect(page.getByText('Sanitized download metadata')).toBeVisible();
+  await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
+
+  await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
+  await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  await page.getByLabel(/include findings/i).check();
+  await page.getByLabel(/include remediation/i).check();
+  await page.getByRole('button', { name: /create evidence package/i }).click();
+  await expect(page.getByText('Evidence package created')).toBeVisible();
+  await expect(page.getByText('metadata only', { exact: true })).toBeVisible();
+
+  await page.goto('/reports/access-logs', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('ip_hash_abc123')).toBeVisible();
+  await expect(page.getByText('ua_hash_def456')).toBeVisible();
+
+  await page.goto('/notifications', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Evidence-supported posture package needs review.')).toBeVisible();
+  await page.getByRole('button', { name: /^mark read$/i }).click();
+  await expect(page.getByText('Notification marked read')).toBeVisible();
+  await page.getByRole('button', { name: /mark all read/i }).click();
+  await expect(page.getByText('Notifications marked read')).toBeVisible();
+
+  await page.goto('/trust/activity', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByText('Activity timeline')).toBeVisible();
+  await expect(page.getByText('Report artifact downloaded')).toBeVisible();
+  await expect(page.getByText('Mapped control evidence needs review.')).toBeVisible();
+
+  await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
+  await expect(page.getByText(/legally compliant|fully compliant|certified|guaranteed|audit-ready|AKIA|ghp_|super-secret|raw_provider_payload|vault:\/\//i)).toHaveCount(0);
 });

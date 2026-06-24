@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { Plus, Server, Trash2, Eye, EyeOff, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
+import { Plus, Server, Trash2, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,7 @@ type Provider = {
   id: string;
   name: string;
   provider_type: string;
-  api_key?: string | null;
+  key_prefix?: string | null;
   is_active?: boolean;
 };
 
@@ -33,7 +33,8 @@ type ApiKeyRecord = {
 };
 
 type CreatedApiKey = {
-  raw_key: string;
+  key_prefix?: string;
+  raw_key?: string;
 };
 
 type ApiError = {
@@ -53,7 +54,6 @@ export default function SettingsPage() {
   const deleteMutation = useDeleteProvider();
 
   const [showCreate, setShowCreate] = useState(false);
-  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [newProvider, setNewProvider] = useState({
     name: '',
     provider_type: 'openai',
@@ -68,7 +68,7 @@ export default function SettingsPage() {
   const revokeKeyMutation = useRevokeApiKey();
 
   const [showCreateKey, setShowCreateKey] = useState(false);
-  const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+  const [generatedKeyNotice, setGeneratedKeyNotice] = useState<string | null>(null);
   const [newApiKey, setNewApiKey] = useState({
     name: '',
     expires_in_days: 0,
@@ -76,7 +76,6 @@ export default function SettingsPage() {
 
   // MFA
   const [showMfaSetup, setShowMfaSetup] = useState(false);
-  const [mfaSecret, setMfaSecret] = useState('');
   const [mfaUri, setMfaUri] = useState('');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaSetupLoading, setMfaSetupLoading] = useState(false);
@@ -85,7 +84,6 @@ export default function SettingsPage() {
     try {
       setMfaSetupLoading(true);
       const res = await apiClient.post('/auth/mfa/setup');
-      setMfaSecret(res.data.secret);
       setMfaUri(res.data.uri);
       setShowMfaSetup(true);
     } catch {
@@ -115,7 +113,7 @@ export default function SettingsPage() {
     try {
       const result = await createKeyMutation.mutateAsync(newApiKey) as CreatedApiKey;
       toast.success('API Key created');
-      setGeneratedKey(result.raw_key); // Display the plain text key once
+      setGeneratedKeyNotice(result.key_prefix ? `Created key prefix: ${result.key_prefix}` : 'API key created. Raw secret value is not displayed in the console.');
       setShowCreateKey(false);
       setNewApiKey({ name: '', expires_in_days: 0 });
     } catch (err: unknown) {
@@ -235,8 +233,10 @@ export default function SettingsPage() {
               <QRCodeSVG value={mfaUri} size={200} />
             </div>
             <div className="text-center w-full">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2">Manual Entry Secret</p>
-              <p className="text-xs font-mono text-neutral-300 bg-black/40 p-3 rounded-lg border border-white/5 select-all">{mfaSecret}</p>
+              <p className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2">Manual Entry</p>
+              <p className="text-xs text-neutral-400 bg-black/40 p-3 rounded-lg border border-white/5">
+                Manual MFA secret display is disabled for console safety. Use the QR code or restart setup from a trusted device.
+              </p>
             </div>
             <div className="w-full pt-2">
               <p className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2 text-center">Enter 6-digit code</p>
@@ -375,14 +375,8 @@ export default function SettingsPage() {
                   <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between">
                     <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
                       <Key className="w-3.5 h-3.5" />
-                      {showKeys[provider.id] ? provider.api_key : '••••••••••••••••' + (provider.api_key?.slice(-4) || '')}
+                      {provider.key_prefix ? `${provider.key_prefix}••••••••` : 'stored in secret manager'}
                     </div>
-                    <button 
-                      onClick={() => setShowKeys(k => ({ ...k, [provider.id]: !k[provider.id] }))}
-                      className="text-neutral-500 hover:text-neutral-300 transition-colors"
-                    >
-                      {showKeys[provider.id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
                   </div>
                 </CardContent>
               </Card>
@@ -443,35 +437,23 @@ export default function SettingsPage() {
           )}
         </AnimatePresence>
 
-        <Dialog open={!!generatedKey} onOpenChange={(open) => !open && setGeneratedKey(null)}>
+        <Dialog open={!!generatedKeyNotice} onOpenChange={(open) => !open && setGeneratedKeyNotice(null)}>
           <DialogContent className="sm:max-w-md bg-[#0a0a0a] border-white/10 text-neutral-100 shadow-2xl p-0 overflow-hidden">
             <DialogHeader className="p-6 border-b border-white/5 bg-white/[0.02]">
               <DialogTitle className="text-xl flex items-center gap-2">
                 <KeyRound className="w-5 h-5 text-amber-400" />
-                Secret Key Generated
+                API Key Created
               </DialogTitle>
               <DialogDescription className="text-neutral-400 mt-2 text-sm leading-relaxed">
-                Please save your secret key in a safe place. <strong className="text-amber-400 font-medium">You will not be able to view it again</strong> once you close this dialog.
+                Raw API keys are not displayed in the admin console. Store and rotate secrets through your approved secret-management process.
               </DialogDescription>
             </DialogHeader>
             <div className="p-6">
-              <div className="flex items-center space-x-2">
-                <Input
-                  readOnly
-                  value={generatedKey || ''}
-                  className="bg-black/40 border-white/10 text-emerald-400 font-mono text-sm h-12 tracking-wide"
-                />
-                <Button onClick={() => {
-                  navigator.clipboard.writeText(generatedKey || '');
-                  toast.success('API key copied to clipboard');
-                }} className="h-12 px-6 bg-white/10 hover:bg-white/20 text-white border border-white/5">
-                  Copy
-                </Button>
-              </div>
+              <p className="rounded-md border border-white/10 bg-black/40 p-3 text-sm text-neutral-300">{generatedKeyNotice}</p>
             </div>
             <DialogFooter className="p-4 border-t border-white/5 bg-white/[0.02]">
-              <Button type="button" onClick={() => setGeneratedKey(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white">
-                I have saved this key safely
+              <Button type="button" onClick={() => setGeneratedKeyNotice(null)} className="w-full bg-blue-600 hover:bg-blue-500 text-white">
+                Close
               </Button>
             </DialogFooter>
           </DialogContent>

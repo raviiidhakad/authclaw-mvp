@@ -28,6 +28,54 @@ class TrustOverviewResponse(BaseModel):
     integration_health: TrustPostureResponse
 
 
+class TrustNotificationResponse(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    recipient_user_id: uuid.UUID | None = None
+    type: str
+    severity: str
+    title: str
+    body: str
+    resource_type: str | None = None
+    resource_id: uuid.UUID | None = None
+    read_at: datetime | None = None
+    created_at: datetime
+
+
+class TrustNotificationListResponse(BaseModel):
+    items: list[TrustNotificationResponse]
+    total: int
+    unread: int
+    skip: int
+    limit: int
+
+
+class TrustNotificationUnreadResponse(BaseModel):
+    unread: int
+
+
+class ActivityTimelineItemResponse(BaseModel):
+    id: str
+    tenant_id: uuid.UUID
+    occurred_at: datetime
+    source: str
+    action: str
+    severity: str
+    actor_user_id: uuid.UUID | None = None
+    resource_type: str
+    resource_id: uuid.UUID | None = None
+    title: str
+    summary: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActivityTimelineListResponse(BaseModel):
+    items: list[ActivityTimelineItemResponse]
+    total: int
+    skip: int
+    limit: int
+
+
 class ReportTemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     type: str = Field(..., min_length=1, max_length=80)

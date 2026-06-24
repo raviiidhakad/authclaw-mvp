@@ -5,6 +5,8 @@ import { useMemo, useState } from 'react';
 import {
   Activity,
   Archive,
+  Bell,
+  CheckCircle2,
   ClipboardList,
   Database,
   FileJson,
@@ -27,30 +29,38 @@ import { EmptyState } from '@/components/shared/states';
 import { TableSkeleton } from '@/components/shared/loaders';
 import { useAuth } from '@/hooks/use-auth';
 import {
+  ActivityTimelineItem,
   ExportManifest,
   ReportAccessLog,
   ReportArtifactDownload,
   ReportArtifactMetadata,
   ReportRun,
   ReportTemplate,
+  TrustNotification,
   TrustPosture,
+  useActivityTimeline,
   useCreateEvidencePackage,
   useCreateReportRun,
   useCreateReportTemplate,
   useDeleteReportTemplate,
   useDownloadReportArtifact,
   useEvidencePackages,
+  useMarkAllTrustNotificationsRead,
+  useMarkTrustNotificationRead,
+  useNotificationUnreadCount,
   useReportAccessLogs,
   useReportArtifactManifest,
   useReportArtifacts,
   useReportRuns,
   useReportTemplates,
+  useTrustNotifications,
   useTrustOverview,
   useTrustPosture,
   useUpdateReportTemplate,
 } from '@/hooks/use-data';
 
-type TrustView = 'overview' | 'security' | 'compliance' | 'remediation' | 'integrations';
+type TrustPostureView = 'security' | 'compliance' | 'remediation' | 'integrations';
+type TrustView = 'overview' | TrustPostureView | 'activity';
 type ReportView = 'overview' | 'templates' | 'runs' | 'artifacts' | 'evidence-packages' | 'access-logs';
 type RoleAwareUser = { role?: string; role_name?: string; roles?: string[] };
 type ApiError = { response?: { data?: { detail?: string } }; message?: string };
@@ -63,6 +73,7 @@ const trustNav: Array<{ view: TrustView; label: string; href: string; icon: type
   { view: 'compliance', label: 'Compliance', href: '/trust/compliance', icon: ClipboardList },
   { view: 'remediation', label: 'Remediation', href: '/trust/remediation', icon: Wrench },
   { view: 'integrations', label: 'Integrations', href: '/trust/integrations', icon: HeartPulse },
+  { view: 'activity', label: 'Activity', href: '/trust/activity', icon: Activity },
 ];
 
 const reportNav: Array<{ view: ReportView; label: string; href: string; icon: typeof FileText }> = [
@@ -353,8 +364,8 @@ function PostureCard({ title, posture, icon: Icon }: { title: string; posture?: 
   );
 }
 
-function PostureDetail({ kind }: { kind: TrustView }) {
-  const postureKind = kind === 'overview' ? 'security' : kind;
+function PostureDetail({ kind }: { kind: TrustPostureView }) {
+  const postureKind = kind;
   const query = useTrustPosture(postureKind);
   const titleByKind = {
     security: 'Security posture',
@@ -418,6 +429,64 @@ function TrustOverviewView() {
       </div>
       {overviewQuery.isLoading && <TableSkeleton columns={4} rows={3} />}
     </TrustShell>
+  );
+}
+
+function ActivityTimelineView() {
+  const [filters, setFilters] = useState({ source: '', action: '', resource_type: '' });
+  const timelineQuery = useActivityTimeline({ ...filters, skip: 0, limit: PAGE_SIZE });
+  const items = timelineQuery.data?.items || [];
+  return (
+    <TrustShell view="activity">
+      <div className="grid gap-4 md:grid-cols-4">
+        <Metric label="Timeline items" value={timelineQuery.data?.total ?? 0} hint="Sanitized tenant events" />
+        <Metric label="Reports" value={items.filter((item) => item.source === 'report').length} hint="Runs and metadata access" />
+        <Metric label="Remediation" value={items.filter((item) => item.source === 'remediation').length} hint="Approvals and verification" />
+        <Metric label="Last updated" value={items[0]?.occurred_at ? new Date(items[0].occurred_at).toLocaleDateString() : '-'} hint="Latest activity timestamp" />
+      </div>
+      <Card className="glass-card">
+        <CardContent className="p-4">
+          <div className="grid md:grid-cols-3 gap-3">
+            <FilterSelect label="Source" value={filters.source} onChange={(value) => setFilters((current) => ({ ...current, source: value }))} options={[['', 'All sources'], ['report', 'Report'], ['remediation', 'Remediation'], ['evidence', 'Evidence'], ['integration', 'Integration']]} />
+            <FilterSelect label="Resource type" value={filters.resource_type} onChange={(value) => setFilters((current) => ({ ...current, resource_type: value }))} options={[['', 'All resources'], ['report_run', 'Report run'], ['report_artifact', 'Report artifact'], ['remediation_approval', 'Approval'], ['remediation_plan', 'Plan'], ['evidence_item', 'Evidence'], ['cloud_integration', 'Integration']]} />
+            <Input aria-label="Action" placeholder="action filter" value={filters.action} onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+          </div>
+        </CardContent>
+      </Card>
+      <ActivityTimelineTable items={items} loading={timelineQuery.isLoading} />
+    </TrustShell>
+  );
+}
+
+function ActivityTimelineTable({ items, loading }: { items: ActivityTimelineItem[]; loading?: boolean }) {
+  return (
+    <Card className="glass-card overflow-hidden">
+      <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+        <Activity className="h-4 w-4 text-blue-400" />
+        <CardTitle className="text-neutral-100 text-base">Activity timeline</CardTitle>
+      </div>
+      <DataTable headers={['Time', 'Source', 'Action', 'Resource', 'Summary', 'Actor', 'Metadata']} loading={loading} emptyTitle="No activity" emptyDescription="Sanitized trust, report, remediation, evidence, and integration activity appears here.">
+        {items.map((item) => (
+          <tr key={item.id} className="hover:bg-white/[0.02] align-top">
+            <td className="p-4 text-neutral-400 text-xs whitespace-nowrap">{dateText(item.occurred_at)}</td>
+            <td className="p-4"><LabelBadge value={item.source} /></td>
+            <td className="p-4"><LabelBadge value={item.action} /></td>
+            <td className="p-4">
+              <div className="text-neutral-300">{labelText(item.resource_type)}</div>
+              <div className="font-mono text-xs text-neutral-500 max-w-[180px] truncate">{safeExportText(item.resource_id || '-')}</div>
+            </td>
+            <td className="p-4 min-w-[260px]">
+              <div className="text-neutral-100 font-medium">{safeExportText(item.title)}</div>
+              <div className="text-neutral-400 text-xs mt-1">{safeExportText(item.summary)}</div>
+            </td>
+            <td className="p-4 font-mono text-xs text-neutral-400 max-w-[180px] truncate">{safeExportText(item.actor_user_id || '-')}</td>
+            <td className="p-4">
+              <pre className="max-w-[260px] max-h-24 overflow-auto rounded-md border border-white/10 bg-black/40 p-2 text-[11px] text-neutral-400 whitespace-pre-wrap break-words">{safeExportText(JSON.stringify(item.metadata || {}, null, 2))}</pre>
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+    </Card>
   );
 }
 
@@ -943,8 +1012,97 @@ function AccessLogsView({ canViewAccessLogs }: { canViewAccessLogs: boolean }) {
   );
 }
 
+export function NotificationCenter() {
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [severity, setSeverity] = useState('');
+  const notificationsQuery = useTrustNotifications({ unread_only: unreadOnly, severity, skip: 0, limit: PAGE_SIZE });
+  const unreadQuery = useNotificationUnreadCount();
+  const markRead = useMarkTrustNotificationRead();
+  const markAllRead = useMarkAllTrustNotificationsRead();
+  const items = notificationsQuery.data?.items || [];
+  const handleMarkRead = async (notification: TrustNotification) => {
+    try {
+      await markRead.mutateAsync(notification.id);
+      toast.success('Notification marked read');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+  const handleMarkAllRead = async () => {
+    try {
+      await markAllRead.mutateAsync();
+      toast.success('Notifications marked read');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
+      <div className="flex flex-col xl:flex-row items-start xl:items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-neutral-100">Notification Center</h2>
+          <p className="text-sm text-neutral-400 mt-1">In-app trust, report, remediation, evidence, and integration notifications.</p>
+        </div>
+        <Button variant="outline" onClick={handleMarkAllRead} disabled={markAllRead.isPending || (unreadQuery.data?.unread || 0) === 0}>
+          <CheckCircle2 className="h-4 w-4 mr-2" />Mark all read
+        </Button>
+      </div>
+      <div className="rounded-md border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm text-blue-200">
+        Sanitized event summaries only. Raw provider payloads, credentials, Vault references, raw IP values, and legal guarantee copy are intentionally absent.
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Metric label="Unread" value={unreadQuery.data?.unread ?? 0} hint="Current tenant notifications" />
+        <Metric label="Loaded" value={items.length} hint="Visible notifications" />
+        <Metric label="Total" value={notificationsQuery.data?.total ?? 0} hint="Filtered notification rows" />
+      </div>
+      <Card className="glass-card">
+        <CardContent className="p-4">
+          <div className="grid md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 text-sm text-neutral-300">
+              <input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} />
+              Unread only
+            </label>
+            <FilterSelect label="Severity" value={severity} onChange={setSeverity} options={[['', 'All severities'], ['info', 'Info'], ['warning', 'Warning'], ['error', 'Error'], ['critical', 'Critical']]} />
+          </div>
+        </CardContent>
+      </Card>
+      <Card className="glass-card overflow-hidden">
+        <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+          <Bell className="h-4 w-4 text-blue-400" />
+          <CardTitle className="text-neutral-100 text-base">Notifications</CardTitle>
+        </div>
+        <DataTable headers={['Status', 'Severity', 'Type', 'Message', 'Resource', 'Created', 'Actions']} loading={notificationsQuery.isLoading} emptyTitle="No notifications" emptyDescription="Notifications appear when trust, report, remediation, evidence, or integration events need review.">
+          {items.map((notification) => (
+            <tr key={notification.id} className="hover:bg-white/[0.02] align-top">
+              <td className="p-4"><LabelBadge value={notification.read_at ? 'read' : 'unread'} /></td>
+              <td className="p-4"><LabelBadge value={notification.severity} /></td>
+              <td className="p-4 text-neutral-300">{labelText(notification.type)}</td>
+              <td className="p-4 min-w-[280px]">
+                <div className="text-neutral-100 font-medium">{safeExportText(notification.title)}</div>
+                <div className="text-neutral-400 text-xs mt-1">{safeExportText(notification.body)}</div>
+              </td>
+              <td className="p-4">
+                <div className="text-neutral-300">{labelText(notification.resource_type || '-')}</div>
+                <div className="font-mono text-xs text-neutral-500 max-w-[180px] truncate">{safeExportText(notification.resource_id || '-')}</div>
+              </td>
+              <td className="p-4 text-neutral-400 text-xs whitespace-nowrap">{dateText(notification.created_at)}</td>
+              <td className="p-4">
+                <Button size="sm" variant="outline" disabled={!!notification.read_at || markRead.isPending} onClick={() => handleMarkRead(notification)}>
+                  Mark read
+                </Button>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
+      </Card>
+    </div>
+  );
+}
+
 export function TrustConsole({ view = 'overview' }: { view?: TrustView }) {
   if (view === 'overview') return <TrustOverviewView />;
+  if (view === 'activity') return <ActivityTimelineView />;
   return <PostureDetail kind={view} />;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
-import { Clock, Search, Filter, Download, ShieldCheck, Link2, Database, Key, CheckCircle2 } from 'lucide-react';
+import { Clock, Search, Filter, Download, ShieldCheck, Link2, Database, Key, AlertTriangle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -28,7 +28,7 @@ type AuditEventWithHashes = AuditEvent & {
   currentHash: string;
 };
 
-// Helper to generate a deterministic pseudo-hash for demonstration of the Hash Chain Explorer
+// Local digest preview only. A backend verification endpoint should provide canonical hash-chain proof.
 function generatePseudoHash(str: string) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -107,17 +107,17 @@ export default function AuditPage() {
 
       {/* Audit Integrity Monitoring */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="glass-card border-emerald-500/20">
+        <Card className="glass-card border-amber-500/20">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-neutral-400 font-medium uppercase tracking-wider">Chain Status</p>
               <div className="flex items-center gap-2 mt-1">
-                <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                <span className="text-xl font-bold text-emerald-400">100% Verified</span>
+                <AlertTriangle className="w-5 h-5 text-amber-400" />
+                <span className="text-xl font-bold text-amber-300">Backend proof needed</span>
               </div>
             </div>
             <div className="text-right">
-              <p className="text-xs text-neutral-500">Last Block Signature</p>
+              <p className="text-xs text-neutral-500">Local digest preview</p>
               <p className="text-sm font-mono text-neutral-300">{(eventsWithHashes[0]?.currentHash || '00000000').substring(0, 8)}</p>
             </div>
           </CardContent>
@@ -249,9 +249,9 @@ export default function AuditPage() {
                                       <p className="text-[10px] text-emerald-500/70 uppercase tracking-wider mb-1">Current Block Hash (t)</p>
                                       <p className="font-mono text-xs text-emerald-400 break-all font-semibold">{event.currentHash}</p>
                                     </div>
-                                    <div className="pt-2 flex items-center gap-2 text-xs text-emerald-500">
-                                      <CheckCircle2 className="w-3.5 h-3.5" />
-                                      Cryptographic signature verified.
+                                    <div className="pt-2 flex items-center gap-2 text-xs text-amber-300">
+                                      <AlertTriangle className="w-3.5 h-3.5" />
+                                      Local hash preview only. Backend chain verification endpoint is not wired in this console.
                                     </div>
                                   </div>
                                 </div>

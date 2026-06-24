@@ -9,6 +9,7 @@ from app.core.exceptions import UnauthorizedException
 from app.core.providers.adapters.openai import OpenAIAdapter
 from app.main import app
 from app.models.gateway import RequestStatus
+from app.models.provider import ProviderType
 from app.schemas.gateway import GatewayRequestDetail
 from app.services.api_safety import sanitize_text
 from app.services.provider_credentials import is_vault_provider_reference
@@ -103,7 +104,28 @@ async def test_openai_compatible_adapter_retrieves_provider_key_without_db_secre
 
     monkeypatch.setattr("app.core.providers.adapters.openai.retrieve_provider_api_key", fake_retrieve)
     provider = SimpleNamespace(
+        name="Groq Provider",
+        type=ProviderType.groq,
         config={"base_url": "https://api.groq.com/openai/v1"},
+        api_key_encrypted="authclaw/tenants/t/integrations/p",
+    )
+
+    url, headers = await OpenAIAdapter().get_connection_details(provider)
+
+    assert url == "https://api.groq.com/openai/v1/chat/completions"
+    assert headers["Authorization"] == "Bearer provider-secret"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_adapter_defaults_groq_named_provider_to_groq_url(monkeypatch):
+    async def fake_retrieve(_provider):
+        return "provider-secret"
+
+    monkeypatch.setattr("app.core.providers.adapters.openai.retrieve_provider_api_key", fake_retrieve)
+    provider = SimpleNamespace(
+        name="Groq API",
+        type=ProviderType.openai,
+        config={},
         api_key_encrypted="authclaw/tenants/t/integrations/p",
     )
 

@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 
 from app.api.dependencies import get_db, get_current_user, get_current_tenant, require_roles
 from app.core.exceptions import NotFoundException, BadRequestException
-from app.models.provider import Provider
+from app.models.provider import Provider, ProviderType
 from app.models.user import User
 from app.models.tenant import Tenant
 from app.core.providers.factory import ProviderAdapterFactory
@@ -27,6 +27,8 @@ from app.schemas.provider import (
 )
 
 router = APIRouter()
+
+GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ async def create_provider(
         name=body.name,
         type=body.type,
         api_key_encrypted="__pending_vault_reference__",
-        config=body.config,
+        config=_provider_config_with_defaults(body.type, body.config),
         is_active=body.is_active,
     )
     db.add(provider)
@@ -94,6 +96,14 @@ async def create_provider(
     await db.refresh(provider)
     await db.commit()
     return provider
+
+
+def _provider_config_with_defaults(provider_type: ProviderType, config: dict | None) -> dict:
+    normalized = dict(config or {})
+    if provider_type == ProviderType.groq:
+        normalized.setdefault("base_url", GROQ_OPENAI_BASE_URL)
+        normalized.setdefault("model", "llama3-8b-8192")
+    return normalized
 
 
 @router.post("/{provider_id}/validate")
@@ -178,7 +188,7 @@ async def update_provider(
         provider.api_key_encrypted = await store_provider_api_key(tenant.id, provider.id, body.api_key)
         await delete_provider_api_key(tenant.id, old_reference)
     if body.config is not None:
-        provider.config = body.config
+        provider.config = _provider_config_with_defaults(provider.type, body.config)
     if body.is_active is not None:
         provider.is_active = body.is_active
 

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List, Any, Dict
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from app.models.gateway import RequestStatus
 from app.models.policy import ViolationSeverity, ViolationResolution
 
@@ -12,7 +12,7 @@ class GatewayResponseSchema(BaseModel):
     request_id: uuid.UUID
     response_original: Optional[str]
     response_redacted: Optional[str]
-    pii_detections: List[Dict[str, Any]]
+    pii_detections: List[Dict[str, Any]] = Field(default_factory=list)
     token_count_completion: int
     latency_ms: int
     created_at: datetime
@@ -56,7 +56,7 @@ class GatewayRequestDetail(BaseModel):
     model: Optional[str]
     prompt_original: str
     prompt_redacted: Optional[str]
-    pii_detections: List[Dict[str, Any]]
+    pii_detections: List[Dict[str, Any]] = Field(default_factory=list)
     status: RequestStatus
     token_count_prompt: int
     latency_ms: int
@@ -65,8 +65,11 @@ class GatewayRequestDetail(BaseModel):
     error_type: Optional[str] = None
     error_code: Optional[str] = None
     created_at: datetime
+    request_payload: Optional[Dict[str, Any]] = None
+    modified_payload: Optional[Dict[str, Any]] = None
+    response_payload: Optional[Dict[str, Any]] = None
     response: Optional[GatewayResponseSchema] = None
-    violations: List[PolicyViolationSchema] = []
+    violations: List[PolicyViolationSchema] = Field(default_factory=list)
 
 class GatewayRequestListResponse(BaseModel):
     items: List[GatewayRequestResponseBrief]

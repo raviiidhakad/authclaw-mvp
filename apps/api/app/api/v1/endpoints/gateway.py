@@ -1,4 +1,5 @@
 import hashlib
+import re
 import uuid
 from datetime import datetime
 from typing import Dict, Any
@@ -10,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.exceptions import UnauthorizedException, NotFoundException
-from app.models.api_key import ApiKey
+from app.models.api_key import ApiKey, ApiKeyScope
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
@@ -19,12 +20,41 @@ from app.schemas.gateway import GatewayRequestListResponse, GatewayRequestDetail
 
 router = APIRouter()
 
-async def verify_api_key(authorization: str = Header(None), db: AsyncSession = Depends(get_db)) -> ApiKey:
-    """Verifies the AuthClaw API Key provided in the Authorization header."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise UnauthorizedException(detail="Missing or invalid Authorization header")
-        
-    token = authorization.replace("Bearer ", "")
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
+_CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]*?){13,19}(?!\d)")
+_SECRET_RE = re.compile(
+    r"(?i)\b(token|secret|password|credential|api[_-]?key|authorization)\b\s*[:=]\s*[^,\s}]+"
+)
+
+
+def _extract_gateway_token(authorization: str | None, x_api_key: str | None) -> str:
+    token = (x_api_key or "").strip()
+    if token:
+        return token
+    auth_header = (authorization or "").strip()
+    scheme, _, value = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not value.strip():
+        raise UnauthorizedException(detail="Missing or invalid gateway API key header")
+    return value.strip()
+
+
+def _sanitize_trace_text(value: str | None) -> str:
+    text = value or ""
+    text = _EMAIL_RE.sub("[redacted-email]", text)
+    text = _PHONE_RE.sub("[redacted-phone]", text)
+    text = _CARD_RE.sub("[redacted-card]", text)
+    text = _SECRET_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    return text
+
+
+async def verify_api_key(
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKey:
+    """Verifies an AuthClaw gateway API key from Authorization or X-API-Key."""
+    token = _extract_gateway_token(authorization, x_api_key)
     
     # Hash the incoming key and compare to stored hash
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -33,6 +63,9 @@ async def verify_api_key(authorization: str = Header(None), db: AsyncSession = D
     
     if not api_key:
         raise UnauthorizedException(detail="Invalid API Key")
+
+    if api_key.scope == ApiKeyScope.read_only:
+        raise UnauthorizedException(detail="API key is not allowed to call the gateway")
     
     # BUG-03 FIX: Check key expiry
     if api_key.expires_at is not None and api_key.expires_at < datetime.utcnow():
@@ -148,4 +181,19 @@ async def get_gateway_request(
     if not gw_request:
         raise NotFoundException(detail="Gateway request not found")
         
-    return gw_request
+    prompt_preview = _sanitize_trace_text(gw_request.prompt_redacted or gw_request.prompt_original)
+    original_preview = _sanitize_trace_text(gw_request.prompt_original)
+    response_text = None
+    if gw_request.response:
+        response_text = gw_request.response.response_redacted or gw_request.response.response_original
+
+    detail = GatewayRequestDetail.model_validate(gw_request)
+    detail.prompt_original = original_preview
+    detail.prompt_redacted = prompt_preview if prompt_preview != original_preview else None
+    detail.request_payload = {"messages": [{"role": "user", "content": original_preview}]}
+    if detail.prompt_redacted:
+        detail.modified_payload = {"messages": [{"role": "user", "content": prompt_preview}]}
+    if response_text:
+        detail.response_payload = {"message": _sanitize_trace_text(response_text)}
+
+    return detail

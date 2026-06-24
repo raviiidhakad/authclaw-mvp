@@ -61,6 +61,8 @@ type Provider = {
 type GatewayResult = {
   status: number;
   ok: boolean;
+  providerAuthError?: boolean;
+  gatewayAuthError?: boolean;
   data: {
     error?: {
       message?: string;
@@ -254,10 +256,10 @@ function RequestDetailDrawer({
 
 const QUICK_TESTS = [
   { label: 'Normal request', prompt: 'Explain machine learning in simple terms.' },
-  { label: 'PII email pattern', prompt: 'A user entered an email-like value that should be classified and protected.' },
-  { label: 'Credential-like pattern', prompt: 'A user entered a credential-like value that should be blocked or redacted.' },
-  { label: 'Phone pattern', prompt: 'A user entered a phone-like value that should be classified and protected.' },
-  { label: 'Payment-card pattern', prompt: 'A user entered a payment-card-like value that should be classified and protected.' },
+  { label: 'PII email pattern', prompt: 'A demo user entered person@example.test and it should be classified and protected.' },
+  { label: 'Credential-like pattern', prompt: 'A demo credential marker token=demo-token-redacted should be blocked or redacted.' },
+  { label: 'Phone pattern', prompt: 'A demo support caller entered +1 202-555-0100 and it should be classified and protected.' },
+  { label: 'Payment-card pattern', prompt: 'A demo payment-card test value 4111 1111 1111 1111 should be classified and protected.' },
   { label: 'Content filter', prompt: 'Explain why bypassing security controls is unsafe.' },
 ];
 
@@ -290,6 +292,7 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey.trim()}`,
+          'X-API-Key': apiKey.trim(),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -299,6 +302,16 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
       });
 
       const data = await resp.json();
+      const topLevelDetail = typeof data?.detail === 'string' ? data.detail : '';
+      const nestedMessage = typeof data?.error?.message === 'string' ? data.error.message : '';
+      const nestedType = typeof data?.error?.type === 'string' ? data.error.type : '';
+      const providerAuthError =
+        resp.status === 401 &&
+        (nestedType.includes('auth') || /invalid api key|authentication|unauthorized/i.test(nestedMessage));
+      const gatewayAuthError =
+        resp.status === 401 &&
+        !data?.error &&
+        /invalid api key|gateway api key|authorization/i.test(topLevelDetail);
 
       setResult({
         status: resp.status,
@@ -306,10 +319,16 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
         data,
         blocked: resp.status === 403,
         error: !resp.ok && resp.status !== 403,
+        providerAuthError,
+        gatewayAuthError,
       });
 
       if (resp.status === 403) {
         toast.error('🚫 Request BLOCKED by Policy', { description: data?.error?.violations?.[0] || 'Policy violation detected.' });
+      } else if (gatewayAuthError) {
+        toast.error('AuthClaw API key rejected', { description: 'Paste the full ac_ key shown once in Settings, not only the prefix.' });
+      } else if (providerAuthError) {
+        toast.warning('Provider credential rejected', { description: 'AuthClaw accepted the gateway key, but the selected model provider returned 401.' });
       } else if (!resp.ok) {
         toast.warning('⚠️ Gateway Error', { description: data?.error?.message || 'An error occurred.' });
       } else {
@@ -489,7 +508,9 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                         ) : result.error ? (
                           <>
                             <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                            <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">Gateway Error</span>
+                            <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">
+                              {result.gatewayAuthError ? 'AuthClaw Key Error' : result.providerAuthError ? 'Provider Credential Error' : 'Gateway Error'}
+                            </span>
                             <span className="text-xs text-neutral-500 ml-auto font-mono">HTTP {result.status}</span>
                           </>
                         ) : (
@@ -522,7 +543,11 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
 
                       {result.error && (
                         <div className="text-xs text-amber-300 bg-black/20 rounded-lg p-3 font-mono">
-                          {result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2)}
+                          {result.gatewayAuthError
+                            ? 'The AuthClaw gateway key was rejected. Create a new key in Settings and copy the full ac_ value shown once.'
+                            : result.providerAuthError
+                            ? 'AuthClaw accepted this gateway key, but the upstream provider credential for the selected model is invalid or missing. Update the provider key in Settings before forwarding non-blocked requests.'
+                            : result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2)}
                         </div>
                       )}
 

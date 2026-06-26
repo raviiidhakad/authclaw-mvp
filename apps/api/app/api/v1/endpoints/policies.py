@@ -180,6 +180,12 @@ async def import_policy_yaml(
     db.add(policy)
     await db.flush()
     await db.refresh(policy)
+    
+    # Refreshing policy expires relationships. Re-fetch with selectinload to avoid MissingGreenlet.
+    stmt = select(Policy).options(selectinload(Policy.rules)).where(Policy.id == policy.id)
+    result = await db.execute(stmt)
+    policy = result.scalar_one()
+
     response = _build_policy_response(policy, list(policy.rules))
     await db.commit()
     await _publish_policy_event("policy.created", tenant.id, current_user.id, policy.id, policy.name)

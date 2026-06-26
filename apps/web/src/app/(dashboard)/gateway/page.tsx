@@ -687,7 +687,7 @@ function GatewayPlayground({ onRequestSent, hasRoutes, hasProviders }: { onReque
                               <p className="text-[11px] text-neutral-300">
                                 No default route is set for this tenant. The gateway needs at least one
                                 active <span className="text-white font-medium">Provider</span> and a
-                                route with <span className="text-white font-medium">"Set as Default"</span> enabled.
+                                route with <span className="text-white font-medium">&quot;Set as Default&quot;</span> enabled.
                               </p>
                               <ol className="text-[11px] text-neutral-400 space-y-1 list-decimal list-inside">
                                 <li>Go to <span className="text-amber-300 font-mono">Gateway → Providers</span> and add an AI provider (e.g. Groq — free)</li>

@@ -58,6 +58,10 @@ async def test_creating_new_gateway_key_revokes_previous_active_key():
                 _check_role=user,
             )
 
+            await db.execute(
+                text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"),
+                {"tenant_id": str(tenant_id)},
+            )
             first_key = (
                 await db.execute(select(ApiKey).where(ApiKey.tenant_id == tenant_id, ApiKey.key_prefix == first.key_prefix))
             ).scalars().one()

@@ -59,7 +59,13 @@ async def verify_api_key(
     
     # Hash the incoming key and compare to stored hash
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    result = await db.execute(select(ApiKey).where(ApiKey.key_hash == token_hash, ApiKey.is_active == True))
+    
+    # ENTERPRISE SECURITY FIX:
+    # api_keys is protected by RLS. Since gateway auth runs before tenant context is known,
+    # we use a SECURITY DEFINER function to bypass RLS securely for this specific lookup.
+    from sqlalchemy import text
+    stmt = select(ApiKey).from_statement(text("SELECT * FROM gateway_lookup_api_key(:hash)")).params(hash=token_hash)
+    result = await db.execute(stmt)
     api_key = result.scalars().first()
     
     if not api_key:
@@ -72,8 +78,14 @@ async def verify_api_key(
     if api_key.expires_at is not None and api_key.expires_at < datetime.utcnow():
         raise UnauthorizedException(detail="API Key has expired")
 
-    # Update last_used_at (best-effort — do not fail the request if this fails)
+    # Update last_used_at (best-effort)
+    # We must briefly set the tenant context to allow the UPDATE to pass RLS,
+    # but we use transaction-local setting (is_local=true) so it clears on commit.
     try:
+        await db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            {"tid": str(api_key.tenant_id)}
+        )
         api_key.last_used_at = datetime.utcnow()
         await db.commit()
     except Exception:

@@ -249,6 +249,26 @@ async def test_authclaw_app_role_exists_and_can_login():
         await su.close()
 
 
+# ── Test 9: gateway_lookup_api_key SECURITY DEFINER function ────────────────
+
+@pytest.mark.asyncio
+async def test_gateway_lookup_security_definer_function():
+    """EVIDENCE: gateway_lookup_api_key exists, is SECURITY DEFINER, and authclaw_app has EXECUTE."""
+    su = await asyncpg.connect(SUPERUSER_DSN)
+    try:
+        row = await su.fetchrow("""
+            SELECT p.prosecdef, has_function_privilege('authclaw_app', p.oid, 'EXECUTE') as can_execute
+            FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            WHERE n.nspname = 'public' AND p.proname = 'gateway_lookup_api_key'
+        """)
+        assert row is not None, "gateway_lookup_api_key function does not exist"
+        assert row["prosecdef"] is True, "gateway_lookup_api_key must be SECURITY DEFINER"
+        assert row["can_execute"] is True, "authclaw_app must have EXECUTE privilege on gateway_lookup_api_key"
+    finally:
+        await su.close()
+
+
 # ── Test 9: alembic_version shows d2e3f4a5b6c7 ──────────────────────────────
 
 @pytest.mark.asyncio

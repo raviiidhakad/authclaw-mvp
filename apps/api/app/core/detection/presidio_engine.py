@@ -226,7 +226,7 @@ class PresidioEngine:
         operators: Optional[Dict[str, Any]] = None,
         language: str = "en",
         score_threshold: float = 0.75,
-        timeout_seconds: float = 0.040,  # 40ms hard cap to stay within 50ms budget
+        timeout_seconds: float = 5.0,  # 5s cap for longer completions (was 40ms)
     ) -> ScanResult:
         """
         Analyze and anonymize text using the ProcessPool.

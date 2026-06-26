@@ -7,12 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.detection.presidio_engine import presidio_engine
 from app.core.engine.gateway import GatewayService
 from app.models.api_key import ApiKey, ApiKeyScope
+from app.models.gateway import GatewayRequest
 from app.models.gateway_route import GatewayRoute, RedactionStrategy
 from app.models.provider import Provider, ProviderType
 from app.models.tenant import Tenant
@@ -363,7 +365,7 @@ async def test_live_groq_gateway_e2e_is_gated():
                 is_default=True,
                 is_active=True,
                 redaction=RedactionStrategy.mask,
-                config={"model": "llama3-8b-8192"},
+                config={"model": "llama-3.3-70b-versatile"},
             )
             api_key = ApiKey(
                 id=api_key_id,
@@ -375,10 +377,13 @@ async def test_live_groq_gateway_e2e_is_gated():
                 scope=ApiKeyScope.gateway_only,
                 is_active=True,
             )
+            await db.execute(text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"), {"tenant_id": str(tenant_id)})
             db.add_all([tenant, user, provider, route, api_key])
             await db.flush()
             provider.api_key_encrypted = await store_provider_api_key(tenant_id, provider_id, os.environ["GROQ_API_KEY"])
             await db.commit()
+            await db.execute(text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"), {"tenant_id": str(tenant_id)})
+            await presidio_engine.start()
 
             service = GatewayService(db)
             result = await service.process_chat_request(
@@ -399,9 +404,11 @@ async def test_live_groq_gateway_e2e_is_gated():
             assert os.environ["GROQ_API_KEY"] not in rendered
             assert raw_gateway_key not in rendered
         finally:
+            await presidio_engine.stop()
+            await db.rollback()
+            await db.execute(text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"), {"tenant_id": str(tenant_id)})
+            await db.execute(delete(GatewayRequest).where(GatewayRequest.tenant_id == tenant_id))
             await db.execute(delete(ApiKey).where(ApiKey.tenant_id == tenant_id))
             await db.execute(delete(GatewayRoute).where(GatewayRoute.tenant_id == tenant_id))
             await db.execute(delete(Provider).where(Provider.tenant_id == tenant_id))
-            await db.execute(delete(User).where(User.tenant_id == tenant_id))
-            await db.execute(delete(Tenant).where(Tenant.id == tenant_id))
             await db.commit()

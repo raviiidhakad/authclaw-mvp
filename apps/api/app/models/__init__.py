@@ -69,6 +69,16 @@ from app.models.trust import (
     ReportTemplate,
     TrustNotification,
 )
+from app.models.risk import (
+    AdversarialProbeCategory,
+    AdversarialProbeRun,
+    AdversarialProbeStatus,
+    GoNoGoVerdict,
+    RiskPostureSnapshot,
+    VulnerabilityRegisterItem,
+    VulnerabilitySeverity,
+    VulnerabilityStatus,
+)
 
 __all__ = [
     "Base",
@@ -146,4 +156,12 @@ __all__ = [
     "ExternalShareLink",
     "ReportAccessLog",
     "TrustNotification",
+    "AdversarialProbeCategory",
+    "AdversarialProbeRun",
+    "AdversarialProbeStatus",
+    "GoNoGoVerdict",
+    "RiskPostureSnapshot",
+    "VulnerabilityRegisterItem",
+    "VulnerabilitySeverity",
+    "VulnerabilityStatus",
 ]

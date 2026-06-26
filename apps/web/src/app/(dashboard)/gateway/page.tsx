@@ -286,7 +286,7 @@ function getGatewayKeyValidationMessage(value: string) {
   return null;
 }
 
-function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
+function GatewayPlayground({ onRequestSent, hasRoutes, hasProviders }: { onRequestSent: () => void; hasRoutes: boolean; hasProviders: boolean }) {
   const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('gpt-3.5-turbo');
@@ -523,8 +523,8 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                       <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
                       <option value="gpt-4">gpt-4</option>
                       <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Groq)</option>
-                      <option value="llama3-8b-8192">llama3-8b-8192 (Groq)</option>
-                      <option value="mixtral-8x7b-32768">mixtral-8x7b-32768 (Groq)</option>
+                      <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Groq)</option>
+                      <option value="gemma2-9b-it">gemma2-9b-it (Groq)</option>
                     </select>
                   </div>
 
@@ -561,6 +561,42 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                       rows={6}
                       className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/20 transition-all resize-none"
                     />
+
+                    {/* ── Setup required banner ── */}
+                    {(!hasProviders || !hasRoutes) && (
+                      <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 space-y-3">
+                        <div className="flex items-start gap-3">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-xs font-semibold text-amber-300">Gateway setup required</p>
+                            <p className="text-[11px] text-neutral-400 mt-0.5">
+                              {!hasProviders
+                                ? 'No AI provider is configured. Add one first so the gateway knows where to send requests.'
+                                : 'No default route is configured. Create a route and mark it as the default.'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          {!hasProviders && (
+                            <Link
+                              href="/gateway/providers"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[11px] font-medium transition-colors"
+                            >
+                              <Server className="w-3 h-3" /> Add Provider
+                            </Link>
+                          )}
+                          {!hasRoutes && (
+                            <Link
+                              href="/gateway/routes"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 text-[11px] font-medium transition-colors"
+                            >
+                              <Network className="w-3 h-3" /> Create Default Route
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     <button
                       onClick={sendRequest}
                       disabled={isLoading}
@@ -637,15 +673,65 @@ function GatewayPlayground({ onRequestSent }: { onRequestSent: () => void }) {
                         </div>
                       )}
 
-                      {result.error && (
-                        <div className="text-xs text-amber-300 bg-black/20 rounded-lg p-3 font-mono">
-                          {result.gatewayAuthError
-                            ? 'The AuthClaw gateway key was rejected. Create a new key in Settings and copy the full ac_ value shown once.'
-                            : result.providerAuthError
-                            ? 'AuthClaw accepted this gateway key, but the upstream provider credential for the selected model is invalid or missing. Update the provider key in Settings before forwarding non-blocked requests.'
-                            : safeText(result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2))}
-                        </div>
-                      )}
+                      {result.error && (() => {
+                        const errCode = (result.data as { error?: { code?: string } })?.error?.code ?? '';
+                        const isNoRoute = errCode === 'no_default_route' || errCode === 'route_not_found' || errCode === 'no_provider';
+                        const isProviderCred = errCode === 'route_provider_unavailable' || errCode === 'route_provider_missing';
+
+                        if (isNoRoute) {
+                          return (
+                            <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 space-y-3">
+                              <p className="text-xs font-semibold text-amber-300 flex items-center gap-2">
+                                <AlertTriangle className="w-3.5 h-3.5" /> Gateway Not Configured
+                              </p>
+                              <p className="text-[11px] text-neutral-300">
+                                No default route is set for this tenant. The gateway needs at least one
+                                active <span className="text-white font-medium">Provider</span> and a
+                                route with <span className="text-white font-medium">"Set as Default"</span> enabled.
+                              </p>
+                              <ol className="text-[11px] text-neutral-400 space-y-1 list-decimal list-inside">
+                                <li>Go to <span className="text-amber-300 font-mono">Gateway → Providers</span> and add an AI provider (e.g. Groq — free)</li>
+                                <li>Go to <span className="text-amber-300 font-mono">Gateway → Routes</span>, create a route, select that provider, and toggle <span className="text-white">Set as Default</span></li>
+                                <li>Come back here and send again</li>
+                              </ol>
+                              <div className="flex gap-2 flex-wrap">
+                                <Link href="/gateway/providers" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[11px] font-medium transition-colors">
+                                  <Server className="w-3 h-3" /> Add Provider
+                                </Link>
+                                <Link href="/gateway/routes" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 text-[11px] font-medium transition-colors">
+                                  <Network className="w-3 h-3" /> Create Default Route
+                                </Link>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (isProviderCred) {
+                          return (
+                            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-2">
+                              <p className="text-xs font-semibold text-red-300 flex items-center gap-2">
+                                <AlertTriangle className="w-3.5 h-3.5" /> Provider Unavailable
+                              </p>
+                              <p className="text-[11px] text-neutral-300">
+                                The route exists but its linked provider is inactive or has no API key.
+                              </p>
+                              <Link href="/gateway/providers" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-[11px] font-medium transition-colors">
+                                <Server className="w-3 h-3" /> Fix Provider
+                              </Link>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="text-xs text-amber-300 bg-black/20 rounded-lg p-3 font-mono">
+                            {result.gatewayAuthError
+                              ? 'The AuthClaw gateway key was rejected. Create a new key in Settings and copy the full ac_ value shown once.'
+                              : result.providerAuthError
+                              ? 'AuthClaw accepted this gateway key, but the upstream provider credential for the selected model is invalid or missing. Update the provider key in Settings before forwarding non-blocked requests.'
+                              : safeText(result.data?.error?.message || result.data?.message || JSON.stringify(result.data, null, 2))}
+                          </div>
+                        );
+                      })()}
 
                       <p className="text-[10px] text-neutral-600 mt-2">
                         {result.blocked
@@ -786,7 +872,11 @@ export default function GatewayPage() {
       </Card>
 
       {/* Playground */}
-      <GatewayPlayground onRequestSent={() => refetch()} />
+      <GatewayPlayground
+        onRequestSent={() => refetch()}
+        hasProviders={providers.length > 0}
+        hasRoutes={routes.length > 0}
+      />
 
       {/* Request Log */}
       <Card className="glass-card flex flex-col min-h-[600px] overflow-hidden">

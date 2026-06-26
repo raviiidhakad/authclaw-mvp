@@ -121,7 +121,7 @@ export default function GatewayRoutesPage() {
     name: '',
     description: '',
     provider_id: '',
-    model: 'llama3-8b-8192',
+    model: 'llama-3.1-8b-instant',
     policy_id: '',
     is_default: false,
     is_active: true,
@@ -240,7 +240,7 @@ export default function GatewayRoutesPage() {
             type="text"
             value={formData.model}
             onChange={e => setFormData({ ...formData, model: e.target.value })}
-            placeholder="e.g. llama3-8b-8192"
+            placeholder="e.g. llama-3.1-8b-instant"
             className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
           />
         </div>

@@ -103,7 +103,7 @@ def _provider_config_with_defaults(provider_type: ProviderType, config: dict | N
     normalized = dict(config or {})
     if provider_type == ProviderType.groq:
         normalized.setdefault("base_url", GROQ_OPENAI_BASE_URL)
-        normalized.setdefault("model", "llama3-8b-8192")
+        normalized.setdefault("model", "llama-3.1-8b-instant")
     return normalized
 
 
@@ -149,7 +149,7 @@ async def validate_provider(
         url, headers = await adapter.get_connection_details(provider)
         request_payload = adapter.transform_request(
             {
-                "model": (provider.config or {}).get("model", "llama3-8b-8192"),
+                "model": (provider.config or {}).get("model", "llama-3.1-8b-instant"),
                 "messages": [{"role": "user", "content": "ping"}],
                 "max_tokens": 1,
             }

@@ -1503,6 +1503,159 @@ export function useReportAccessLogs(params: Record<string, unknown> = {}) {
   return useQuery({ queryKey: ['report-access-logs', params], queryFn: () => listReportAccessLogs(params), refetchInterval: 15000 });
 }
 
+// -- Risk & Red Teaming MVP --
+export type RiskProbeCategory =
+  | 'prompt_injection'
+  | 'data_disclosure'
+  | 'credential_leakage'
+  | 'harmful_content'
+  | 'sycophancy_policy_bypass';
+export type RiskProbeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked';
+export type RiskVulnerabilitySeverity = 'low' | 'medium' | 'high' | 'critical';
+export type RiskVulnerabilityStatus = 'open' | 'triaged' | 'remediating' | 'accepted_risk' | 'resolved' | 'false_positive';
+export type RiskGoNoGoVerdict = 'go' | 'needs_review' | 'no_go';
+
+export interface AdversarialProbeRun {
+  id: string;
+  tenant_id: string;
+  name: string;
+  category: RiskProbeCategory | string;
+  status: RiskProbeStatus | string;
+  target_surface: string;
+  model_target?: string | null;
+  execution_mode: string;
+  owner_user_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  safe_prompt_preview?: string | null;
+  result_summary: string;
+  risk_score: number;
+  probes_total: number;
+  blocked_count: number;
+  allowed_count: number;
+  vulnerability_count: number;
+  evidence: Record<string, unknown>;
+  raw_payload_stored: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VulnerabilityRegisterItem {
+  id: string;
+  tenant_id: string;
+  probe_run_id?: string | null;
+  remediation_plan_id?: string | null;
+  category: RiskProbeCategory | string;
+  title: string;
+  description: string;
+  severity: RiskVulnerabilitySeverity | string;
+  status: RiskVulnerabilityStatus | string;
+  owner_user_id?: string | null;
+  evidence_summary: string;
+  remediation_summary?: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskPosture {
+  verdict: RiskGoNoGoVerdict | string;
+  summary: string;
+  counts: {
+    probe_runs?: number;
+    vulnerabilities?: number;
+    open_items?: number;
+    open_high?: number;
+    open_critical?: number;
+    by_severity?: Record<string, number>;
+    by_status?: Record<string, number>;
+    by_category?: Record<string, number>;
+    probe_categories_covered?: string[];
+    [key: string]: unknown;
+  };
+  blockers: Array<Record<string, unknown>>;
+  recommendations: unknown[];
+  evidence_summary: string;
+  generated_at: string;
+}
+
+export async function listRiskProbeRuns(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/risk/probe-runs', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<AdversarialProbeRun>;
+}
+
+export async function createRiskProbeRun(data: { name: string; category: RiskProbeCategory | string; target_surface?: string; model_target?: string | null }) {
+  const res = await apiClient.post('/risk/probe-runs', data);
+  return res.data as AdversarialProbeRun;
+}
+
+export async function listRiskVulnerabilities(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/risk/vulnerabilities', { params: cleanParams(params) });
+  return res.data as RemediationListResponse<VulnerabilityRegisterItem>;
+}
+
+export async function updateRiskVulnerability({ id, data }: { id: string; data: Record<string, unknown> }) {
+  const res = await apiClient.patch(`/risk/vulnerabilities/${id}`, data);
+  return res.data as VulnerabilityRegisterItem;
+}
+
+export async function getRiskPosture() {
+  const res = await apiClient.get('/risk/posture');
+  return res.data as RiskPosture;
+}
+
+export async function seedRiskDemoData() {
+  const res = await apiClient.post('/risk/seed-demo');
+  return res.data as Record<string, number>;
+}
+
+export function useRiskProbeRuns(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['risk-probe-runs', params], queryFn: () => listRiskProbeRuns(params), refetchInterval: 15000 });
+}
+
+export function useCreateRiskProbeRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createRiskProbeRun,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['risk-probe-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
+    },
+  });
+}
+
+export function useRiskVulnerabilities(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['risk-vulnerabilities', params], queryFn: () => listRiskVulnerabilities(params), refetchInterval: 15000 });
+}
+
+export function useUpdateRiskVulnerability() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateRiskVulnerability,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['risk-vulnerabilities'] });
+      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
+    },
+  });
+}
+
+export function useRiskPosture() {
+  return useQuery({ queryKey: ['risk-posture'], queryFn: getRiskPosture, refetchInterval: 15000 });
+}
+
+export function useSeedRiskDemoData() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: seedRiskDemoData,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['risk-probe-runs'] });
+      queryClient.invalidateQueries({ queryKey: ['risk-vulnerabilities'] });
+      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
+    },
+  });
+}
+
 // -- Sprint 4 Phase 6: Remediation Approval Console --
 export type RemediationRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type RemediationPlanStatus =

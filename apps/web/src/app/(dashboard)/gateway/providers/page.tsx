@@ -30,7 +30,7 @@ export default function GatewayProvidersPage() {
     type: 'groq',
     api_key: '',
     base_url: 'https://api.groq.com/openai/v1',
-    model: 'llama3-8b-8192',
+    model: 'llama-3.1-8b-instant',
   });
   const [validation, setValidation] = useState<Record<string, boolean>>({});
 

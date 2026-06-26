@@ -89,6 +89,74 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/risk\/posture$/, async (route) => fulfillJson(route, {
+    verdict: 'needs_review',
+    summary: 'Evidence-supported go/no-go posture needs review before production expansion.',
+    counts: {
+      probe_runs: 5,
+      vulnerabilities: 4,
+      open_high: 1,
+      open_critical: 1,
+      probe_categories_covered: ['prompt_injection', 'data_disclosure', 'credential_leakage', 'harmful_content', 'sycophancy_policy_bypass'],
+    },
+    blockers: [{ id: 'vuln-1', title: 'Indirect instruction override needs review', severity: 'high', status: 'open' }],
+    recommendations: ['Keep probe execution simulated by default.', 'Link high and critical vulnerabilities to evidence-supported remediation.'],
+    evidence_summary: 'Posture derived from sanitized simulated probe runs and vulnerability register rows; not legal advice.',
+    generated_at: '2026-06-24T10:00:00Z',
+  }));
+  await page.route(/\/api\/v1\/risk\/probe-runs(?:\?.*)?$/, async (route) => fulfillJson(route, {
+    items: [{
+      id: 'probe-1',
+      tenant_id: 'tenant-1',
+      name: 'Prompt injection guardrail probe',
+      category: 'prompt_injection',
+      status: 'completed',
+      target_surface: 'gateway',
+      model_target: 'route-selected model',
+      execution_mode: 'simulated',
+      owner_user_id: 'user-1',
+      started_at: '2026-06-24T09:00:00Z',
+      completed_at: '2026-06-24T09:01:00Z',
+      safe_prompt_preview: 'Sanitized simulated prompt injection probe preview; raw content removed.',
+      result_summary: 'Simulated prompt-injection checks found one needs-review bypass pattern.',
+      risk_score: 72,
+      probes_total: 10,
+      blocked_count: 9,
+      allowed_count: 1,
+      vulnerability_count: 1,
+      evidence: { source: 'safe_demo_seed', execution_mode: 'simulated' },
+      raw_payload_stored: false,
+      created_at: '2026-06-24T09:00:00Z',
+      updated_at: '2026-06-24T09:01:00Z',
+    }],
+    total: 1,
+    skip: 0,
+    limit: 50,
+  }));
+  await page.route(/\/api\/v1\/risk\/vulnerabilities(?:\?.*)?$/, async (route) => fulfillJson(route, {
+    items: [{
+      id: 'vuln-1',
+      tenant_id: 'tenant-1',
+      probe_run_id: 'probe-1',
+      remediation_plan_id: 'rem-1',
+      category: 'prompt_injection',
+      title: 'Indirect instruction override needs review',
+      description: 'A synthetic probe indicated a route could over-weight untrusted instructions.',
+      severity: 'high',
+      status: 'open',
+      owner_user_id: 'user-1',
+      evidence_summary: 'Evidence-supported finding from simulated prompt-injection probe; raw content removed.',
+      remediation_summary: 'Strengthen instruction hierarchy and attach remediation plan before broader rollout.',
+      first_seen_at: '2026-06-24T09:00:00Z',
+      last_seen_at: '2026-06-24T09:01:00Z',
+      created_at: '2026-06-24T09:00:00Z',
+      updated_at: '2026-06-24T09:01:00Z',
+    }],
+    total: 1,
+    skip: 0,
+    limit: 50,
+  }));
+  await page.route(/\/api\/v1\/risk\/seed-demo$/, async (route) => fulfillJson(route, { probe_runs_created: 5, vulnerabilities_created: 4, posture_snapshots_created: 1 }));
   await page.route(/\/api\/v1\/compliance\/frameworks(?:\?.*)?$/, async (route) => fulfillJson(route, [frameworkSummary]));
   await page.route(/\/api\/v1\/compliance\/assessments(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 20 }));
   await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' } }], total: 1 }));
@@ -160,7 +228,11 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await expect(page.getByText(/Backend proof needed/i)).toBeVisible();
 
   await page.goto('/risk');
-  await expect(page.getByText(/Red-team backend not implemented/i)).toBeVisible();
+  await expect(page.getByText(/Go \/ No-Go Posture/i)).toBeVisible();
+  await expect(page.getByText('Vulnerability Register', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Prompt injection guardrail probe/i)).toBeVisible();
+  await expect(page.getByText(/Indirect instruction override needs review/i).first()).toBeVisible();
+  await expect(page.getByText(/Backend gap|raw_provider_payload|vault:\/\/|gsk_|sk-|guaranteed compliant|audit-ready guaranteed/i)).toHaveCount(0);
 
   await page.goto('/settings');
   await expect(page.getByText(/Organization Profile/i)).toBeVisible();

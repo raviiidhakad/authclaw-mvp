@@ -686,7 +686,7 @@ class GatewayService:
                         full_prompt = transformed_prompt
 
             except Exception as security_exc:
-                logger.error("Inbound security pipeline error (failing closed): %s", security_exc)
+                logger.error("Inbound security pipeline error (failing closed): %s", security_exc, exc_info=True)
                 message = "Gateway security scan failed before provider egress."
                 await self._log_safe_error(
                     tenant_id=tenant_id,
@@ -1087,7 +1087,7 @@ class GatewayService:
                                     )
                                 ))
             except Exception as security_exc:
-                logger.error("Outbound security pipeline error (failing closed): %s", security_exc)
+                logger.error("Outbound security pipeline error (failing closed): %s", security_exc, exc_info=True)
                 outbound_response_body = self._error_body(
                     "Gateway response security scan failed. Upstream response was not released.",
                     "security_pipeline_error",

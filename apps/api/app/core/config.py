@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Invalidated on policy.created / policy.updated / policy.deleted / tenant.deleted.
     POLICY_CACHE_KEY_PREFIX: str = "tenant:policy:compiled"
 
+    # ── Sprint 2: Reversible Tokenization Settings ──────────────────────────
+    # TTL for encrypted PII tokens stored in Redis for reversible tokenization.
+    # Defines the maximum lifespan of a detokenization mapping.
+    TOKEN_TTL_SECONDS: int = 3600
+
     # ── Sprint 2: Connector Safety Limits ──────────────────────────────────────
     # Maximum findings retrieved per connector sync. Prevents memory exhaustion
     # on very large cloud environments. ConnectorWorker truncates at this limit.

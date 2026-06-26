@@ -179,6 +179,7 @@ class PolicyCache:
         entity_actions: Dict[str, str] = {}
         classification_overrides: Dict[str, str] = {}
         keyword_blocklist: List[str] = []
+        reversible_entities: List[str] = []
         policy_ids: List[str] = []
 
         for policy in sorted(policies, key=lambda item: item.priority, reverse=True):
@@ -198,16 +199,22 @@ class PolicyCache:
 
                 elif rule.rule_type == RuleType.pii_redact:
                     mode = rule.conditions.get("redaction_mode", "MASK").upper()
+                    is_reversible = rule.conditions.get("reversible", False)
                     for entity_type in rule.conditions.get("pii_types", []):
                         et = entity_type.upper()
                         if et not in entity_actions:
                             entity_actions[et] = mode
+                            if is_reversible and et not in reversible_entities:
+                                reversible_entities.append(et)
 
                 elif rule.rule_type == RuleType.pii_synthetic:
+                    is_reversible = rule.conditions.get("reversible", False)
                     for entity_type in rule.conditions.get("pii_types", []):
                         et = entity_type.upper()
                         if et not in entity_actions:
                             entity_actions[et] = "SYNTHETIC"
+                            if is_reversible and et not in reversible_entities:
+                                reversible_entities.append(et)
 
                 elif rule.rule_type == RuleType.content_filter:
                     for kw in rule.conditions.get("keywords", []):
@@ -223,6 +230,7 @@ class PolicyCache:
             "entity_actions": entity_actions,
             "classification_overrides": classification_overrides,
             "keyword_blocklist": keyword_blocklist,
+            "reversible_entities": reversible_entities,
             "policy_ids": policy_ids,
             "compiled_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -234,6 +242,7 @@ class PolicyCache:
             "entity_actions": {},
             "classification_overrides": {},
             "keyword_blocklist": [],
+            "reversible_entities": [],
             "compiled_at": None,
         }
 

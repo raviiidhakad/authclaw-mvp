@@ -283,14 +283,21 @@ class GatewayService:
         return result
 
     @classmethod
-    def _apply_redaction(
+    async def _apply_redaction(
         cls,
         text: str,
         detections: List[Dict[str, Any]],
         sanitized_text: str,
         route_mode: str,
         entity_actions: Dict[str, str],
+        reversible_entities: List[str],
+        tenant_id: str | uuid.UUID,
     ) -> tuple[str, str]:
+        import hashlib
+        import uuid
+        from app.core.engine.pii import PIIRedactor
+        from app.core.engine.token_vault import TokenVaultService
+
         requested_modes = {
             entity_actions.get(str(detection.get("entity_type", "")).upper(), "").upper()
             for detection in detections
@@ -304,13 +311,59 @@ class GatewayService:
             else:
                 mode = "MASK"
 
-        if mode == "SYNTHETIC":
-            from app.core.engine.pii import PIIRedactor
+        has_reversible = any(str(d.get("entity_type", "")).upper() in reversible_entities for d in detections)
+        if not has_reversible:
+            if mode == "SYNTHETIC":
+                return PIIRedactor.synthesize_detections(text, detections), mode
+            if mode == "HASH":
+                return cls._hash_detections(text, detections), mode
+            return sanitized_text, "MASK"
 
-            return PIIRedactor.synthesize_detections(text, detections), mode
-        if mode == "HASH":
-            return cls._hash_detections(text, detections), mode
-        return sanitized_text, "MASK"
+        # Mixed pass: combine TokenVault and standard
+        sorted_detections = sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True)
+        result = text
+        mappings = {}
+
+        for idx, detection in enumerate(sorted_detections, start=1):
+            start = int(detection.get("start", 0))
+            end = int(detection.get("end", 0))
+            if start < 0 or end < start or end > len(text):
+                continue
+
+            entity_type = str(detection.get("entity_type", "PII")).upper()
+            original_value = text[start:end]
+
+            if entity_type in reversible_entities:
+                token_uuid = str(uuid.uuid4())
+                placeholder = TokenVaultService.TOKEN_FORMAT.format(token_uuid=token_uuid)
+                mappings[token_uuid] = original_value
+                result = result[:start] + placeholder + result[end:]
+            else:
+                action = entity_actions.get(entity_type, mode)
+                if action == "SYNTHETIC":
+                    replacement = PIIRedactor.synthetic_value(entity_type, idx)
+                elif action == "HASH":
+                    digest = hashlib.sha256(original_value.encode("utf-8")).hexdigest()[:16]
+                    replacement = f"<HASHED_{entity_type}_{digest}>"
+                else:
+                    replacement = f"[{entity_type}]"
+                result = result[:start] + replacement + result[end:]
+
+        if mappings:
+            await TokenVaultService.store_batch(tenant_id, mappings)
+
+        return result, mode
+
+    @classmethod
+    async def _detokenize_payload(cls, tenant_id: str | uuid.UUID, obj: Any) -> Any:
+        from app.core.engine.token_vault import TokenVaultService
+        if isinstance(obj, str):
+            return await TokenVaultService.detokenize(tenant_id, obj)
+        elif isinstance(obj, list):
+            return [await cls._detokenize_payload(tenant_id, v) for v in obj]
+        elif isinstance(obj, dict):
+            return {k: await cls._detokenize_payload(tenant_id, v) for k, v in obj.items()}
+        return obj
 
     async def _resolve_gateway_route(
         self,
@@ -658,12 +711,15 @@ class GatewayService:
 
                     if decision.should_redact and scan_result.detections:
                         entity_actions = compiled_policy.get("entity_actions", {})
-                        transformed_prompt, redaction_mode = self._apply_redaction(
+                        reversible_entities = compiled_policy.get("reversible_entities", [])
+                        transformed_prompt, redaction_mode = await self._apply_redaction(
                             full_prompt,
                             scan_result.detections,
                             scan_result.sanitized_text,
                             route_redaction_mode,
                             entity_actions,
+                            reversible_entities,
+                            tenant_id,
                         )
                         asyncio.create_task(event_producer.publish_security_event(
                             ContentRedactedEvent(
@@ -937,6 +993,9 @@ class GatewayService:
                     }
                     
                 from app.core.engine.streaming import StreamingEngine
+                import json
+                from fastapi.responses import StreamingResponse
+
                 streaming_engine = StreamingEngine(self.audit_engine)
                 streaming_response = await streaming_engine.stream_response(
                     tenant_id=tenant_id,
@@ -949,9 +1008,37 @@ class GatewayService:
                     streaming_mode=streaming_mode,
                     adapter=adapter
                 )
+
+                async def detokenize_generator(original_iterator):
+                    async for chunk in original_iterator:
+                        chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                        
+                        if not chunk_str.startswith("data: "):
+                            yield chunk_str
+                            continue
+                            
+                        data_str = chunk_str[len("data: "):].strip()
+                        if data_str == "[DONE]":
+                            yield chunk_str
+                            continue
+                            
+                        try:
+                            data_json = json.loads(data_str)
+                            data_json = await self._detokenize_payload(tenant_id, data_json)
+                            yield f"data: {json.dumps(data_json, separators=(',', ':'))}\n\n"
+                        except Exception as e:
+                            logger.error("Outbound streaming detokenization failed: %s", e)
+                            # Fail closed: yield original chunk to keep token encrypted
+                            yield chunk_str
+
                 return {
                     "status_code": 200,
-                    "response": streaming_response
+                    "response": StreamingResponse(
+                        detokenize_generator(streaming_response.body_iterator),
+                        status_code=streaming_response.status_code,
+                        headers=dict(streaming_response.headers),
+                        media_type=streaming_response.media_type
+                    )
                 }
 
         # Synchronous execution
@@ -1164,10 +1251,17 @@ class GatewayService:
             # producer error counters separately.
             pass
 
-        # ── 8. Return response ───────────────────────────────────────────
+        # ── 8. Detokenize outbound response ──────────────────────────────────
+        try:
+            final_response_body = await self._detokenize_payload(tenant_id, outbound_response_body)
+        except Exception as detok_exc:
+            import logging
+            logging.getLogger(__name__).error("Synchronous detokenization failed closed: %s", detok_exc)
+            final_response_body = outbound_response_body
+
+        # ── 9. Return response ───────────────────────────────────────────
         return {
             "status_code": final_status_code,
-            "data": outbound_response_body,
+            "data": final_response_body,
         }
-
 

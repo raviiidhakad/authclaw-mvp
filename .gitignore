@@ -68,3 +68,18 @@ scratch/
 *.tfstate.*
 tfplan
 *.tfplan
+
+# AI Chat Dumps
+chatgpt-share*
+
+# Test & Build Reports
+openapi.json
+
+# Experimental / Scratch Scripts
+check*.py
+test_*.py
+!tests/test_*.py
+!apps/api/tests/test_*.py
+*.sql
+!infrastructure/**/*.sql
+

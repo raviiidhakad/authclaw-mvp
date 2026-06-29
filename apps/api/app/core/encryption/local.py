@@ -1,5 +1,4 @@
 import os
-import base64
 from cryptography.fernet import Fernet
 from app.core.config import settings
 from app.core.encryption.provider import EncryptionProvider

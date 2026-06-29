@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, List
+from typing import Dict, List
 
-from app.api.dependencies import get_current_tenant, get_current_user, get_db, require_roles
+from app.api.dependencies import get_current_tenant, get_db, require_roles
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.core.engine.agent import run_security_scan_agent

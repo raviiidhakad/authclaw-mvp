@@ -2,7 +2,6 @@ import hashlib
 import re
 import uuid
 from datetime import datetime
-from typing import Dict, Any
 from fastapi import APIRouter, Depends, Request, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -14,7 +13,7 @@ from app.core.exceptions import UnauthorizedException, NotFoundException
 from app.models.api_key import ApiKey, ApiKeyScope
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
+from app.models.gateway import GatewayRequest, RequestStatus
 from app.core.engine.gateway import GatewayService
 from app.schemas.gateway import GatewayRequestListResponse, GatewayRequestDetail
 from app.services.api_safety import sanitize_text

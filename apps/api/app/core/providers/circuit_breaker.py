@@ -1,5 +1,4 @@
 import time
-import json
 from enum import Enum
 from redis.asyncio import Redis
 

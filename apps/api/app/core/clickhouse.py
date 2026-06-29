@@ -1,6 +1,5 @@
 import aiohttp
 from aiochclient import ChClient
-import asyncio
 import logging
 from typing import Optional
 

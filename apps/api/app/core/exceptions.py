@@ -2,7 +2,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
-from typing import Any, Dict, Optional
+from typing import Optional
 import uuid
 
 class AuthClawException(Exception):

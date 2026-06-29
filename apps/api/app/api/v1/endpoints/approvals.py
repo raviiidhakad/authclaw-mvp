@@ -9,10 +9,10 @@ Security Properties Enforced:
   5. Audited:          Every approval action fires an audit event to Kafka.
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 

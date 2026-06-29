@@ -18,7 +18,6 @@ Endpoints that do NOT need tenant isolation (auth, health) use get_db() directly
 """
 import uuid
 import logging
-from typing import AsyncGenerator
 
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
@@ -28,7 +27,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal
 from app.core.exceptions import UnauthorizedException, ForbiddenException
 from app.models.user import User
 from app.models.tenant import Tenant
@@ -41,7 +39,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_PREFIX}/auth/login
 
 # ── Raw session (no tenant context) ─────────────────────────────────────────
 
-from app.core.database import AsyncSessionLocal, get_db
+from app.core.database import get_db
 
 
 # ── Authenticated user resolution ─────────────────────────────────────────────

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
-from app.api.dependencies import get_db, get_current_user, get_current_tenant, require_roles
+from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.exceptions import NotFoundException
 from app.models.policy import Policy, PolicyRule, PolicyViolation, ViolationSeverity
 from app.models.user import User

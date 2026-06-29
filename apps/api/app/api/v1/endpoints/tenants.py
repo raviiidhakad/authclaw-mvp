@@ -1,10 +1,8 @@
-import uuid
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.api.dependencies import get_db, get_current_tenant, require_roles
-from app.core.exceptions import NotFoundException
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.policy import Policy

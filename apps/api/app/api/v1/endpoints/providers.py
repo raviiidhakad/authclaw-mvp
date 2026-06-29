@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.api.dependencies import get_db, get_current_user, get_current_tenant, require_roles
+from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.config import settings
-from app.core.exceptions import NotFoundException, BadRequestException
+from app.core.exceptions import NotFoundException
 from app.models.provider import Provider, ProviderType
 from app.models.user import User
 from app.models.tenant import Tenant

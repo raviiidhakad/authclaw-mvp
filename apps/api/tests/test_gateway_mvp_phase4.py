@@ -10,7 +10,11 @@ from app.api.v1.endpoints.policies import test_policy as run_policy_test_endpoin
 from app.api.v1.endpoints.policies import validate_policy
 from app.core.engine.gateway import GatewayService
 from app.core.policy.yaml_policy import (
+    OpaEvaluationContext,
     OpaPolicyAdapter,
+    OpaRuntimeKind,
+    OpaRuntimeMode,
+    PythonPolicyAdapter,
     export_policy_yaml,
     policy_from_normalized,
     validate_policy_yaml,
@@ -200,6 +204,24 @@ def test_opa_adapter_seam_can_be_swapped():
     assert result.opa_adapter == "test_deny_adapter"
 
 
+def test_opa_adapter_contract_preserves_python_compatibility():
+    validation = validate_policy_yaml(VALID_YAML)
+    adapter = PythonPolicyAdapter()
+    decision = adapter.evaluate(
+        "A demo token=secret-value should be blocked.",
+        validation.normalized,
+        OpaEvaluationContext(runtime_mode=OpaRuntimeMode.COMPATIBILITY, target_model="llama3-8b-8192"),
+    )
+
+    assert adapter.capabilities.runtime_kind == OpaRuntimeKind.PYTHON
+    assert adapter.capabilities.supports_strict_mode is True
+    assert adapter.capabilities.supports_compatibility_mode is True
+    assert adapter.capabilities.full_opa_runtime is False
+    assert decision["allowed"] is False
+    assert decision["action"] == "block"
+    assert set(decision) == {"allowed", "action", "matched_rules", "redaction_required", "reason"}
+
+
 @pytest.mark.asyncio
 async def test_policy_validate_and_test_endpoints_are_safe():
     validation = await validate_policy(PolicyYamlRequest(yaml_source=VALID_YAML), _tenant=SimpleNamespace(), _user=SimpleNamespace())
@@ -260,7 +282,7 @@ async def test_route_policy_evaluator_exception_fails_closed(monkeypatch):
     policy = _policy(tenant_id)
     route = _route(provider.id, policy.id)
     service = _service(FakeDb(FakeResult(route), FakeResult(provider), FakeResult(policy)))
-    service.policy_engine.evaluate = Mock(side_effect=RuntimeError("policy stack trace token=secret"))
+    service.opa_integration.adapter.evaluate = Mock(side_effect=RuntimeError("policy stack trace token=secret"))
 
     result = await service.process_chat_request(
         tenant_id,

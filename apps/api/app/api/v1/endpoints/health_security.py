@@ -70,6 +70,26 @@ async def security_pipeline_health() -> JSONResponse:
         "status": "healthy",
         "flags": feature_flags,
     }
+    try:
+        from app.core.policy.opa_integration import opa_runtime_health
+
+        opa_health = opa_runtime_health()
+        components["opa_runtime"] = {
+            "status": "healthy" if opa_health["enabled"] else "disabled",
+            "runtime_available": bool(opa_health["runtime_available"]),
+            "runtime_mode": opa_health["runtime_mode"],
+            "cache": opa_health["cache"],
+            "policy_version_status": opa_health["policy_version_status"],
+            "metrics": opa_health["metrics"],
+        }
+    except Exception:
+        components["opa_runtime"] = {
+            "status": "unhealthy",
+            "runtime_available": False,
+            "reason": "OPA runtime health check failed.",
+        }
+        if settings.ENABLE_OPA_RUNTIME_INTEGRATION:
+            issues.append("opa_runtime_health_failed")
 
     pipeline_active = settings.FF_SECURITY_PIPELINE
 

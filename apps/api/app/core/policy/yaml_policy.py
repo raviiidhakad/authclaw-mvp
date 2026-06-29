@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import yaml
@@ -62,15 +64,101 @@ class PolicyValidationResult:
         }
 
 
-class OpaPolicyAdapter:
-    """OPA-compatible policy adapter seam for future Rego runtime replacement."""
+class OpaRuntimeMode(str, Enum):
+    """Future runtime failure policy. Selection is intentionally not implemented in T1."""
+
+    STRICT = "STRICT"
+    COMPATIBILITY = "COMPATIBILITY"
+
+
+class OpaRuntimeKind(str, Enum):
+    """Supported adapter families behind the OPA policy contract."""
+
+    PYTHON = "python"
+    NATIVE_OPA = "native_opa"
+    EMBEDDED_OPA = "embedded_opa"
+    WASM = "wasm"
+
+
+@dataclass(frozen=True)
+class OpaEvaluationContext:
+    """Optional runtime context for future OPA engines.
+
+    YAML remains the source of truth; this context carries request metadata only.
+    Existing callers may omit it and retain the legacy behavior.
+    """
+
+    tenant_id: uuid.UUID | None = None
+    route_id: uuid.UUID | None = None
+    policy_id: uuid.UUID | None = None
+    target_model: str = ""
+    direction: str = "INBOUND"
+    runtime_mode: OpaRuntimeMode = OpaRuntimeMode.STRICT
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class OpaEvaluationDecision:
+    """Stable decision shape returned by adapter implementations.
+
+    Existing public policy-test responses still receive the dict form produced by
+    ``as_dict`` so API payloads remain unchanged.
+    """
+
+    allowed: bool
+    action: str
+    matched_rules: list[dict[str, Any]] = field(default_factory=list)
+    redaction_required: bool = False
+    reason: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "action": self.action,
+            "matched_rules": self.matched_rules,
+            "redaction_required": self.redaction_required,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class OpaAdapterCapabilities:
+    """Static adapter capabilities for future strict/compatibility runtime wiring."""
+
+    runtime_kind: OpaRuntimeKind
+    supports_strict_mode: bool
+    supports_compatibility_mode: bool
+    full_opa_runtime: bool = False
+
+
+class OpaPolicyAdapter(ABC):
+    """Single policy-runtime integration contract.
+
+    Implementations may be the current Python compatibility adapter, native OPA,
+    embedded OPA, or WASM. YAML remains the source of truth and is passed as a
+    normalized configuration document; adapters evaluate that configuration and
+    request metadata without requiring gateway/API changes.
+    """
 
     name = "base"
+    capabilities = OpaAdapterCapabilities(
+        runtime_kind=OpaRuntimeKind.PYTHON,
+        supports_strict_mode=False,
+        supports_compatibility_mode=False,
+        full_opa_runtime=False,
+    )
 
+    @abstractmethod
     def validate(self, normalized_policy: dict[str, Any]) -> list[PolicyValidationIssue]:
         raise NotImplementedError
 
-    def evaluate(self, text: str, normalized_policy: dict[str, Any]) -> dict[str, Any]:
+    @abstractmethod
+    def evaluate(
+        self,
+        text: str,
+        normalized_policy: dict[str, Any],
+        context: OpaEvaluationContext | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -78,6 +166,12 @@ class PythonPolicyAdapter(OpaPolicyAdapter):
     """Default Python-backed adapter that mirrors the existing runtime evaluator."""
 
     name = "python_policy_adapter"
+    capabilities = OpaAdapterCapabilities(
+        runtime_kind=OpaRuntimeKind.PYTHON,
+        supports_strict_mode=True,
+        supports_compatibility_mode=True,
+        full_opa_runtime=False,
+    )
 
     def validate(self, normalized_policy: dict[str, Any]) -> list[PolicyValidationIssue]:
         issues: list[PolicyValidationIssue] = []
@@ -101,13 +195,18 @@ class PythonPolicyAdapter(OpaPolicyAdapter):
                 )
         return issues
 
-    def evaluate(self, text: str, normalized_policy: dict[str, Any]) -> dict[str, Any]:
+    def evaluate(
+        self,
+        text: str,
+        normalized_policy: dict[str, Any],
+        context: OpaEvaluationContext | None = None,
+    ) -> dict[str, Any]:
         policy = policy_from_normalized(normalized_policy, tenant_id=uuid.uuid4())
-        result = PolicyEngine().evaluate(text, [policy], target_model="")
-        return {
-            "allowed": result.allowed,
-            "action": result.action_taken,
-            "matched_rules": [
+        result = PolicyEngine().evaluate(text, [policy], target_model=context.target_model if context else "")
+        decision = OpaEvaluationDecision(
+            allowed=result.allowed,
+            action=result.action_taken,
+            matched_rules=[
                 {
                     "rule_type": violation.rule_type,
                     "action": violation.action.value if hasattr(violation.action, "value") else str(violation.action),
@@ -115,9 +214,10 @@ class PythonPolicyAdapter(OpaPolicyAdapter):
                 }
                 for violation in result.violations
             ],
-            "redaction_required": result.modified_prompt != text,
-            "reason": "Policy matched sample text." if result.violations else "No policy rule matched sample text.",
-        }
+            redaction_required=result.modified_prompt != text,
+            reason="Policy matched sample text." if result.violations else "No policy rule matched sample text.",
+        )
+        return decision.as_dict()
 
 
 def _safe_load_yaml(source: str) -> tuple[dict[str, Any] | None, list[PolicyValidationIssue]]:
@@ -309,10 +409,10 @@ def policy_from_normalized(normalized: dict[str, Any], tenant_id: uuid.UUID) -> 
 def normalized_from_policy(policy: Policy) -> dict[str, Any]:
     return {
         "version": "authclaw.policy/v1",
-        "name": sanitize_text(policy.name),
-        "description": sanitize_text(policy.description) if policy.description else None,
-        "enabled": bool(policy.is_active),
-        "priority": int(policy.priority or 0),
+        "name": sanitize_text(getattr(policy, "name", "")),
+        "description": sanitize_text(getattr(policy, "description", None)) if getattr(policy, "description", None) else None,
+        "enabled": bool(getattr(policy, "is_active", True)),
+        "priority": int(getattr(policy, "priority", 0) or 0),
         "rules": [
             {
                 "type": rule.rule_type.value if hasattr(rule.rule_type, "value") else str(rule.rule_type),

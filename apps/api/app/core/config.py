@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     # hash metadata instead of raw prompt/response bodies.
     ENABLE_RAW_GATEWAY_AUDIT_RETENTION: bool = False
 
+    # OPA runtime integration remains disabled by default. When enabled, the
+    # gateway observes OPA decisions without changing the existing YAML/Python
+    # enforcement path until a later explicitly approved phase.
+    ENABLE_OPA_RUNTIME_INTEGRATION: bool = False
+    OPA_POLICY_URL: str = "http://opa:8181/v1/data/authclaw/gateway/decision"
+    OPA_RUNTIME_MODE: str = "STRICT"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

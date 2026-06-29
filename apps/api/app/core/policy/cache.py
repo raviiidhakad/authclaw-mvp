@@ -132,6 +132,13 @@ class PolicyCache:
         Called on: policy.created, policy.updated, policy.deleted, tenant.deleted.
         The next request will recompile from DB automatically.
         """
+        try:
+            from app.core.policy.opa_integration import opa_decision_cache
+
+            opa_decision_cache.invalidate_tenant(tenant_id)
+        except Exception as exc:
+            logger.warning("OPA decision cache invalidation failed for tenant %s: %s", tenant_id, exc)
+
         if not self._redis:
             return
         try:

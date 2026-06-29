@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.engine.audit import AuditEngine
 from app.core.engine.evaluator import PolicyEngine
+from app.core.policy.opa_integration import OpaRuntimeIntegration
 from app.models.gateway_route import GatewayRoute
 from app.models.policy import Policy
 from app.models.provider import Provider, ProviderType
@@ -256,6 +257,7 @@ class GatewayService:
         self.policy_engine = PolicyEngine()
         self.audit_engine = AuditEngine(db)
         self.ai_client = AIProviderClient()
+        self.opa_integration = OpaRuntimeIntegration.from_settings()
 
     _SUPPORTED_ROUTE_REDACTION_MODES = {"NONE", "MASK", "HASH", "SYNTHETIC"}
 
@@ -778,7 +780,17 @@ class GatewayService:
                 policies = list(policy_result.scalars().all())
 
         # ── 2. Evaluate policies ────────────────────────────────────────
-            eval_result = self.policy_engine.evaluate(full_prompt, policies, target_model=model)
+            authoritative_decision = await self.opa_integration.evaluate_authoritative(
+                prompt=full_prompt,
+                tenant_id=tenant_id,
+                api_key_id=api_key_id,
+                route=active_route,
+                provider=provider,
+                model=model,
+                policies=policies,
+                request_metadata={"stream": bool(payload.get("stream", False))},
+            )
+            eval_result = authoritative_decision.evaluation_result
         except Exception as policy_exc:
             logger.error("Gateway policy evaluation failed closed: %s", policy_exc)
             message = "Gateway policy evaluation failed before provider egress."
@@ -807,6 +819,7 @@ class GatewayService:
             "action": eval_result.action_taken,
             "matched_rule_count": len(eval_result.violations),
         }
+        policy_decision_metadata.update(authoritative_decision.metadata())
 
         if not eval_result.allowed:
             logger.info("Gateway blocked request for tenant=%s: %s", tenant_id, [v.message for v in eval_result.violations])

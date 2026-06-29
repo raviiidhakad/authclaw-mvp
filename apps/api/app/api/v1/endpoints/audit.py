@@ -1,7 +1,6 @@
 import io
 import csv
 import uuid
-from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +10,6 @@ from datetime import datetime, timedelta
 from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.exceptions import NotFoundException
 from app.models.tenant import Tenant
-from app.models.user import User
 from app.models.audit import AuditLog, EventType
 from app.models.policy import PolicyViolation
 from app.core.audit.repository import PostgresAuditRepository
@@ -214,7 +212,7 @@ async def get_audit_stats(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve aggregate statistics from the gateway_requests table (accurate counts)."""
-    from app.models.gateway import GatewayRequest, RequestStatus
+    from app.models.gateway import GatewayRequest
 
     # Total gateway requests (NOT all audit log entries)
     total_q = select(func.count(GatewayRequest.id)).where(GatewayRequest.tenant_id == tenant.id)

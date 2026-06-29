@@ -210,9 +210,11 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await expect(page.getByText('Credential leakage', { exact: true })).toBeVisible();
   await expect(page.getByText(/YAML policy-as-code/i)).toBeVisible();
   await page.getByRole('button', { name: /^Validate$/i }).click();
-  await expect(page.getByText(/authclaw.policy\/v1/i)).toBeVisible();
+  const validationResult = page.getByText('Validation result', { exact: true }).locator('xpath=..');
+  await expect(validationResult.getByText(/authclaw.policy\/v1/i)).toBeVisible();
   await page.getByRole('button', { name: /^Test Prompt$/i }).click();
-  await expect(page.getByText(/Credential marker blocked/i)).toBeVisible();
+  const policyTestResult = page.getByText('Test result', { exact: true }).locator('xpath=..');
+  await expect(policyTestResult.getByText(/Credential marker blocked/i)).toBeVisible();
   await expect(page.getByText(/Backend validated on save/i)).toBeVisible();
 
   await page.goto('/agent-remediation');

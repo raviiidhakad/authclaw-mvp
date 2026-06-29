@@ -1,11 +1,10 @@
 import logging
-from sqlalchemy import select, update
+from sqlalchemy import update
 from app.workers.consumer_base import KafkaConsumerBase
 from app.models.user import User
 from app.schemas.events import UserEvent
 from app.core.config import settings
 import redis.asyncio as aioredis
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 

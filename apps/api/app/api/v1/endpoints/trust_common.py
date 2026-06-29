@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from fastapi import Depends
 from sqlalchemy import select, text

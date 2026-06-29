@@ -6,12 +6,12 @@ Manages the routing rules that map client requests to AI providers.
 import uuid
 from typing import List, Optional, Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_db, get_current_tenant, get_current_user, require_roles
+from app.api.dependencies import get_db, get_current_tenant, require_roles
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.models.gateway_route import GatewayRoute, RedactionStrategy
 from app.models.policy import Policy

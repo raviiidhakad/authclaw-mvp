@@ -39,7 +39,7 @@ In the event of a critical failure with Stream 4, the following rollback steps s
 ---
 
 ## 4. Test Results
-The Stream 4 verification suite (`verify_stream4.py`) was executed to confirm architectural compliance.
+The Stream 4 verification suite (`project-history/recovery/verification/verify_stream4.py`) was executed to confirm architectural compliance.
 
 ### Execution Output:
 ```

@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Invalidated on policy.created / policy.updated / policy.deleted / tenant.deleted.
     POLICY_CACHE_KEY_PREFIX: str = "tenant:policy:compiled"
 
+    # ── Sprint 2: Reversible Tokenization Settings ──────────────────────────
+    # TTL for encrypted PII tokens stored in Redis for reversible tokenization.
+    # Defines the maximum lifespan of a detokenization mapping.
+    TOKEN_TTL_SECONDS: int = 3600
+
     # ── Sprint 2: Connector Safety Limits ──────────────────────────────────────
     # Maximum findings retrieved per connector sync. Prevents memory exhaustion
     # on very large cloud environments. ConnectorWorker truncates at this limit.
@@ -135,6 +140,13 @@ class Settings(BaseSettings):
     # prompt_original/response_original columns receive sanitized previews plus
     # hash metadata instead of raw prompt/response bodies.
     ENABLE_RAW_GATEWAY_AUDIT_RETENTION: bool = False
+
+    # OPA runtime integration remains disabled by default. When enabled, the
+    # gateway observes OPA decisions without changing the existing YAML/Python
+    # enforcement path until a later explicitly approved phase.
+    ENABLE_OPA_RUNTIME_INTEGRATION: bool = False
+    OPA_POLICY_URL: str = "http://opa:8181/v1/data/authclaw/gateway/decision"
+    OPA_RUNTIME_MODE: str = "STRICT"
 
     model_config = SettingsConfigDict(
         env_file=".env",

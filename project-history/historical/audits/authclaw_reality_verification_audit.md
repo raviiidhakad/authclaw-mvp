@@ -98,7 +98,7 @@ This report constitutes a rigorous, evidence-based verification of every feature
 
 ## Verify Claim 10: Audit Integrity
 
-**Verification Method:** Traced `apps/api/app/workers/audit_worker.py` and `apps/api/verify_stream4.py`.
+**Verification Method:** Traced `apps/api/app/workers/audit_worker.py` and `project-history/recovery/verification/verify_stream4.py`.
 *   SHA-256 chaining using canonical JSON serialization occurs deterministically within RLS transactions.
 *   Tamper event triggers and `/verify` loop execute successfully.
 **Confidence Score:** 100%

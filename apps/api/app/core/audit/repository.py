@@ -74,9 +74,11 @@ class PostgresAuditRepository(AuditRepository):
         
     async def append(self, record: AuditRecord) -> None:
         from app.models.audit import AuditLog, EventType
+        from app.core.audit.integrity import validate_canonical_record
         
         # We need to map AuditRecord to Postgres AuditLog.
         from sqlalchemy.dialects.postgresql import insert
+        validate_canonical_record(record)
         
         # Safely resolve event_type: normalize to underscore, fallback to 'unknown'
         raw_event_type = record.metadata.get("event_type", "unknown")
@@ -199,6 +201,7 @@ class ClickHouseAuditRepository(AuditRepository):
 
     async def bulk_append(self, records: List[AuditRecord]) -> None:
         import json
+        from app.core.audit.integrity import validate_canonical_record
         query = '''
             INSERT INTO audit_logs (
                 tenant_id, record_id, sequence_no, created_at, actor_id, actor_type, 
@@ -209,6 +212,7 @@ class ClickHouseAuditRepository(AuditRepository):
         
         tuples = []
         for record in records:
+            validate_canonical_record(record)
             actor_id_val = str(record.actor_id) if record.actor_id else None
             tuples.append((
                 str(record.tenant_id),

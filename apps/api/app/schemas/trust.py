@@ -28,6 +28,18 @@ class TrustOverviewResponse(BaseModel):
     integration_health: TrustPostureResponse
 
 
+class AuditExportVerificationStateInfo(BaseModel):
+    state: str
+    severity: str
+    meaning: str
+
+
+class AuditExportVerificationStatesResponse(BaseModel):
+    generated_at: datetime
+    language: str
+    states: list[AuditExportVerificationStateInfo]
+
+
 class TrustNotificationResponse(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

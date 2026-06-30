@@ -4,9 +4,9 @@ from dateutil.parser import parse
 from datetime import timezone
 
 from app.workers.consumer_base import KafkaConsumerBase
-from app.core.events.audit_hash import compute_audit_hash, GENESIS_HASH
 from app.models.tenant import Tenant
-from app.core.audit.repository import PostgresAuditRepository, AuditRecord
+from app.core.audit.repository import PostgresAuditRepository
+from app.core.audit.integrity import append_canonical_audit_record
 
 from sqlalchemy import select, text
 
@@ -55,14 +55,7 @@ class AuditWorker(KafkaConsumerBase):
             .with_for_update()
         )
 
-        # 3. Get latest hash from PostgreSQL (Source of Truth for chain)
-        last_hash = await pg_repo.get_latest_hash(tenant_id)
-        previous_hash = last_hash if last_hash else GENESIS_HASH
-
-        latest_seq = await pg_repo.get_latest_sequence_no(tenant_id)
-        next_seq = latest_seq + 1
-
-        # 4. Extract values from payload
+        # 3. Extract values from payload
         new_id = uuid.uuid4()
         user_id_str = payload.get("actor_id")
         user_id = uuid.UUID(user_id_str) if user_id_str else None
@@ -104,25 +97,12 @@ class AuditWorker(KafkaConsumerBase):
         # Inject event_type into metadata for PG backward compat
         inner_payload["event_type"] = event_type
 
-        # 5. Compute Integrity Hash
-        new_hash = compute_audit_hash(
-            previous_hash=previous_hash,
-            id_val=str(new_id),
-            tenant_id=str(tenant_id),
-            user_id=str(user_id) if user_id else "None",
-            event_type=event_type,
-            resource=resource,
-            resource_id=str(resource_id) if resource_id else "None",
-            action=action,
-            metadata=inner_payload,
-            created_at=created_at_dt
-        )
-
-        # 6. Build the abstract record
-        record = AuditRecord(
+        # 4. Write through the canonical audit integrity path.
+        record = await append_canonical_audit_record(
+            pg_repo,
             record_id=new_id,
             tenant_id=tenant_id,
-            sequence_no=next_seq,
+            event_type=event_type,
             created_at=created_at_dt,
             actor_id=user_id,
             actor_type="user" if user_id else "system",
@@ -134,22 +114,17 @@ class AuditWorker(KafkaConsumerBase):
             metadata=inner_payload,
             ip_address=ip_address,
             user_agent=user_agent,
-            previous_hash=previous_hash,
-            integrity_hash=new_hash
         )
+        logger.info(f"Audit event written to PostgreSQL. Type={event_type}, Seq={record.sequence_no}, Tenant={tenant_id}")
 
-        # 7. Write to PostgreSQL (primary - this MUST succeed)
-        await pg_repo.append(record)
-        logger.info(f"Audit event written to PostgreSQL. Type={event_type}, Seq={next_seq}, Tenant={tenant_id}")
-
-        # 8. Best-effort ClickHouse write (does NOT block Postgres commit on failure)
+        # 5. Best-effort ClickHouse write (does NOT block Postgres commit on failure)
         try:
             from app.core.audit.repository import ClickHouseAuditRepository
             from app.core.clickhouse import get_clickhouse_client
             ch_client = await get_clickhouse_client()
             ch_repo = ClickHouseAuditRepository(ch_client)
             await ch_repo.append(record)
-            logger.debug(f"Audit event also written to ClickHouse. Hash: {new_hash}, Seq: {next_seq}")
+            logger.debug(f"Audit event also written to ClickHouse. Hash: {record.integrity_hash}, Seq: {record.sequence_no}")
         except Exception as e:
             # ClickHouse write is best-effort during Phase E migration.
             # Log the error but DO NOT raise - Postgres write will still commit.

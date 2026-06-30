@@ -30,19 +30,50 @@ class FakeScalarResult:
 
 class FakeResult:
     def __init__(self, first=None, all_items=None):
+        self._first = first
         self._scalars = FakeScalarResult(first=first, all_items=all_items)
 
     def scalars(self):
         return self._scalars
 
+    def fetchone(self):
+        return self._first
+
+    def scalar(self):
+        return self._first
+
 
 class FakeDb:
-    def __init__(self, *results):
+    def __init__(self, *results, allow_empty_execute=False):
         self.results = list(results)
         self.added = []
+        self.allow_empty_execute = allow_empty_execute
 
-    async def execute(self, _stmt):
+    async def execute(self, _stmt, *_args, **_kwargs):
+        if self.allow_empty_execute:
+            params = getattr(_stmt.compile(), "params", {})
+            if {"id", "tenant_id", "previous_hash", "hash", "metadata"}.issubset(params):
+                self.added.append(
+                    AuditLog(
+                        id=params["id"],
+                        tenant_id=params["tenant_id"],
+                        user_id=params.get("user_id"),
+                        event_type=params.get("event_type"),
+                        action=params.get("action"),
+                        resource=params.get("resource"),
+                        resource_id=params.get("resource_id"),
+                        metadata_=params.get("metadata"),
+                        ip_address=params.get("ip_address"),
+                        user_agent=params.get("user_agent"),
+                        created_at=params.get("created_at"),
+                        previous_hash=params.get("previous_hash"),
+                        hash=params.get("hash"),
+                    )
+                )
+                return FakeResult()
         if not self.results:
+            if self.allow_empty_execute:
+                return FakeResult()
             raise AssertionError("Unexpected DB query in gateway phase 5 test")
         return self.results.pop(0)
 
@@ -304,7 +335,7 @@ async def test_route_attached_policy_blocks_stream_before_provider_call(monkeypa
 @pytest.mark.asyncio
 async def test_audit_storage_is_sanitized_only_by_default(monkeypatch):
     monkeypatch.setattr("app.core.config.settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION", False)
-    db = FakeDb()
+    db = FakeDb(allow_empty_execute=True)
     audit = AuditEngine(db)
 
     await audit.log_request(
@@ -341,7 +372,7 @@ async def test_raw_retention_flag_is_explicit_and_api_schemas_still_sanitize(mon
     from app.schemas.gateway import GatewayRequestDetail, GatewayResponseSchema
 
     monkeypatch.setattr("app.core.config.settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION", True)
-    db = FakeDb()
+    db = FakeDb(allow_empty_execute=True)
     audit = AuditEngine(db)
 
     await audit.log_request(

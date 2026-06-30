@@ -1,7 +1,7 @@
 import io
 import csv
 import uuid
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
@@ -14,9 +14,12 @@ from app.models.audit import AuditLog, EventType
 from app.models.policy import PolicyViolation
 from app.core.audit.repository import PostgresAuditRepository
 from app.core.audit.verification import HashVerificationService
+from app.core.audit.package_verification import AuditExportVerificationService
+from app.schemas.audit_export import AuditExportVerificationResponse
 # from app.core.clickhouse import get_clickhouse_client
 
 router = APIRouter()
+audit_export_verification_service = AuditExportVerificationService()
 
 @router.get("/logs")
 async def get_audit_logs(
@@ -97,6 +100,22 @@ async def verify_audit_integrity(
         "tampered_records": len(report.tampered_records),
         "chain_breaks": len(report.chain_breaks)
     }
+
+
+@router.post("/exports/verify", response_model=AuditExportVerificationResponse)
+async def verify_audit_export_package(
+    request: Request,
+    tenant: Tenant = Depends(get_current_tenant),
+    _=Depends(require_roles(["owner", "admin", "auditor"])),
+):
+    """Verify an E4.4 signed audit export package for the current tenant."""
+
+    package_bytes = await request.body()
+    result = audit_export_verification_service.verify_package(
+        package_bytes,
+        expected_tenant_id=tenant.id,
+    )
+    return AuditExportVerificationResponse.from_contract(result)
 
 @router.get("/export")
 async def export_audit_logs(

@@ -1114,6 +1114,18 @@ export interface TrustOverview {
   integration_health: TrustPosture;
 }
 
+export interface AuditExportVerificationStateInfo {
+  state: string;
+  severity: string;
+  meaning: string;
+}
+
+export interface AuditExportVerificationStates {
+  generated_at: string;
+  language: string;
+  states: AuditExportVerificationStateInfo[];
+}
+
 export interface TrustNotification {
   id: string;
   tenant_id: string;
@@ -1272,6 +1284,11 @@ export async function getTrustPosture(kind: 'security' | 'compliance' | 'remedia
   return res.data as TrustPosture;
 }
 
+export async function getAuditExportVerificationStates() {
+  const res = await apiClient.get('/trust/audit-export-verification-states');
+  return res.data as AuditExportVerificationStates;
+}
+
 export async function listTrustNotifications(params: Record<string, unknown> = {}) {
   const res = await apiClient.get('/trust/notifications', { params: cleanParams(params) });
   return res.data as TrustReportListResponse<TrustNotification> & { unread: number };
@@ -1377,6 +1394,10 @@ export function useTrustOverview() {
 
 export function useTrustPosture(kind: 'security' | 'compliance' | 'remediation' | 'integrations') {
   return useQuery({ queryKey: ['trust-posture', kind], queryFn: () => getTrustPosture(kind), refetchInterval: 15000 });
+}
+
+export function useAuditExportVerificationStates() {
+  return useQuery({ queryKey: ['audit-export-verification-states'], queryFn: getAuditExportVerificationStates, refetchInterval: 30000 });
 }
 
 export function useTrustNotifications(params: Record<string, unknown> = {}) {

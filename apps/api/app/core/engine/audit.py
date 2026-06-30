@@ -14,10 +14,13 @@ from typing import Any, Dict, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.audit.integrity import append_canonical_audit_record
+from app.core.audit.repository import PostgresAuditRepository
 from app.core.engine.evaluator import EvaluationResult
 from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
 from app.models.policy import PolicyViolation, ViolationSeverity, ViolationResolution
-from app.models.audit import AuditLog, EventType, AuditAction
+from app.models.audit import EventType, AuditAction
+from app.models.tenant import Tenant
 from app.services.api_safety import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,44 @@ class AuditEngine:
         if value is None:
             return None
         return sanitize_text(value)
+
+    async def _append_canonical_audit_log(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: Optional[uuid.UUID],
+        event_type: EventType,
+        resource: str,
+        resource_id: Optional[str],
+        action: AuditAction,
+        metadata: Dict[str, Any],
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ):
+        from sqlalchemy import select, text
+
+        await self.db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+            {"tenant_id": str(tenant_id)},
+        )
+        await self.db.execute(
+            select(Tenant.id)
+            .where(Tenant.id == tenant_id)
+            .with_for_update()
+        )
+        repo = PostgresAuditRepository(self.db)
+        return await append_canonical_audit_record(
+            repo,
+            tenant_id=tenant_id,
+            event_type=event_type,
+            actor_id=user_id,
+            action=action,
+            resource=resource,
+            resource_id=resource_id,
+            metadata=metadata,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
 
     async def log_request(
         self,
@@ -188,14 +229,14 @@ class AuditEngine:
                 for v in evaluation_result.violations
             ]
 
-        audit = AuditLog(
+        await self._append_canonical_audit_log(
             tenant_id=tenant_id,
             user_id=user_id,
             event_type=event_type,
             resource="gateway_request",
             resource_id=str(gw_request.id),
             action=AuditAction.execute,
-            metadata_={
+            metadata={
                 "http_status": status_code,
                 "model": model,
                 "provider_id": str(provider_id) if provider_id else None,
@@ -215,7 +256,6 @@ class AuditEngine:
                 "violations": violation_summary,
             },
         )
-        self.db.add(audit)
 
         try:
             await self.db.commit()
@@ -228,18 +268,17 @@ class AuditEngine:
 
     async def log_rate_limit_exceeded(self, tenant_id: uuid.UUID, api_key_id: uuid.UUID, limit_key: str):
         """Log a rate limit violation event."""
-        log_entry = AuditLog(
+        await self._append_canonical_audit_log(
             tenant_id=tenant_id,
             user_id=None,
             action=AuditAction.update,
             event_type=EventType.gateway_rate_limit_exceeded,
-            resource_type="gateway",
+            resource="gateway",
             resource_id=str(api_key_id),
-            details={"reason": "Rate limit exceeded", "limit_key": limit_key},
+            metadata={"reason": "Rate limit exceeded", "limit_key": limit_key},
             ip_address=None,
             user_agent=None,
         )
-        self.db.add(log_entry)
         await self.db.commit()
 
     async def publish_stream_started(self, stream_id: str, tenant_id: uuid.UUID, api_key_id: uuid.UUID, provider_id: Optional[uuid.UUID], security_mode: str, prompt_hash: str):
@@ -273,22 +312,18 @@ class AuditEngine:
         )
         await producer.publish("authclaw.audit.events", event)
         
-        # Also log to postgres
-        from sqlalchemy import text
-        await self.db.execute(text("SELECT set_config('app.current_tenant_id', :tid, true)"), {"tid": str(tenant_id)})
-        
-        log_entry = AuditLog(
+        # Also log to PostgreSQL through the canonical exportable audit path.
+        await self._append_canonical_audit_log(
             tenant_id=tenant_id,
             user_id=None,
             action=AuditAction.create,
             event_type=EventType.gateway_stream_started,
             resource="gateway.stream",
             resource_id=stream_id,
-            metadata_={"security_mode": security_mode, "prompt_hash": prompt_hash},
+            metadata={"security_mode": security_mode, "prompt_hash": prompt_hash},
             ip_address=None,
             user_agent=None,
         )
-        self.db.add(log_entry)
         await self.db.commit()
 
     async def publish_stream_completed(self, stream_id: str, response_hash: str, prompt_tokens: int, completion_tokens: int, latency_ms: int):

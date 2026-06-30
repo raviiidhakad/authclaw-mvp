@@ -30,6 +30,7 @@ import { TableSkeleton } from '@/components/shared/loaders';
 import { useAuth } from '@/hooks/use-auth';
 import {
   ActivityTimelineItem,
+  AuditExportVerificationStateInfo,
   ExportManifest,
   ReportAccessLog,
   ReportArtifactDownload,
@@ -39,6 +40,7 @@ import {
   TrustNotification,
   TrustPosture,
   useActivityTimeline,
+  useAuditExportVerificationStates,
   useCreateEvidencePackage,
   useCreateReportRun,
   useCreateReportTemplate,
@@ -148,6 +150,7 @@ function statusTone(value?: string | null) {
     case 'active':
     case 'healthy':
     case 'evidence-supported posture':
+    case 'Verified':
       return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
     case 'queued':
     case 'running':
@@ -156,11 +159,16 @@ function statusTone(value?: string | null) {
       return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
     case 'at risk':
     case 'expired':
+    case 'Unknown':
+    case 'Unsupported Version':
       return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
     case 'failed':
     case 'critical':
     case 'high':
     case 'error':
+    case 'Tampered':
+    case 'Verification Failed':
+    case 'Error':
       return 'bg-red-500/10 text-red-400 border-red-500/20';
     default:
       return 'bg-white/5 text-neutral-300 border-white/10';
@@ -364,6 +372,32 @@ function PostureCard({ title, posture, icon: Icon }: { title: string; posture?: 
   );
 }
 
+function AuditExportVerificationCard({ states, loading }: { states: AuditExportVerificationStateInfo[]; loading?: boolean }) {
+  const visibleStates = states.length ? states : [
+    { state: 'Unknown', severity: 'medium', meaning: 'Verification state metadata is not available yet.' },
+  ];
+  return (
+    <Card className="glass-card xl:col-span-2">
+      <div className="p-4 border-b border-white/5 bg-black/20 flex items-center justify-between gap-3">
+        <CardTitle className="text-neutral-100 text-base flex items-center gap-2">
+          <PackageCheck className="h-4 w-4 text-emerald-400" />
+          Audit export verification
+        </CardTitle>
+        <Badge variant="outline" className="border-white/10 text-neutral-300">signed package states</Badge>
+      </div>
+      <DataTable headers={['State', 'Severity', 'Meaning']} loading={loading} emptyTitle="No verification states" emptyDescription="The Trust Center has not returned audit export verification states.">
+        {visibleStates.map((item) => (
+          <tr key={item.state} className="hover:bg-white/[0.02]">
+            <td className="p-4"><LabelBadge value={item.state} /></td>
+            <td className="p-4 text-neutral-300">{safeExportText(item.severity)}</td>
+            <td className="p-4 text-neutral-300">{safeExportText(item.meaning)}</td>
+          </tr>
+        ))}
+      </DataTable>
+    </Card>
+  );
+}
+
 function PostureDetail({ kind }: { kind: TrustPostureView }) {
   const postureKind = kind;
   const query = useTrustPosture(postureKind);
@@ -412,6 +446,7 @@ function CountTable({ title, counts, loading }: { title: string; counts: Record<
 
 function TrustOverviewView() {
   const overviewQuery = useTrustOverview();
+  const verificationStatesQuery = useAuditExportVerificationStates();
   const overview = overviewQuery.data;
   return (
     <TrustShell view="overview">
@@ -426,6 +461,7 @@ function TrustOverviewView() {
         <PostureCard title="Compliance posture" posture={overview?.compliance_posture} icon={ClipboardList} />
         <PostureCard title="Remediation posture" posture={overview?.remediation_posture} icon={Wrench} />
         <PostureCard title="Integration health" posture={overview?.integration_health} icon={HeartPulse} />
+        <AuditExportVerificationCard states={verificationStatesQuery.data?.states || []} loading={verificationStatesQuery.isLoading} />
       </div>
       {overviewQuery.isLoading && <TableSkeleton columns={4} rows={3} />}
     </TrustShell>

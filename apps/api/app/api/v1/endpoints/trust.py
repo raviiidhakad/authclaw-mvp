@@ -19,6 +19,7 @@ from app.api.v1.endpoints.trust_common import (
     sanitizer,
 )
 from app.core.config import settings
+from app.core.audit.package_verification import verification_state_catalog
 from app.core.events.producer import producer as default_event_producer
 from app.core.exceptions import BadRequestException, ForbiddenException, NotFoundException
 from app.models.compliance import ComplianceAssessment, ComplianceGap, EvidenceItem
@@ -32,6 +33,7 @@ from app.schemas.events import ShareLinkCreatedEvent, ShareLinkRevokedEvent, Tru
 from app.schemas.trust import (
     ActivityTimelineItemResponse,
     ActivityTimelineListResponse,
+    AuditExportVerificationStatesResponse,
     ShareLinkCreateRequest,
     ShareLinkCreateResponse,
     ShareLinkListResponse,
@@ -57,6 +59,7 @@ router = APIRouter()
 event_producer = default_event_producer
 
 POSTURE_LANGUAGE = "Evidence-supported posture summary for review. This is not legal advice and does not certify compliance."
+AUDIT_EXPORT_VERIFICATION_LANGUAGE = "Cryptographic audit export verification states for evidence review. This is not legal advice and does not certify compliance."
 
 
 async def _emit_view(tenant_id: uuid.UUID, actor_id: uuid.UUID | None, surface: str) -> None:
@@ -132,6 +135,14 @@ def _activity_response(item) -> ActivityTimelineItemResponse:
 async def _counts_by(db: AsyncSession, stmt, field_name: str) -> dict[str, int]:
     rows = (await db.execute(stmt)).all()
     return {str(getattr(getattr(row, field_name), "value", getattr(row, field_name))): int(row.count) for row in rows}
+
+
+def audit_export_verification_states_payload() -> AuditExportVerificationStatesResponse:
+    return AuditExportVerificationStatesResponse(
+        generated_at=datetime.now(timezone.utc),
+        language=AUDIT_EXPORT_VERIFICATION_LANGUAGE,
+        states=list(verification_state_catalog()),
+    )
 
 
 async def _security_posture(db: AsyncSession, tenant_id: uuid.UUID) -> TrustPostureResponse:
@@ -273,6 +284,17 @@ async def get_trust_overview(
     )
     payload.pop("sanitization_version", None)
     return TrustOverviewResponse(**payload)
+
+
+@router.get("/audit-export-verification-states", response_model=AuditExportVerificationStatesResponse)
+async def get_audit_export_verification_states(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_trust_permission(VIEW_TRUST_DASHBOARD)),
+):
+    await ensure_permission(db, tenant.id, current_user.id, VIEW_TRUST_DASHBOARD)
+    await _emit_view(tenant.id, current_user.id, "audit-export-verification-states")
+    return audit_export_verification_states_payload()
 
 
 @router.get("/security-posture", response_model=TrustPostureResponse)

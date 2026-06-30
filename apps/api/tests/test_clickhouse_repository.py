@@ -2,6 +2,8 @@ import pytest
 import uuid
 from datetime import datetime, timezone
 from app.core.audit.repository import ClickHouseAuditRepository, AuditRecord
+from app.core.audit.integrity import compute_canonical_record_hash
+from app.core.events.audit_hash import GENESIS_HASH
 
 class DummyChClient:
     def __init__(self):
@@ -30,9 +32,11 @@ async def test_clickhouse_repository_append():
         actor_id=uuid.uuid4(),
         actor_type="user",
         action="read",
-        previous_hash="abc",
-        integrity_hash="def"
+        metadata={"event_type": "gateway_request"},
+        previous_hash=GENESIS_HASH,
+        integrity_hash="",
     )
+    record = record.model_copy(update={"integrity_hash": compute_canonical_record_hash(record)})
     
     await repo.append(record)
     

@@ -80,6 +80,6 @@ check*.py
 test_*.py
 !tests/test_*.py
 !apps/api/tests/test_*.py
+!apps/api/tests/performance/test_*.py
 *.sql
 !infrastructure/**/*.sql
-

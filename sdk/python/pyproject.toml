@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "authclaw"
+dynamic = ["version"]
+description = "Python SDK for the AuthClaw AI security gateway"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "AuthClaw Engineering" },
+]
+keywords = [
+    "ai-security",
+    "ai-gateway",
+    "authclaw",
+    "compliance",
+    "llm",
+    "sdk",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "requests>=2.31,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/raviiidhakad/authclaw-mvp"
+Repository = "https://github.com/raviiidhakad/authclaw-mvp"
+Issues = "https://github.com/raviiidhakad/authclaw-mvp/issues"
+Documentation = "https://github.com/raviiidhakad/authclaw-mvp/tree/main/sdk/python"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["authclaw*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "authclaw.version.SDK_VERSION" }

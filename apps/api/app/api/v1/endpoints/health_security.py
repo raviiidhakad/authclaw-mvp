@@ -76,8 +76,11 @@ async def security_pipeline_health() -> JSONResponse:
         opa_health = opa_runtime_health()
         components["opa_runtime"] = {
             "status": "healthy" if opa_health["enabled"] else "disabled",
+            "policy_engine_mode": opa_health.get("policy_engine_mode"),
             "runtime_available": bool(opa_health["runtime_available"]),
             "runtime_mode": opa_health["runtime_mode"],
+            "strict_mode": opa_health.get("strict_mode"),
+            "fail_closed": opa_health.get("fail_closed"),
             "cache": opa_health["cache"],
             "policy_version_status": opa_health["policy_version_status"],
             "metrics": opa_health["metrics"],

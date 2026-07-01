@@ -9,13 +9,14 @@ from app.core.config import settings
 import os
 
 @pytest.fixture(autouse=True)
-def set_env():
+def set_env(monkeypatch):
     # Force kms for tests to avoid vault unless specifically testing it
-    os.environ['ENCRYPTION_PROVIDER'] = 'kms'
-    settings.ENCRYPTION_PROVIDER = 'kms'
     import app.core.encryption
+    monkeypatch.setenv('ENCRYPTION_PROVIDER', 'kms')
+    monkeypatch.setattr(settings, 'ENCRYPTION_PROVIDER', 'kms')
     app.core.encryption._provider = None
     yield
+    app.core.encryption._provider = None
 
 @pytest.fixture
 def kms_mock():

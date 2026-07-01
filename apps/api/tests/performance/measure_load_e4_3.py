@@ -439,7 +439,7 @@ async def _operation_for_scenario(
                 await audit_export.operation(index)
 
         def cleanup() -> None:
-            for prepared in (gateway, streaming, audit_export):
+            for prepared in (audit_export, streaming, gateway):
                 if prepared.cleanup is not None:
                     prepared.cleanup()
 

@@ -204,8 +204,8 @@ async def _seed_documentation_flow(
     approval = await approvals.approve(tenant_id, approval.id, approver_id, "Approved safe documentation-only demo flow.", mfa_verified=False)
     dry_job = await dry_runs.create_dry_run_job(tenant_id, plan.id, artifact.id, approval_id=approval.id, actor_id=requester_id)
     await dry_runs.run_dry_run(tenant_id, dry_job.id)
-    job = await execution.create_execution_job(tenant_id, plan.id, artifact.id, approval.id, actor_id=requester_id)
-    await execution.execute_job(tenant_id, job.id)
+    job = await execution.create_execution_job(tenant_id, plan.id, artifact.id, approval.id, actor_id=approver_id)
+    await execution.execute_job(tenant_id, job.id, actor_id=approver_id)
 
 
 async def _seed_simulated_provider_flow(
@@ -256,8 +256,8 @@ async def _seed_simulated_provider_flow(
     approval = await approvals.approve(tenant_id, approval.id, approver_id, "Approved simulated provider demo after review.", mfa_verified=True)
     dry_job = await dry_runs.create_dry_run_job(tenant_id, plan.id, artifact.id, approval_id=approval.id, actor_id=requester_id)
     await dry_runs.run_dry_run(tenant_id, dry_job.id)
-    job = await execution.create_execution_job(tenant_id, plan.id, artifact.id, approval.id, actor_id=requester_id)
-    await execution.execute_job(tenant_id, job.id)
+    job = await execution.create_execution_job(tenant_id, plan.id, artifact.id, approval.id, actor_id=approver_id)
+    await execution.execute_job(tenant_id, job.id, actor_id=approver_id)
 
 
 async def _seed_blocked_mutation_flow(

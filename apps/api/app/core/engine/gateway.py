@@ -923,6 +923,54 @@ class GatewayService:
         modified_payload.pop("route", None)
         modified_payload.pop("route_id", None)
         modified_payload.pop("route_name", None)
+
+        try:
+            from app.core.rate_limit.limiter import check_gateway_limits
+
+            await check_gateway_limits(
+                str(tenant_id),
+                str(api_key_id),
+                self.db,
+                provider_id=str(provider.id),
+                route_id=str(active_route.id),
+                model=str(model),
+                include_base=False,
+            )
+        except Exception as rate_limit_exc:
+            from fastapi import HTTPException
+
+            if isinstance(rate_limit_exc, HTTPException) and rate_limit_exc.status_code == 429:
+                await self._log_safe_error(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    provider_id=provider.id,
+                    model=model,
+                    payload=payload,
+                    modified_payload=modified_payload,
+                    status_code=429,
+                    message="Rate limit exceeded. Please retry later.",
+                    error_type="rate_limit_exceeded",
+                    error_code="gateway_rate_limited",
+                    evaluation_result=eval_result,
+                )
+                return {
+                    "status_code": 429,
+                    "data": self._error_body(
+                        "Rate limit exceeded. Please retry later.",
+                        "rate_limit_exceeded",
+                        "gateway_rate_limited",
+                    ),
+                }
+            logger.error("Gateway rate limit check failed closed before provider egress: %s", rate_limit_exc)
+            return {
+                "status_code": 503,
+                "data": self._error_body(
+                    "Gateway rate limit service unavailable.",
+                    "rate_limit_unavailable",
+                    "rate_limit_unavailable",
+                ),
+            }
         
         if is_stream:
             if streaming_mode == "passthrough":
@@ -1009,7 +1057,7 @@ class GatewayService:
                 import json
                 from fastapi.responses import StreamingResponse
 
-                streaming_engine = StreamingEngine(self.audit_engine)
+                streaming_engine = StreamingEngine(self.audit_engine, db=self.db)
                 streaming_response = await streaming_engine.stream_response(
                     tenant_id=tenant_id,
                     api_key_id=api_key_id,

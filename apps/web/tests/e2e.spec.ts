@@ -91,20 +91,20 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/risk\/posture$/, async (route) => fulfillJson(route, {
     verdict: 'needs_review',
-    summary: 'Evidence-supported go/no-go posture needs review before production expansion.',
+    summary: 'Needs review before production expansion.',
     counts: {
-      probe_runs: 5,
-      vulnerabilities: 4,
+      probe_runs: 7,
+      vulnerabilities: 5,
       open_high: 1,
       open_critical: 1,
-      probe_categories_covered: ['prompt_injection', 'data_disclosure', 'credential_leakage', 'harmful_content', 'sycophancy_policy_bypass'],
+      probe_categories_covered: ['prompt_injection', 'data_disclosure', 'credential_leakage', 'harmful_content', 'sycophancy_policy_bypass', 'policy_bypass', 'report_export_leakage'],
     },
     blockers: [{ id: 'vuln-1', title: 'Indirect instruction override needs review', severity: 'high', status: 'open' }],
     recommendations: ['Keep probe execution simulated by default.', 'Link high and critical vulnerabilities to evidence-supported remediation.'],
-    evidence_summary: 'Posture derived from sanitized simulated probe runs and vulnerability register rows; not legal advice.',
+    evidence_summary: 'Posture derived from sanitized simulated probe runs and vulnerability register rows; auditor review required.',
     generated_at: '2026-06-24T10:00:00Z',
   }));
-  await page.route(/\/api\/v1\/risk\/probe-runs(?:\?.*)?$/, async (route) => fulfillJson(route, {
+  await page.route(/\/api\/v1\/risk\/probes(?:\?.*)?$/, async (route) => fulfillJson(route, {
     items: [{
       id: 'probe-1',
       tenant_id: 'tenant-1',
@@ -125,6 +125,22 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
       allowed_count: 1,
       vulnerability_count: 1,
       evidence: { source: 'safe_demo_seed', execution_mode: 'simulated' },
+      results: [{
+        id: 'result-1',
+        tenant_id: 'tenant-1',
+        probe_run_id: 'probe-1',
+        category: 'prompt_injection',
+        target_surface: 'gateway',
+        status: 'blocked',
+        severity: 'high',
+        confidence: 85,
+        evidence_summary: 'Sanitized prompt injection result from deterministic local probe runner.',
+        sanitized_input_summary: 'Local fixture for prompt injection; raw prompt removed.',
+        sanitized_output_summary: 'Blocked or summarized response path only; raw provider output absent.',
+        raw_payload_stored: false,
+        created_at: '2026-06-24T09:00:00Z',
+        updated_at: '2026-06-24T09:01:00Z',
+      }],
       raw_payload_stored: false,
       created_at: '2026-06-24T09:00:00Z',
       updated_at: '2026-06-24T09:01:00Z',
@@ -145,6 +161,8 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
       severity: 'high',
       status: 'open',
       owner_user_id: 'user-1',
+      confidence: 85,
+      due_date: null,
       evidence_summary: 'Evidence-supported finding from simulated prompt-injection probe; raw content removed.',
       remediation_summary: 'Strengthen instruction hierarchy and attach remediation plan before broader rollout.',
       first_seen_at: '2026-06-24T09:00:00Z',
@@ -156,7 +174,32 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
     skip: 0,
     limit: 50,
   }));
-  await page.route(/\/api\/v1\/risk\/seed-demo$/, async (route) => fulfillJson(route, { probe_runs_created: 5, vulnerabilities_created: 4, posture_snapshots_created: 1 }));
+  await page.route(/\/api\/v1\/risk\/probes\/run$/, async (route) => fulfillJson(route, {
+    id: 'probe-2',
+    tenant_id: 'tenant-1',
+    name: 'Prompt injection simulated probe',
+    category: 'prompt_injection',
+    status: 'completed',
+    target_surface: 'gateway',
+    model_target: 'route-selected model',
+    execution_mode: 'simulated',
+    owner_user_id: 'user-1',
+    started_at: '2026-06-24T09:10:00Z',
+    completed_at: '2026-06-24T09:11:00Z',
+    safe_prompt_preview: 'Simulated prompt injection probe; raw payload removed.',
+    result_summary: 'Simulated probe completed without external attack execution.',
+    risk_score: 40,
+    probes_total: 3,
+    blocked_count: 2,
+    allowed_count: 1,
+    vulnerability_count: 0,
+    evidence: { source: 'manual_simulated_probe', execution_mode: 'simulated' },
+    results: [],
+    raw_payload_stored: false,
+    created_at: '2026-06-24T09:10:00Z',
+    updated_at: '2026-06-24T09:11:00Z',
+  }));
+  await page.route(/\/api\/v1\/risk\/seed-demo$/, async (route) => fulfillJson(route, { probe_runs_created: 7, probe_results_created: 7, vulnerabilities_created: 5, posture_snapshots_created: 1 }));
   await page.route(/\/api\/v1\/compliance\/frameworks(?:\?.*)?$/, async (route) => fulfillJson(route, [frameworkSummary]));
   await page.route(/\/api\/v1\/compliance\/assessments(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 20 }));
   await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' } }], total: 1 }));

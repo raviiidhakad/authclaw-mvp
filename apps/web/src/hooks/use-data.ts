@@ -1530,7 +1530,9 @@ export type RiskProbeCategory =
   | 'data_disclosure'
   | 'credential_leakage'
   | 'harmful_content'
-  | 'sycophancy_policy_bypass';
+  | 'sycophancy_policy_bypass'
+  | 'policy_bypass'
+  | 'report_export_leakage';
 export type RiskProbeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked';
 export type RiskVulnerabilitySeverity = 'low' | 'medium' | 'high' | 'critical';
 export type RiskVulnerabilityStatus = 'open' | 'triaged' | 'remediating' | 'accepted_risk' | 'resolved' | 'false_positive';
@@ -1556,6 +1558,28 @@ export interface AdversarialProbeRun {
   allowed_count: number;
   vulnerability_count: number;
   evidence: Record<string, unknown>;
+  results?: RedTeamProbeResult[];
+  raw_payload_stored: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RedTeamProbeResult {
+  id: string;
+  tenant_id: string;
+  probe_run_id: string;
+  category: RiskProbeCategory | string;
+  target_surface: string;
+  status: string;
+  severity: RiskVulnerabilitySeverity | string;
+  confidence: number;
+  evidence_summary: string;
+  sanitized_input_summary: string;
+  sanitized_output_summary: string;
+  linked_finding_id?: string | null;
+  linked_remediation_plan_id?: string | null;
+  linked_control_id?: string | null;
+  linked_report_artifact_id?: string | null;
   raw_payload_stored: boolean;
   created_at: string;
   updated_at: string;
@@ -1572,6 +1596,11 @@ export interface VulnerabilityRegisterItem {
   severity: RiskVulnerabilitySeverity | string;
   status: RiskVulnerabilityStatus | string;
   owner_user_id?: string | null;
+  confidence: number;
+  due_date?: string | null;
+  linked_finding_id?: string | null;
+  linked_control_id?: string | null;
+  linked_report_artifact_id?: string | null;
   evidence_summary: string;
   remediation_summary?: string | null;
   first_seen_at: string;
@@ -1602,12 +1631,12 @@ export interface RiskPosture {
 }
 
 export async function listRiskProbeRuns(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/risk/probe-runs', { params: cleanParams(params) });
+  const res = await apiClient.get('/risk/probes', { params: cleanParams(params) });
   return res.data as RemediationListResponse<AdversarialProbeRun>;
 }
 
 export async function createRiskProbeRun(data: { name: string; category: RiskProbeCategory | string; target_surface?: string; model_target?: string | null }) {
-  const res = await apiClient.post('/risk/probe-runs', data);
+  const res = await apiClient.post('/risk/probes/run', data);
   return res.data as AdversarialProbeRun;
 }
 

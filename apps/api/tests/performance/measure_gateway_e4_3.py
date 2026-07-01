@@ -88,8 +88,11 @@ class GatewayBenchmarkScenario:
     pii_types: tuple[str, ...] = ("EMAIL_ADDRESS",)
     keywords: tuple[str, ...] = ()
     redaction_mode: str = "MASK"
+    reversible: bool = False
+    provider_status_code: int = 200
     expected_status_code: int = 200
     tenant_label: str = "primary"
+    concurrency: int = 1
 
     def contract(self, iterations: int, warmups: int) -> BenchmarkScenarioContract:
         return BenchmarkScenarioContract(
@@ -101,14 +104,18 @@ class GatewayBenchmarkScenario:
             payload_profile=self.payload_profile,
             iterations=iterations,
             warmups=warmups,
-            concurrency=1,
+            concurrency=self.concurrency,
             metadata={
                 "slug": self.slug,
                 "stream": False,
+                "streaming_mode": "safe_non_stream_path",
                 "provider": "mock",
                 "tenant_label": self.tenant_label,
                 "policy_action": self.policy_action.value,
                 "rule_type": self.rule_type.value,
+                "redaction_mode": self.redaction_mode,
+                "reversible_tokenization": self.reversible,
+                "provider_status_code": self.provider_status_code,
             },
         )
 
@@ -242,6 +249,8 @@ class GatewayBenchmarkPatch:
         self._presidio_scan = None
         self._publish_security_event = None
         self._publish = None
+        self._token_store_batch = None
+        self._token_retrieve = None
 
     def install(self) -> None:
         for name, value in {
@@ -255,15 +264,20 @@ class GatewayBenchmarkPatch:
             setattr(settings, name, value)
 
         from app.core.detection.presidio_engine import presidio_engine
+        from app.core.engine.token_vault import TokenVaultService
         from app.core.events.producer import producer as event_producer
 
         self._presidio_is_healthy = presidio_engine.is_healthy
         self._presidio_scan = presidio_engine.scan
+        self._token_store_batch = TokenVaultService.store_batch
+        self._token_retrieve = TokenVaultService.retrieve
         self._publish_security_event = event_producer.publish_security_event
         self._publish = event_producer.publish
 
         presidio_engine.is_healthy = lambda: True
         presidio_engine.scan = AsyncMock(side_effect=lambda text: FakeScanResult(text))
+        TokenVaultService.store_batch = AsyncMock()
+        TokenVaultService.retrieve = AsyncMock(return_value=None)
         event_producer.publish_security_event = AsyncMock()
         event_producer.publish = AsyncMock()
 
@@ -273,12 +287,17 @@ class GatewayBenchmarkPatch:
         self._settings.clear()
 
         from app.core.detection.presidio_engine import presidio_engine
+        from app.core.engine.token_vault import TokenVaultService
         from app.core.events.producer import producer as event_producer
 
         if self._presidio_is_healthy is not None:
             presidio_engine.is_healthy = self._presidio_is_healthy
         if self._presidio_scan is not None:
             presidio_engine.scan = self._presidio_scan
+        if self._token_store_batch is not None:
+            TokenVaultService.store_batch = self._token_store_batch
+        if self._token_retrieve is not None:
+            TokenVaultService.retrieve = self._token_retrieve
         if self._publish_security_event is not None:
             event_producer.publish_security_event = self._publish_security_event
         if self._publish is not None:
@@ -292,7 +311,7 @@ class GatewayBenchmarkService:
         self.api_key_id = uuid.uuid5(uuid.NAMESPACE_URL, f"authclaw:e4.3:key:{scenario.tenant_label}")
         self.provider = _provider(self.tenant_id)
         self.policy = _policy(self.tenant_id, scenario)
-        self.route = _route(self.tenant_id, self.provider.id, self.policy.id)
+        self.route = _route(self.tenant_id, self.provider.id, self.policy.id, scenario.redaction_mode)
         self.db = GatewayBenchmarkDb(self.route, self.provider, self.policy)
         self.service = GatewayService(self.db)
         self.service.opa_integration = OpaRuntimeIntegration(
@@ -306,7 +325,7 @@ class GatewayBenchmarkService:
 
         async def fake_chat_completion(*_args):
             self.provider_call_count += 1
-            return await direct_provider_call(upstream_delay_ms)
+            return await direct_provider_call(upstream_delay_ms, status_code=scenario.provider_status_code)
 
         self.service.ai_client = SimpleNamespace(chat_completion=fake_chat_completion)
 
@@ -395,6 +414,44 @@ def gateway_benchmark_scenarios() -> tuple[GatewayBenchmarkScenario, ...]:
             redaction_mode="MASK",
         ),
         GatewayBenchmarkScenario(
+            slug="policy_hash_redact",
+            scenario_id=BenchmarkScenarioId.GATEWAY_REDACTION,
+            target=BenchmarkTarget.TOKENIZATION,
+            name="Gateway hash redaction",
+            description="Gateway request with fake PII transformed by SHA-256 hash redaction before provider egress.",
+            payload_profile="policy_hash_redact",
+            message="A demo user shared person@example.test and it should be hash protected.",
+            rule_type=RuleType.pii_redact,
+            policy_action=PolicyAction.warn,
+            redaction_mode="HASH",
+        ),
+        GatewayBenchmarkScenario(
+            slug="policy_synthetic_redact",
+            scenario_id=BenchmarkScenarioId.GATEWAY_REDACTION,
+            target=BenchmarkTarget.TOKENIZATION,
+            name="Gateway synthetic redaction",
+            description="Gateway request with fake PII transformed by synthetic replacement before provider egress.",
+            payload_profile="policy_synthetic_redact",
+            message="A demo support caller entered +1 202-555-0100 and it should be classified.",
+            rule_type=RuleType.pii_redact,
+            policy_action=PolicyAction.warn,
+            pii_types=("PHONE_NUMBER",),
+            redaction_mode="SYNTHETIC",
+        ),
+        GatewayBenchmarkScenario(
+            slug="policy_reversible_tokenization",
+            scenario_id=BenchmarkScenarioId.TOKENIZATION_REVERSIBLE,
+            target=BenchmarkTarget.TOKENIZATION,
+            name="Gateway reversible tokenization",
+            description="Gateway request that exercises reversible token placeholder generation with a mocked TokenVault.",
+            payload_profile="policy_reversible_tokenization",
+            message="A demo user shared person@example.test and it should use reversible tokenization.",
+            rule_type=RuleType.pii_redact,
+            policy_action=PolicyAction.warn,
+            redaction_mode="MASK",
+            reversible=True,
+        ),
+        GatewayBenchmarkScenario(
             slug="policy_block",
             scenario_id=BenchmarkScenarioId.GATEWAY_POLICY_BLOCK,
             target=BenchmarkTarget.POLICY_EVALUATION,
@@ -419,6 +476,33 @@ def gateway_benchmark_scenarios() -> tuple[GatewayBenchmarkScenario, ...]:
             policy_action=PolicyAction.allow,
             keywords=("not-present-multi-tenant",),
             tenant_label="secondary",
+        ),
+        GatewayBenchmarkScenario(
+            slug="provider_mock_error",
+            scenario_id=BenchmarkScenarioId.PROVIDER_ADAPTER_RESPONSE,
+            target=BenchmarkTarget.PROVIDER_RESPONSE,
+            name="Gateway provider mock error",
+            description="Gateway request where the mocked provider returns a sanitized upstream error.",
+            payload_profile="provider_error",
+            message="Normal request where mocked provider returns an upstream error.",
+            rule_type=RuleType.content_filter,
+            policy_action=PolicyAction.allow,
+            keywords=("not-present-provider-error",),
+            provider_status_code=502,
+            expected_status_code=502,
+        ),
+        GatewayBenchmarkScenario(
+            slug="concurrent_requests",
+            scenario_id=BenchmarkScenarioId.CONCURRENT_GATEWAY_REQUESTS,
+            target=BenchmarkTarget.CONCURRENCY,
+            name="Gateway concurrent requests",
+            description="Concurrent non-streaming gateway requests with mocked provider success path.",
+            payload_profile="concurrent",
+            message="Concurrent tenant-isolated benchmark request.",
+            rule_type=RuleType.content_filter,
+            policy_action=PolicyAction.allow,
+            keywords=("not-present-concurrent",),
+            concurrency=10,
         ),
     )
 
@@ -451,6 +535,7 @@ def _policy(tenant_id: uuid.UUID, scenario: GatewayBenchmarkScenario):
         conditions = {
             "pii_types": list(scenario.pii_types),
             "redaction_mode": scenario.redaction_mode,
+            "reversible": scenario.reversible,
         }
     rule = SimpleNamespace(
         id=uuid.uuid5(uuid.NAMESPACE_URL, f"authclaw:e4.3:rule:{scenario.slug}:{tenant_id}"),
@@ -472,7 +557,13 @@ def _policy(tenant_id: uuid.UUID, scenario: GatewayBenchmarkScenario):
     )
 
 
-def _route(tenant_id: uuid.UUID, provider_id: uuid.UUID, policy_id: uuid.UUID):
+def _route(tenant_id: uuid.UUID, provider_id: uuid.UUID, policy_id: uuid.UUID, redaction_mode: str):
+    redaction = {
+        "NONE": RedactionStrategy.none,
+        "MASK": RedactionStrategy.mask,
+        "HASH": RedactionStrategy.hash,
+        "SYNTHETIC": RedactionStrategy.synthetic,
+    }.get(redaction_mode.upper(), RedactionStrategy.mask)
     return SimpleNamespace(
         id=uuid.uuid5(uuid.NAMESPACE_URL, f"authclaw:e4.3:route:{tenant_id}"),
         tenant_id=tenant_id,
@@ -480,15 +571,29 @@ def _route(tenant_id: uuid.UUID, provider_id: uuid.UUID, policy_id: uuid.UUID):
         provider_id=provider_id,
         is_default=True,
         is_active=True,
-        redaction=RedactionStrategy.mask,
+        redaction=redaction,
         config={"model": "llama3-8b-8192", "policy_id": str(policy_id)},
         created_at=datetime.now(UTC),
     )
 
 
-async def direct_provider_call(delay_ms: float) -> ProviderResponse:
+async def direct_provider_call(delay_ms: float, *, status_code: int = 200) -> ProviderResponse:
     if delay_ms > 0:
         await asyncio.sleep(delay_ms / 1000)
+    if status_code >= 400:
+        return ProviderResponse(
+            status_code=status_code,
+            body={
+                "error": {
+                    "message": "Mock provider error for benchmark.",
+                    "type": "mock_provider_error",
+                    "code": "mock_provider_error",
+                }
+            },
+            provider_name="mock",
+            provider_type="groq",
+            latency_ms=int(delay_ms),
+        )
     return ProviderResponse(
         status_code=200,
         body={
@@ -506,15 +611,23 @@ async def _measure_direct_baseline(
     iterations: int,
     warmups: int,
     upstream_delay_ms: float,
+    status_code: int = 200,
+    concurrency: int = 1,
 ) -> LatencySampleCollector:
     collector = LatencySampleCollector()
     plan = IterationPlan(warmups=warmups, iterations=iterations)
-    for index in range(plan.total_executions):
+
+    async def timed_provider_call() -> float:
         timer = HighResolutionTimer().start()
-        await direct_provider_call(upstream_delay_ms)
-        elapsed = timer.stop().elapsed_ms
+        await direct_provider_call(upstream_delay_ms, status_code=status_code)
+        return timer.stop().elapsed_ms
+
+    for index in range(plan.total_executions):
         if index >= plan.warmups:
-            collector.add(elapsed)
+            for elapsed in await asyncio.gather(*[timed_provider_call() for _ in range(concurrency)]):
+                collector.add(elapsed)
+        else:
+            await asyncio.gather(*[timed_provider_call() for _ in range(concurrency)])
     return collector
 
 
@@ -530,8 +643,13 @@ async def _measure_gateway_scenario(
     contract = scenario.contract(iterations=iterations, warmups=warmups)
     plan = IterationPlan(warmups=warmups, iterations=iterations)
 
-    for _ in range(plan.warmups):
+    async def timed_gateway_call() -> float:
+        timer = HighResolutionTimer().start()
         await service.execute(scenario)
+        return timer.stop().elapsed_ms
+
+    for _ in range(plan.warmups):
+        await asyncio.gather(*[service.execute(scenario) for _ in range(scenario.concurrency)])
 
     latency = LatencySampleCollector()
     memory = MemorySampleCollector()
@@ -543,9 +661,10 @@ async def _measure_gateway_scenario(
     cpu_sampler.start()
     wall_timer = HighResolutionTimer().start()
     for _ in range(plan.iterations):
-        iteration_timer = HighResolutionTimer().start()
-        await service.execute(scenario)
-        latency.add(iteration_timer.stop().elapsed_ms)
+        for elapsed in await asyncio.gather(
+            *[timed_gateway_call() for _ in range(scenario.concurrency)]
+        ):
+            latency.add(elapsed)
         memory.add(memory_sampler.sample_peak_bytes())
     wall_time_ms = wall_timer.stop().elapsed_ms
     cpu.add(cpu_sampler.sample_percent())
@@ -556,6 +675,8 @@ async def _measure_gateway_scenario(
         iterations=iterations,
         warmups=warmups,
         upstream_delay_ms=upstream_delay_ms,
+        status_code=scenario.provider_status_code,
+        concurrency=scenario.concurrency,
     )
 
     gateway_stats = latency.statistics()
@@ -571,6 +692,7 @@ async def _measure_gateway_scenario(
             "stream": "false",
             "provider": "mock",
             "runtime_mutation": "false",
+            "concurrency": str(scenario.concurrency),
         },
     )
     benchmark = LatencyBenchmarkContract(
@@ -600,7 +722,7 @@ async def _measure_gateway_scenario(
         scenario=contract,
         latency_result=result,
         throughput=throughput_measurement(
-            total_operations=iterations,
+            total_operations=iterations * scenario.concurrency,
             wall_time_ms=wall_time_ms,
             unit=BenchmarkUnit.REQUESTS_PER_SECOND,
         ),
@@ -621,7 +743,11 @@ async def _measure_gateway_scenario(
             "method": "gateway_minus_direct_provider_baseline",
             **overhead,
         },
-        tokenization_contribution_ms="not_exercised_by_non_streaming_gateway_phase3_scenarios",
+        tokenization_contribution_ms=(
+            "mocked_token_vault_store_batch_exercised"
+            if scenario.reversible
+            else "not_exercised"
+        ),
         provider_call_count=service.provider_call_count,
         audit_call_count=service.audit_call_count,
     )
@@ -687,11 +813,41 @@ def summarize_gateway_benchmarks(reports: Iterable[GatewayBenchmarkReport]) -> B
     )
 
 
+def format_gateway_benchmark_compact(reports: Iterable[GatewayBenchmarkReport]) -> str:
+    """Return a stable CSV-style summary for release docs and local reruns."""
+
+    lines = [
+        "slug,p50_overhead_ms,p90_overhead_ms,p95_overhead_ms,p99_overhead_ms,"
+        "max_latency_ms,throughput_rps,peak_memory_bytes,cpu_percent,concurrency,samples"
+    ]
+    for report in reports:
+        benchmark = report.latency_result.benchmark
+        lines.append(
+            ",".join(
+                [
+                    str(report.scenario.metadata["slug"]),
+                    f"{report.gateway_overhead_ms['p50_ms']:.3f}",
+                    f"{report.gateway_overhead_ms['p90_ms']:.3f}",
+                    f"{report.gateway_overhead_ms['p95_ms']:.3f}",
+                    f"{report.gateway_overhead_ms['p99_ms']:.3f}",
+                    f"{benchmark.latency.maximum_ms:.3f}",
+                    f"{report.throughput.value_per_second:.2f}",
+                    str(report.memory.peak_memory_bytes),
+                    f"{report.cpu.peak_cpu_percent:.2f}",
+                    str(report.scenario.concurrency),
+                    str(benchmark.metadata.sample_count),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="AuthClaw E4.3 Gateway performance benchmark")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
     parser.add_argument("--warmups", type=int, default=DEFAULT_WARMUPS)
     parser.add_argument("--upstream-delay-ms", type=float, default=DEFAULT_UPSTREAM_DELAY_MS)
+    parser.add_argument("--compact", action="store_true", help="Print a compact CSV-style summary instead of full JSON.")
     args = parser.parse_args()
 
     reports = await run_gateway_benchmarks(
@@ -700,6 +856,18 @@ async def main() -> None:
         upstream_delay_ms=args.upstream_delay_ms,
     )
     summary = summarize_gateway_benchmarks(reports)
+    if args.compact:
+        assessment = (
+            summary.assessment.value
+            if hasattr(summary.assessment, "value")
+            else str(summary.assessment)
+        )
+        print(
+            f"summary,{assessment},{summary.passed_scenarios},"
+            f"{summary.failed_scenarios},{summary.total_scenarios}"
+        )
+        print(format_gateway_benchmark_compact(reports))
+        return
     print(
         json.dumps(
             {

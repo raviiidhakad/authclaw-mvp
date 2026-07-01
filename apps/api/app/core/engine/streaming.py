@@ -13,6 +13,7 @@ from app.core.engine.sse_parser import ParsedSseEvent, SseParser
 from app.core.engine.streaming_state_machine import StreamingRedactionStateMachine
 from app.core.engine.utf8_decoder import Utf8IncrementalDecoder
 from app.core.config import settings
+from app.core.rate_limit.tenant_limiter import tenant_plan_limiter
 from app.services.api_safety import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,10 @@ class StreamingSecurityBlocked(RuntimeError):
 
 
 class StreamingEngine:
-    def __init__(self, audit_engine: AuditEngine):
+    def __init__(self, audit_engine: AuditEngine, *, db=None, rate_limiter=tenant_plan_limiter):
         self.audit_engine = audit_engine
+        self.db = db
+        self.rate_limiter = rate_limiter
 
     @staticmethod
     def _safe_sse_payload(payload: Dict[str, Any]) -> str:
@@ -336,74 +339,78 @@ class StreamingEngine:
         prompt_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
         request_payload = adapter.transform_request(self._sanitize_request_payload(payload))
+        decision = await self.rate_limiter.acquire_stream(self.db, tenant_id, api_key_id)
+        if not decision.allowed:
+            await self.audit_engine.publish_stream_failed(
+                stream_id=stream_id,
+                partial_response_hash=hashlib.sha256(b"").hexdigest(),
+                failure_reason="stream_rate_limited",
+                policy_violation_details={"scope": decision.scope, "plan": decision.plan},
+            )
+
+            async def rate_limited_generator() -> AsyncGenerator[str, None]:
+                yield self._safe_sse_payload({
+                    "error": {
+                        "message": "Rate limit exceeded. Please retry later.",
+                        "type": "rate_limit_exceeded",
+                        "code": "stream_rate_limited",
+                    }
+                })
+                yield self._done_sse()
+
+            return StreamingResponse(rate_limited_generator(), status_code=429, media_type="text/event-stream")
 
         async def event_generator() -> AsyncGenerator[str, None]:
             start_time = time.monotonic()
 
             full_response_chunks = []
             released_response = ""
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                try:
-                    async with client.stream("POST", url, headers=headers, json=request_payload) as response:
-                        if response.status_code >= 400:
-                            await self.audit_engine.publish_stream_failed(
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    try:
+                        async with client.stream("POST", url, headers=headers, json=request_payload) as response:
+                            if response.status_code >= 400:
+                                await self.audit_engine.publish_stream_failed(
+                                    stream_id=stream_id,
+                                    partial_response_hash=hashlib.sha256(b"").hexdigest(),
+                                    failure_reason="upstream_provider_stream_error",
+                                    policy_violation_details={"status_code": response.status_code},
+                                )
+                                yield self._safe_sse_payload({
+                                    "error": {
+                                        "message": "Upstream provider streaming failed.",
+                                        "type": "provider_error",
+                                        "code": "upstream_stream_error",
+                                    }
+                                })
+                                yield self._done_sse()
+                                return
+
+                            await self.audit_engine.publish_stream_started(
                                 stream_id=stream_id,
-                                partial_response_hash=hashlib.sha256(b"").hexdigest(),
-                                failure_reason="upstream_provider_stream_error",
-                                policy_violation_details={"status_code": response.status_code},
+                                tenant_id=tenant_id,
+                                api_key_id=api_key_id,
+                                provider_id=provider_id,
+                                security_mode=streaming_mode,
+                                prompt_hash=prompt_hash,
                             )
-                            yield self._safe_sse_payload({
-                                "error": {
-                                    "message": "Upstream provider streaming failed.",
-                                    "type": "provider_error",
-                                    "code": "upstream_stream_error",
-                                }
-                            })
-                            yield self._done_sse()
-                            return
 
-                        await self.audit_engine.publish_stream_started(
-                            stream_id=stream_id,
-                            tenant_id=tenant_id,
-                            api_key_id=api_key_id,
-                            provider_id=provider_id,
-                            security_mode=streaming_mode,
-                            prompt_hash=prompt_hash,
-                        )
+                            decoder = Utf8IncrementalDecoder()
+                            parser = SseParser()
+                            state_machine = StreamingRedactionStateMachine(max_window_chars=max(window_size, 20) * 1024)
+                            completion_chunks_seen = 0
+                            done = False
 
-                        decoder = Utf8IncrementalDecoder()
-                        parser = SseParser()
-                        state_machine = StreamingRedactionStateMachine(max_window_chars=max(window_size, 20) * 1024)
-                        completion_chunks_seen = 0
-                        done = False
-
-                        async for raw_chunk in adapter.stream_response(response):
-                            if isinstance(raw_chunk, str):
-                                decoded_text = raw_chunk
-                            else:
-                                decoded_text = decoder.decode(raw_chunk)
-                            if not decoded_text:
-                                continue
-
-                            decoded_text = self._normalize_legacy_sse_text(decoded_text)
-                            for event in parser.feed(decoded_text):
-                                if event.data is None:
+                            async for raw_chunk in adapter.stream_response(response):
+                                if isinstance(raw_chunk, str):
+                                    decoded_text = raw_chunk
+                                else:
+                                    decoded_text = decoder.decode(raw_chunk)
+                                if not decoded_text:
                                     continue
-                                content, done = self._extract_openai_delta_data(event.data.strip())
-                                if done:
-                                    break
-                                if content:
-                                    completion_chunks_seen += 1
-                                    state_machine.append(ParsedSseEvent(data=content))
-                                    for window in state_machine.emit_safe():
-                                        full_response_chunks.append(window.text)
-                            if done:
-                                break
 
-                        if not done:
-                            decoded_text = decoder.flush()
-                            if decoded_text:
-                                for event in parser.feed(self._normalize_legacy_sse_text(decoded_text)):
+                                decoded_text = self._normalize_legacy_sse_text(decoded_text)
+                                for event in parser.feed(decoded_text):
                                     if event.data is None:
                                         continue
                                     content, done = self._extract_openai_delta_data(event.data.strip())
@@ -414,103 +421,122 @@ class StreamingEngine:
                                         state_machine.append(ParsedSseEvent(data=content))
                                         for window in state_machine.emit_safe():
                                             full_response_chunks.append(window.text)
-                                    if done:
-                                        break
-                        if not done:
-                            parser.flush()
-                        state_machine.end_of_stream()
-                        for window in state_machine.flush():
-                            full_response_chunks.append(window.text)
+                                if done:
+                                    break
 
-                        raw_response = "".join(full_response_chunks)
-                        try:
-                            sanitized_response, entity_count = await self._apply_stream_security(
-                                tenant_id,
-                                api_key_id,
-                                raw_response,
-                            )
-                        except StreamingSecurityBlocked as blocked_exc:
-                            await self.audit_engine.publish_stream_failed(
-                                stream_id=stream_id,
-                                partial_response_hash=hashlib.sha256(b"").hexdigest(),
-                                failure_reason="stream_policy_blocked",
-                                policy_violation_details={"released": False},
-                            )
-                            yield self._safe_sse_payload({
-                                "error": {
-                                    "message": "Response blocked by AuthClaw security policy.",
-                                    "type": "security_policy_violation",
-                                    "code": "response_blocked",
-                                    "block_reason": blocked_exc.reason,
-                                }
-                            })
-                            yield self._done_sse()
-                            return
-                        except Exception as scan_exc:
-                            logger.error("Streaming response scan failed closed: %s", scan_exc)
-                            await self.audit_engine.publish_stream_failed(
-                                stream_id=stream_id,
-                                partial_response_hash=hashlib.sha256(b"").hexdigest(),
-                                failure_reason="stream_security_scan_failed",
-                                policy_violation_details={"released": False},
-                            )
-                            yield self._safe_sse_payload({
-                                "error": {
-                                    "message": "Gateway stream security scan failed. Response was not released.",
-                                    "type": "security_pipeline_error",
-                                    "code": "stream_security_scan_failed",
-                                }
-                            })
-                            yield self._done_sse()
-                            return
+                            if not done:
+                                decoded_text = decoder.flush()
+                                if decoded_text:
+                                    for event in parser.feed(self._normalize_legacy_sse_text(decoded_text)):
+                                        if event.data is None:
+                                            continue
+                                        content, done = self._extract_openai_delta_data(event.data.strip())
+                                        if done:
+                                            break
+                                        if content:
+                                            completion_chunks_seen += 1
+                                            state_machine.append(ParsedSseEvent(data=content))
+                                            for window in state_machine.emit_safe():
+                                                full_response_chunks.append(window.text)
+                                        if done:
+                                            break
+                            if not done:
+                                parser.flush()
+                            state_machine.end_of_stream()
+                            for window in state_machine.flush():
+                                full_response_chunks.append(window.text)
 
-                        released_response = sanitized_response
-                        if sanitized_response:
-                            yield self._safe_sse_payload({
-                                "choices": [
-                                    {
-                                        "delta": {"content": sanitized_response},
-                                        "index": 0,
-                                        "finish_reason": None,
+                            raw_response = "".join(full_response_chunks)
+                            try:
+                                sanitized_response, entity_count = await self._apply_stream_security(
+                                    tenant_id,
+                                    api_key_id,
+                                    raw_response,
+                                )
+                            except StreamingSecurityBlocked as blocked_exc:
+                                await self.audit_engine.publish_stream_failed(
+                                    stream_id=stream_id,
+                                    partial_response_hash=hashlib.sha256(b"").hexdigest(),
+                                    failure_reason="stream_policy_blocked",
+                                    policy_violation_details={"released": False},
+                                )
+                                yield self._safe_sse_payload({
+                                    "error": {
+                                        "message": "Response blocked by AuthClaw security policy.",
+                                        "type": "security_policy_violation",
+                                        "code": "response_blocked",
+                                        "block_reason": blocked_exc.reason,
                                     }
-                                ],
-                                "authclaw": {
-                                    "streaming_mode": "strict_buffered_safe",
-                                    "redaction_applied": entity_count > 0,
-                                    "entity_count": entity_count,
-                                },
-                            })
-                        yield self._done_sse()
+                                })
+                                yield self._done_sse()
+                                return
+                            except Exception as scan_exc:
+                                logger.error("Streaming response scan failed closed: %s", scan_exc)
+                                await self.audit_engine.publish_stream_failed(
+                                    stream_id=stream_id,
+                                    partial_response_hash=hashlib.sha256(b"").hexdigest(),
+                                    failure_reason="stream_security_scan_failed",
+                                    policy_violation_details={"released": False},
+                                )
+                                yield self._safe_sse_payload({
+                                    "error": {
+                                        "message": "Gateway stream security scan failed. Response was not released.",
+                                        "type": "security_pipeline_error",
+                                        "code": "stream_security_scan_failed",
+                                    }
+                                })
+                                yield self._done_sse()
+                                return
 
-                        # Stream complete
-                        latency_ms = int((time.monotonic() - start_time) * 1000)
-                        response_hash = hashlib.sha256(released_response.encode()).hexdigest()
+                            released_response = sanitized_response
+                            if sanitized_response:
+                                yield self._safe_sse_payload({
+                                    "choices": [
+                                        {
+                                            "delta": {"content": sanitized_response},
+                                            "index": 0,
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                    "authclaw": {
+                                        "streaming_mode": "strict_buffered_safe",
+                                        "redaction_applied": entity_count > 0,
+                                        "entity_count": entity_count,
+                                    },
+                                })
+                            yield self._done_sse()
 
-                        await self.audit_engine.publish_stream_completed(
+                            # Stream complete
+                            latency_ms = int((time.monotonic() - start_time) * 1000)
+                            response_hash = hashlib.sha256(released_response.encode()).hexdigest()
+
+                            await self.audit_engine.publish_stream_completed(
+                                stream_id=stream_id,
+                                response_hash=response_hash,
+                                prompt_tokens=0,
+                                completion_tokens=completion_chunks_seen,
+                                latency_ms=latency_ms,
+                            )
+
+                    except Exception as e:
+                        logger.error("STREAMING EXCEPTION: %s", e)
+                        partial_response = released_response
+                        partial_hash = hashlib.sha256(partial_response.encode()).hexdigest()
+                        await self.audit_engine.publish_stream_failed(
                             stream_id=stream_id,
-                            response_hash=response_hash,
-                            prompt_tokens=0,
-                            completion_tokens=completion_chunks_seen,
-                            latency_ms=latency_ms,
+                            partial_response_hash=partial_hash,
+                            failure_reason="streaming_error",
+                            policy_violation_details=None,
                         )
-
-                except Exception as e:
-                    logger.error("STREAMING EXCEPTION: %s", e)
-                    partial_response = released_response
-                    partial_hash = hashlib.sha256(partial_response.encode()).hexdigest()
-                    await self.audit_engine.publish_stream_failed(
-                        stream_id=stream_id,
-                        partial_response_hash=partial_hash,
-                        failure_reason="streaming_error",
-                        policy_violation_details=None,
-                    )
-                    yield self._safe_sse_payload({
-                        "error": {
-                            "message": "Gateway streaming failed safely.",
-                            "type": "gateway_streaming_error",
-                            "code": "streaming_error",
-                        }
-                    })
-                    yield self._done_sse()
+                        yield self._safe_sse_payload({
+                            "error": {
+                                "message": "Gateway streaming failed safely.",
+                                "type": "gateway_streaming_error",
+                                "code": "streaming_error",
+                            }
+                        })
+                        yield self._done_sse()
+            finally:
+                await self.rate_limiter.release_stream(tenant_id, api_key_id)
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")

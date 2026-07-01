@@ -690,7 +690,7 @@ async def create_plan_artifact_execution(
         body.approval_id,
         actor_id=current_user.id,
     )
-    verification = await service.execute_job(tenant.id, job.id)
+    verification = await service.execute_job(tenant.id, job.id, actor_id=current_user.id)
     await db.commit()
     await _set_tenant_context(db, tenant.id)
     refreshed_job = await service.get_execution_job(tenant.id, job.id)
@@ -702,10 +702,10 @@ async def execute_job(
     job_id: uuid.UUID,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(require_roles(APPROVAL_ROLES)),
+    current_user: User = Depends(require_roles(APPROVAL_ROLES)),
 ):
     service = RemediationExecutionService(db, event_producer=event_producer)
-    verification = await service.execute_job(tenant.id, job_id)
+    verification = await service.execute_job(tenant.id, job_id, actor_id=current_user.id)
     await db.commit()
     await _set_tenant_context(db, tenant.id)
     refreshed_job = await service.get_execution_job(tenant.id, job_id)

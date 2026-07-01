@@ -2,6 +2,7 @@ import pytest
 import uuid
 import json
 import asyncio
+import redis
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from app.core.engine.token_vault import TokenVaultService
@@ -11,6 +12,28 @@ from app.core.engine.gateway import GatewayService
 from app.core.engine.pii import PIIRedactor
 
 pytestmark = pytest.mark.asyncio
+
+
+def _clear_reversible_token_maps():
+    client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    for key in client.scan_iter("pii:map:*"):
+        client.delete(key)
+    client.close()
+    RedisClient._instance = None
+
+
+@pytest.fixture(autouse=True)
+def isolate_reversible_tokenization(monkeypatch):
+    import app.core.encryption
+
+    monkeypatch.setenv("ENCRYPTION_PROVIDER", "local")
+    monkeypatch.setattr(settings, "ENCRYPTION_PROVIDER", "local")
+    app.core.encryption._provider = None
+    _clear_reversible_token_maps()
+    yield
+    app.core.encryption._provider = None
+    _clear_reversible_token_maps()
+
 
 class TestReversibleTokenization:
     # ── Functional Tests ─────────────────────────────────────────────

@@ -13,6 +13,7 @@ from tests.performance.measure_gateway_e4_3 import (
     DEFAULT_UPSTREAM_DELAY_MS,
     GatewayBenchmarkScenario,
     gateway_benchmark_scenarios,
+    format_gateway_benchmark_compact,
     run_gateway_benchmarks,
     summarize_gateway_benchmarks,
 )
@@ -28,8 +29,13 @@ def test_gateway_benchmark_scenario_registration() -> None:
         "large_request",
         "policy_allow",
         "policy_redact",
+        "policy_hash_redact",
+        "policy_synthetic_redact",
+        "policy_reversible_tokenization",
         "policy_block",
         "multiple_tenants",
+        "provider_mock_error",
+        "concurrent_requests",
     }.issubset(slugs)
 
     for scenario in scenarios:
@@ -38,6 +44,23 @@ def test_gateway_benchmark_scenario_registration() -> None:
         assert contract.metadata["provider"] == "mock"
         assert contract.iterations == 3
         assert contract.warmups == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_benchmark_compact_formatter_is_stable() -> None:
+    report = (
+        await run_gateway_benchmarks(
+            iterations=1,
+            warmups=0,
+            upstream_delay_ms=DEFAULT_UPSTREAM_DELAY_MS,
+            scenarios=(_scenario("small_request"),),
+        )
+    )[0]
+
+    compact = format_gateway_benchmark_compact((report,))
+
+    assert compact.splitlines()[0].startswith("slug,p50_overhead_ms")
+    assert "small_request" in compact
 
 
 @pytest.mark.asyncio
@@ -112,7 +135,7 @@ async def test_gateway_benchmark_result_serialization() -> None:
     payload = reports[0].as_dict()
 
     assert payload["scenario"]["metadata"]["stream"] is False
-    assert payload["tokenization_contribution_ms"] == "not_exercised_by_non_streaming_gateway_phase3_scenarios"
+    assert payload["tokenization_contribution_ms"] == "not_exercised"
     json.dumps(payload, sort_keys=True)
 
 
@@ -141,6 +164,53 @@ async def test_gateway_benchmark_reproducibility_shape() -> None:
     assert first.scenario.metadata["tenant_label"] == "secondary"
     assert first.latency_result.benchmark.metadata.sample_count == second.latency_result.benchmark.metadata.sample_count
     assert first.provider_call_count == second.provider_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_benchmark_reversible_tokenization_uses_mocked_vault_path() -> None:
+    report = (
+        await run_gateway_benchmarks(
+            iterations=1,
+            warmups=0,
+            upstream_delay_ms=DEFAULT_UPSTREAM_DELAY_MS,
+            scenarios=(_scenario("policy_reversible_tokenization"),),
+        )
+    )[0]
+
+    assert report.tokenization_contribution_ms == "mocked_token_vault_store_batch_exercised"
+    assert report.provider_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_benchmark_provider_error_is_reproducible() -> None:
+    report = (
+        await run_gateway_benchmarks(
+            iterations=1,
+            warmups=0,
+            upstream_delay_ms=DEFAULT_UPSTREAM_DELAY_MS,
+            scenarios=(_scenario("provider_mock_error"),),
+        )
+    )[0]
+
+    assert report.scenario.metadata["provider_status_code"] == 502
+    assert report.provider_call_count == 1
+    assert report.audit_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_benchmark_concurrent_scenario_records_concurrency() -> None:
+    report = (
+        await run_gateway_benchmarks(
+            iterations=1,
+            warmups=0,
+            upstream_delay_ms=DEFAULT_UPSTREAM_DELAY_MS,
+            scenarios=(_scenario("concurrent_requests"),),
+        )
+    )[0]
+
+    assert report.scenario.concurrency == 10
+    assert report.scenario.metadata["slug"] == "concurrent_requests"
+    assert report.provider_call_count == 10
 
 
 def _scenario(slug: str) -> GatewayBenchmarkScenario:

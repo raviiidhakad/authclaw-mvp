@@ -15,6 +15,27 @@ class AdversarialProbeRunCreate(BaseModel):
     owner_user_id: uuid.UUID | None = None
 
 
+class RedTeamProbeResultResponse(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    probe_run_id: uuid.UUID
+    category: str
+    target_surface: str
+    status: str
+    severity: str
+    confidence: int
+    evidence_summary: str
+    sanitized_input_summary: str
+    sanitized_output_summary: str
+    linked_finding_id: uuid.UUID | None = None
+    linked_remediation_plan_id: uuid.UUID | None = None
+    linked_control_id: uuid.UUID | None = None
+    linked_report_artifact_id: uuid.UUID | None = None
+    raw_payload_stored: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class AdversarialProbeRunResponse(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
@@ -35,6 +56,7 @@ class AdversarialProbeRunResponse(BaseModel):
     allowed_count: int
     vulnerability_count: int
     evidence: dict[str, Any] = Field(default_factory=dict)
+    results: list[RedTeamProbeResultResponse] = Field(default_factory=list)
     raw_payload_stored: bool
     created_at: datetime
     updated_at: datetime
@@ -42,9 +64,12 @@ class AdversarialProbeRunResponse(BaseModel):
 
 class VulnerabilityUpdateRequest(BaseModel):
     status: str | None = None
+    severity: str | None = None
     owner_user_id: uuid.UUID | None = None
     remediation_plan_id: uuid.UUID | None = None
     remediation_summary: str | None = Field(None, max_length=1200)
+    confidence: int | None = Field(None, ge=0, le=100)
+    due_date: datetime | None = None
 
 
 class VulnerabilityRegisterItemResponse(BaseModel):
@@ -58,6 +83,11 @@ class VulnerabilityRegisterItemResponse(BaseModel):
     severity: str
     status: str
     owner_user_id: uuid.UUID | None = None
+    confidence: int
+    due_date: datetime | None = None
+    linked_finding_id: uuid.UUID | None = None
+    linked_control_id: uuid.UUID | None = None
+    linked_report_artifact_id: uuid.UUID | None = None
     evidence_summary: str
     remediation_summary: str | None = None
     first_seen_at: datetime

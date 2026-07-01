@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.database import AsyncSessionLocal
+from app.core.rate_limit.tenant_limiter import LimitDecision
 from app.core.security import get_password_hash
 from app.models.compliance import (
     ComplianceAssessment,
@@ -70,6 +71,11 @@ DEMO_USER_PASSWORD = "demo-only-password"
 DEMO_NAMESPACE = uuid.UUID("7149f427-656b-45f3-89f1-95a9df0c9462")
 
 
+class _DemoReportLimiter:
+    async def check_report_generation(self, _db: AsyncSession, _tenant_id: uuid.UUID) -> LimitDecision:
+        return LimitDecision(allowed=True, scope="report_generation", plan="demo_seed")
+
+
 @dataclass(frozen=True)
 class Sprint5DemoSummary:
     tenant_id: uuid.UUID
@@ -108,8 +114,9 @@ async def seed_demo_dataset(db: AsyncSession) -> Sprint5DemoSummary:
     evidence = await _seed_compliance(db, tenant.id, framework.id, control.id, integration.id, finding.id)
     await _seed_remediation(db, tenant.id, admin.id, integration.id, finding.id, evidence.id)
     template = await _seed_template(db, tenant.id, admin.id)
+    demo_report_limiter = _DemoReportLimiter()
 
-    report_result = await ReportGenerationService(db, event_producer=None).generate_report(
+    report_result = await ReportGenerationService(db, event_producer=None, rate_limiter=demo_report_limiter).generate_report(
         tenant.id,
         ReportGenerationRequest(
             report_type="trust_overview",
@@ -119,7 +126,7 @@ async def seed_demo_dataset(db: AsyncSession) -> Sprint5DemoSummary:
             retention_days=30,
         ),
     )
-    package_result = await EvidencePackageBuilder(db, event_producer=None).create_evidence_package(
+    package_result = await EvidencePackageBuilder(db, event_producer=None, rate_limiter=demo_report_limiter).create_evidence_package(
         tenant.id,
         EvidencePackageRequest(
             framework_id=framework.id,

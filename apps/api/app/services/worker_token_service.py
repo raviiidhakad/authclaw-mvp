@@ -197,5 +197,5 @@ class WorkerTokenService:
             result = self.event_producer.publish(REMEDIATION_EVENTS_TOPIC, event)
             if inspect.isawaitable(result):
                 await result
-        except Exception as exc:
-            logger.warning("Failed to publish worker token event %s: %s", event.event_type, exc)
+        except Exception:
+            logger.warning("Failed to publish worker token event %s", event.event_type)

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.events.producer import producer as default_event_producer
+from app.core.rate_limit.tenant_limiter import TenantPlanLimiter, rate_limit_exception, tenant_plan_limiter
 from app.models.compliance import (
     ComplianceAssessment,
     ComplianceControl,
@@ -36,6 +37,7 @@ from app.schemas.events import (
     ReportRunCompletedEvent,
     ReportRunFailedEvent,
     ReportRunStartedEvent,
+    SecurityEvent,
 )
 
 
@@ -340,15 +342,32 @@ class ReportGenerationService:
         artifact_store: LocalReportArtifactStore | None = None,
         event_producer=default_event_producer,
         sanitizer: ExportSanitizer | None = None,
+        rate_limiter: TenantPlanLimiter | None = None,
     ) -> None:
         self.db = db
         self.artifact_store = artifact_store or LocalReportArtifactStore()
         self.event_producer = event_producer
         self.sanitizer = sanitizer or ExportSanitizer()
+        self.rate_limiter = rate_limiter or tenant_plan_limiter
 
     async def generate_report(self, tenant_id: uuid.UUID | str, request: ReportGenerationRequest) -> GenerationResult:
         tenant_uuid = self._uuid(tenant_id)
         await self._set_tenant_context(tenant_uuid)
+        limit_decision = await self.rate_limiter.check_report_generation(self.db, tenant_uuid)
+        if not limit_decision.allowed:
+            await self._emit(
+                SecurityEvent(
+                    event_type="report_generation.rate_limited",
+                    tenant_id=tenant_uuid,
+                    actor_id=request.requested_by,
+                    payload={
+                        "scope": limit_decision.scope,
+                        "plan": limit_decision.plan,
+                        "retry_after": limit_decision.retry_after,
+                    },
+                )
+            )
+            raise rate_limit_exception(limit_decision)
         filters = self.sanitizer.sanitize_payload(
             {
                 "report_type": request.report_type,

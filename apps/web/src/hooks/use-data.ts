@@ -195,6 +195,25 @@ export function useAuditLogs(skip = 0, limit = 50, eventType?: string) {
   });
 }
 
+export type AuditIntegrityReport = {
+  status: 'intact' | 'tampered' | string;
+  scanned_records: number;
+  missing_records: number;
+  tampered_records: number;
+  chain_breaks: number;
+};
+
+export function useAuditIntegrityVerification() {
+  return useQuery({
+    queryKey: ['audit-integrity-verification'],
+    queryFn: async () => {
+      const res = await apiClient.get('/audit/verify');
+      return res.data as AuditIntegrityReport;
+    },
+    refetchInterval: 30000,
+  });
+}
+
 // ── Compliance ──
 export function useComplianceDashboard() {
   return useQuery({
@@ -372,6 +391,132 @@ export function useRevokeApiKey() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
     },
+  });
+}
+
+export type TenantDetails = {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  status: string;
+  settings: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RateLimitTier = {
+  plan_name: string;
+  requests_per_minute: number;
+  requests_per_day: number;
+  api_key_requests_per_minute: number;
+  route_model_requests_per_minute: number;
+  provider_requests_per_minute: number;
+  concurrent_gateway_requests: number;
+  concurrent_streams: number;
+  max_body_bytes: number;
+  connector_scan_concurrency: number;
+  connector_scan_interval_seconds: number;
+  report_generation_per_hour: number;
+  remediation_job_concurrency: number;
+};
+
+export type TenantUser = {
+  id: string;
+  email: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  is_active: boolean;
+  tenant_id: string;
+  roles: string[];
+  created_at: string;
+  updated_at?: string;
+};
+
+export function useTenantDetails() {
+  return useQuery({
+    queryKey: ['tenant-details'],
+    queryFn: async () => {
+      const res = await apiClient.get('/tenants');
+      return res.data as TenantDetails;
+    },
+  });
+}
+
+export function useUpdateTenantDetails() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: Partial<Pick<TenantDetails, 'name' | 'status' | 'plan' | 'settings'>>) => {
+      const res = await apiClient.patch('/tenants', data);
+      return res.data as TenantDetails;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tenant-details'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+    },
+  });
+}
+
+export function useRateLimitTiers() {
+  return useQuery({
+    queryKey: ['rate-limit-tiers'],
+    queryFn: async () => {
+      const res = await apiClient.get('/tenants/rate-limit-tiers');
+      return res.data as RateLimitTier[];
+    },
+  });
+}
+
+export function useTenantUsers() {
+  return useQuery({
+    queryKey: ['tenant-users'],
+    queryFn: async () => {
+      const res = await apiClient.get('/users');
+      return res.data as TenantUser[];
+    },
+  });
+}
+
+export function useCreateTenantUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { email: string; first_name: string; last_name: string; password: string; role_name: string }) => {
+      const res = await apiClient.post('/users', data);
+      return res.data as TenantUser;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+  });
+}
+
+export function useUpdateTenantUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Partial<Pick<TenantUser, 'email' | 'first_name' | 'last_name' | 'is_active'>> }) => {
+      const res = await apiClient.patch(`/users/${id}`, data);
+      return res.data as TenantUser;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+  });
+}
+
+export function useAssignTenantUserRoles() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, roles }: { id: string; roles: string[] }) => {
+      const res = await apiClient.put(`/users/${id}/roles`, { roles });
+      return res.data as TenantUser;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+  });
+}
+
+export function useDeleteTenantUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await apiClient.delete(`/users/${id}`);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
   });
 }
 
@@ -1266,6 +1411,18 @@ export interface ReportArtifactDownload {
   artifact: Record<string, unknown>;
 }
 
+export interface ShareLinkRecord {
+  id: string;
+  tenant_id: string;
+  artifact_id: string;
+  scope: Record<string, unknown>;
+  created_by?: string | null;
+  expires_at: string;
+  revoked_at?: string | null;
+  max_downloads: number;
+  token?: string;
+}
+
 export type TrustReportListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
 
 export async function getTrustOverview() {
@@ -1366,6 +1523,21 @@ export async function getReportArtifactManifest(id: string) {
 export async function downloadReportArtifact(id: string) {
   const res = await apiClient.get(`/reports/artifacts/${id}/download`);
   return res.data as ReportArtifactDownload;
+}
+
+export async function createShareLink(data: { artifact_id: string; expires_at: string; max_downloads: number }) {
+  const res = await apiClient.post('/trust/share-links', data);
+  return res.data as ShareLinkRecord;
+}
+
+export async function listShareLinks(params: Record<string, unknown> = {}) {
+  const res = await apiClient.get('/trust/share-links', { params: cleanParams(params) });
+  return res.data as TrustReportListResponse<ShareLinkRecord>;
+}
+
+export async function revokeShareLink(id: string) {
+  const res = await apiClient.post(`/trust/share-links/${id}/revoke`);
+  return res.data as ShareLinkRecord;
 }
 
 export async function createEvidencePackage(data: EvidencePackagePayload) {
@@ -1500,6 +1672,32 @@ export function useDownloadReportArtifact() {
   });
 }
 
+export function useCreateShareLink() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createShareLink,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['share-links'] });
+      queryClient.invalidateQueries({ queryKey: ['report-access-logs'] });
+    },
+  });
+}
+
+export function useShareLinks(params: Record<string, unknown> = {}) {
+  return useQuery({ queryKey: ['share-links', params], queryFn: () => listShareLinks(params), refetchInterval: 15000 });
+}
+
+export function useRevokeShareLink() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: revokeShareLink,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['share-links'] });
+      queryClient.invalidateQueries({ queryKey: ['report-access-logs'] });
+    },
+  });
+}
+
 export function useCreateEvidencePackage() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1530,7 +1728,9 @@ export type RiskProbeCategory =
   | 'data_disclosure'
   | 'credential_leakage'
   | 'harmful_content'
-  | 'sycophancy_policy_bypass';
+  | 'sycophancy_policy_bypass'
+  | 'policy_bypass'
+  | 'report_export_leakage';
 export type RiskProbeStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked';
 export type RiskVulnerabilitySeverity = 'low' | 'medium' | 'high' | 'critical';
 export type RiskVulnerabilityStatus = 'open' | 'triaged' | 'remediating' | 'accepted_risk' | 'resolved' | 'false_positive';
@@ -1556,6 +1756,28 @@ export interface AdversarialProbeRun {
   allowed_count: number;
   vulnerability_count: number;
   evidence: Record<string, unknown>;
+  results?: RedTeamProbeResult[];
+  raw_payload_stored: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RedTeamProbeResult {
+  id: string;
+  tenant_id: string;
+  probe_run_id: string;
+  category: RiskProbeCategory | string;
+  target_surface: string;
+  status: string;
+  severity: RiskVulnerabilitySeverity | string;
+  confidence: number;
+  evidence_summary: string;
+  sanitized_input_summary: string;
+  sanitized_output_summary: string;
+  linked_finding_id?: string | null;
+  linked_remediation_plan_id?: string | null;
+  linked_control_id?: string | null;
+  linked_report_artifact_id?: string | null;
   raw_payload_stored: boolean;
   created_at: string;
   updated_at: string;
@@ -1572,6 +1794,11 @@ export interface VulnerabilityRegisterItem {
   severity: RiskVulnerabilitySeverity | string;
   status: RiskVulnerabilityStatus | string;
   owner_user_id?: string | null;
+  confidence: number;
+  due_date?: string | null;
+  linked_finding_id?: string | null;
+  linked_control_id?: string | null;
+  linked_report_artifact_id?: string | null;
   evidence_summary: string;
   remediation_summary?: string | null;
   first_seen_at: string;
@@ -1602,12 +1829,12 @@ export interface RiskPosture {
 }
 
 export async function listRiskProbeRuns(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/risk/probe-runs', { params: cleanParams(params) });
+  const res = await apiClient.get('/risk/probes', { params: cleanParams(params) });
   return res.data as RemediationListResponse<AdversarialProbeRun>;
 }
 
 export async function createRiskProbeRun(data: { name: string; category: RiskProbeCategory | string; target_surface?: string; model_target?: string | null }) {
-  const res = await apiClient.post('/risk/probe-runs', data);
+  const res = await apiClient.post('/risk/probes/run', data);
   return res.data as AdversarialProbeRun;
 }
 

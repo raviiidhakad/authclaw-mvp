@@ -25,7 +25,7 @@ class FakeStreamContext:
 
 
 class FakeClientContext:
-    def __init__(self, timeout):
+    def __init__(self, timeout=None, **_kwargs):
         self.timeout = timeout
 
     async def __aenter__(self):

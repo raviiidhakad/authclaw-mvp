@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/shared/states';
+import { useAuth } from '@/hooks/use-auth';
 import {
   useCreateRiskProbeRun,
   useRiskPosture,
@@ -23,6 +24,8 @@ const categories: Array<[RiskProbeCategory | '', string]> = [
   ['credential_leakage', 'Credential leakage'],
   ['harmful_content', 'Harmful content'],
   ['sycophancy_policy_bypass', 'Sycophancy / policy bypass'],
+  ['policy_bypass', 'Policy bypass'],
+  ['report_export_leakage', 'Report/export leakage'],
 ];
 
 const severities = ['', 'critical', 'high', 'medium', 'low'];
@@ -51,6 +54,21 @@ function formatDate(value?: string | null) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
 
+type RoleAwareUser = { role?: string; role_name?: string; roles?: string[] };
+
+function rolesFor(user: unknown): string[] {
+  const roleUser = user as RoleAwareUser | null | undefined;
+  return [
+    roleUser?.role,
+    roleUser?.role_name,
+    ...(Array.isArray(roleUser?.roles) ? roleUser.roles : []),
+  ].filter((role): role is string => typeof role === 'string' && role.length > 0).map((role) => role.toLowerCase());
+}
+
+function hasAnyRole(user: unknown, allowed: string[]) {
+  return rolesFor(user).some((role) => allowed.includes(role));
+}
+
 function Metric({ label: metricLabel, value, hint }: { label: string; value: string | number; hint: string }) {
   return (
     <Card className="glass-card">
@@ -65,13 +83,14 @@ function Metric({ label: metricLabel, value, hint }: { label: string; value: str
 
 function errorMessage(error: unknown) {
   const response = (error as { response?: { status?: number } })?.response;
-  if (response?.status === 404) return 'Risk API is not loaded in the backend yet. Restart the API service and refresh this page.';
-  if (response?.status === 403) return 'Your role can view risk posture but cannot modify risk demo data.';
+  if (response?.status === 404) return 'Risk data is unavailable for this tenant yet. Refresh after backend seeding or probe execution.';
+  if (response?.status === 403) return 'Your role can view risk posture but cannot run or update risk data.';
   if (response?.status === 401) return 'Please sign in again before using Risk & Red Teaming actions.';
   return 'Risk action failed. Check backend health and try again.';
 }
 
 export default function RiskPage() {
+  const { user } = useAuth();
   const [category, setCategory] = useState('');
   const [severity, setSeverity] = useState('');
   const [status, setStatus] = useState('');
@@ -93,6 +112,8 @@ export default function RiskPage() {
   const probes = probeQuery.data?.items ?? [];
   const vulnerabilities = vulnerabilityQuery.data?.items ?? [];
   const coveredCategories = posture?.counts?.probe_categories_covered?.length ?? 0;
+  const canRunProbes = hasAnyRole(user, ['owner', 'admin', 'analyst', 'security_admin']);
+  const canSeedDemo = canRunProbes;
 
   async function handleSeedDemo() {
     setNotice('');
@@ -132,21 +153,27 @@ export default function RiskPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="bg-emerald-500/10 text-emerald-300 border-emerald-500/20">Simulated by default</Badge>
-          <Button variant="outline" onClick={handleSeedDemo} disabled={seedDemo.isPending}>
-            <ShieldCheck className="w-4 h-4" />
-            Seed demo
-          </Button>
-          <Button onClick={handleCreateProbe} disabled={createProbe.isPending}>
-            <Play className="w-4 h-4" />
-            Run simulated probe
-          </Button>
+          {canSeedDemo && (
+            <Button variant="outline" onClick={handleSeedDemo} disabled={seedDemo.isPending}>
+              <ShieldCheck className="w-4 h-4" />
+              Seed demo
+            </Button>
+          )}
+          {canRunProbes ? (
+            <Button onClick={handleCreateProbe} disabled={createProbe.isPending}>
+              <Play className="w-4 h-4" />
+              Run simulated probe
+            </Button>
+          ) : (
+            <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 text-amber-300">Read-only role</Badge>
+          )}
         </div>
       </div>
 
       {notice && <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{notice}</div>}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Go / no-go" value={label(posture?.verdict)} hint="Evidence-supported posture, not a guarantee" />
+        <Metric label="Go / no-go" value={label(posture?.verdict)} hint="Evidence-supported posture, auditor review required" />
         <Metric label="Probe runs" value={posture?.counts?.probe_runs ?? 0} hint={`${coveredCategories} categories covered`} />
         <Metric label="Open high+" value={(posture?.counts?.open_high ?? 0) + (posture?.counts?.open_critical ?? 0)} hint="Requires owner review before go-live" />
         <Metric label="Vulnerabilities" value={posture?.counts?.vulnerabilities ?? 0} hint="Tenant-scoped register rows" />
@@ -191,6 +218,7 @@ export default function RiskPage() {
                     <TableHead>Status</TableHead>
                     <TableHead>Score</TableHead>
                     <TableHead>Blocked</TableHead>
+                    <TableHead>Results</TableHead>
                     <TableHead>Mode</TableHead>
                     <TableHead>Completed</TableHead>
                   </TableRow>
@@ -203,6 +231,7 @@ export default function RiskPage() {
                       <TableCell><Badge variant="outline" className="border-blue-500/20 bg-blue-500/10 text-blue-300">{label(String(probe.status))}</Badge></TableCell>
                       <TableCell className="text-neutral-300">{probe.risk_score}</TableCell>
                       <TableCell className="text-neutral-300">{probe.blocked_count}/{probe.probes_total}</TableCell>
+                      <TableCell className="text-neutral-300">{probe.results?.length ?? 0}</TableCell>
                       <TableCell className="text-neutral-300">{label(probe.execution_mode)}</TableCell>
                       <TableCell className="text-neutral-400">{formatDate(probe.completed_at)}</TableCell>
                     </TableRow>
@@ -268,6 +297,7 @@ export default function RiskPage() {
                   <TableHead>Title</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Confidence</TableHead>
                   <TableHead>Owner</TableHead>
                   <TableHead>Remediation</TableHead>
                   <TableHead>Evidence</TableHead>
@@ -283,6 +313,7 @@ export default function RiskPage() {
                     </TableCell>
                     <TableCell className="text-neutral-300">{label(String(item.category))}</TableCell>
                     <TableCell className="text-neutral-300">{label(String(item.status))}</TableCell>
+                    <TableCell className="text-neutral-300">{item.confidence}%</TableCell>
                     <TableCell className="text-neutral-400">{item.owner_user_id ? item.owner_user_id.slice(0, 8) : 'Unassigned'}</TableCell>
                     <TableCell className="text-neutral-300">
                       <div className="flex items-center gap-2">
@@ -323,7 +354,7 @@ export default function RiskPage() {
         </CardContent>
       </Card>
 
-      <div className="sr-only">No raw provider payloads, Vault references, credentials, or legal compliance guarantees are displayed.</div>
+      <div className="sr-only">No raw provider payloads, Vault references, credentials, or legal assurance copy is displayed.</div>
     </div>
   );
 }

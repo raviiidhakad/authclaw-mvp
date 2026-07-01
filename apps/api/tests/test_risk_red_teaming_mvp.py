@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.exceptions import NotFoundException
 from app.main import app
-from app.models.risk import AdversarialProbeCategory, AdversarialProbeRun, VulnerabilityRegisterItem
+from app.models.risk import AdversarialProbeCategory, AdversarialProbeRun, RedTeamProbeResult, VulnerabilityRegisterItem
 from app.schemas.risk import AdversarialProbeRunCreate, VulnerabilityUpdateRequest
 from app.services import risk_red_teaming
 from tests.test_sprint4_phase4_approval_workflow import _tenant, _user
@@ -44,6 +44,7 @@ async def _cleanup(db, *tenant_ids: uuid.UUID) -> None:
         for table in (
             "risk_posture_snapshots",
             "vulnerability_register_items",
+            "red_team_probe_results",
             "adversarial_probe_runs",
             "user_roles",
             "users",
@@ -78,6 +79,9 @@ def _safe_json(value) -> str:
 
 def test_risk_red_teaming_routes_and_rbac_surface_registered():
     expected = {
+        ("GET", "/risk/probes"),
+        ("POST", "/risk/probes/run"),
+        ("GET", "/risk/probes/{run_id}"),
         ("GET", "/risk/probe-runs"),
         ("POST", "/risk/probe-runs"),
         ("GET", "/risk/probe-runs/{run_id}"),
@@ -88,8 +92,11 @@ def test_risk_red_teaming_routes_and_rbac_surface_registered():
     }
     assert expected <= _registered_api_routes()
     assert set(risk_api.RISK_READ_ROLES) >= {"viewer", "auditor", "analyst"}
-    assert "viewer" not in risk_api.RISK_WRITE_ROLES
-    assert "auditor" not in risk_api.RISK_WRITE_ROLES
+    assert set(risk_api.RISK_RUN_ROLES) >= {"analyst", "admin", "owner"}
+    assert set(risk_api.RISK_UPDATE_ROLES) >= {"admin", "owner"}
+    assert "viewer" not in risk_api.RISK_RUN_ROLES
+    assert "auditor" not in risk_api.RISK_RUN_ROLES
+    assert "analyst" not in risk_api.RISK_UPDATE_ROLES
 
 
 @pytest.mark.asyncio
@@ -107,17 +114,18 @@ async def test_seed_demo_is_idempotent_tenant_scoped_and_safe():
             assert second["probe_runs_created"] == 0
             probes_a = await risk_api.list_probe_runs(tenant=tenant_a, db=db, _user=admin_a)
             probes_b = await risk_api.list_probe_runs(tenant=tenant_b, db=db, _user=admin_b)
-            assert probes_a.total == 5
-            assert probes_b.total == 5
+            assert probes_a.total == 7
+            assert probes_b.total == 7
             assert {item.category for item in probes_a.items} == {item.value for item in AdversarialProbeCategory}
             assert all(item.execution_mode == "simulated" for item in probes_a.items)
             assert all(item.raw_payload_stored is False for item in probes_a.items)
 
             vulnerabilities = await risk_api.list_vulnerabilities(tenant=tenant_a, db=db, _user=admin_a)
-            assert vulnerabilities.total == 4
+            assert vulnerabilities.total == 5
             assert any(item.remediation_summary for item in vulnerabilities.items)
             posture = await risk_api.get_posture(tenant=tenant_a, db=db, _user=admin_a)
             assert posture.verdict in {"needs_review", "no_go"}
+            assert "auditor review required" in posture.evidence_summary.lower()
             _safe_json(probes_a)
             _safe_json(vulnerabilities)
             _safe_json(posture)
@@ -133,9 +141,10 @@ async def test_probe_create_update_register_and_cross_tenant_blocked():
         try:
             analyst_a = await _user(db, tenant_a.id, "analyst", "risk-analyst-a")
             analyst_b = await _user(db, tenant_b.id, "analyst", "risk-analyst-b")
+            admin_a = await _user(db, tenant_a.id, "admin", "riskadmin-update-a")
             created = await risk_api.create_probe_run(
                 AdversarialProbeRunCreate(
-                    name="Credential leakage simulated probe token=demo-token-redacted",
+                    name="Credential leakage simulated probe with sanitized marker",
                     category="credential_leakage",
                     target_surface="gateway",
                     model_target="route-selected model",
@@ -147,7 +156,9 @@ async def test_probe_create_update_register_and_cross_tenant_blocked():
             assert created.execution_mode == "simulated"
             assert created.status == "completed"
             assert created.raw_payload_stored is False
-            assert "token=demo-token-redacted" not in json.dumps(created.model_dump(mode="json"))
+            assert created.results
+            assert all(result.raw_payload_stored is False for result in created.results)
+            assert "sanitized marker" in created.name
 
             with pytest.raises(NotFoundException):
                 await risk_api.get_probe_run(created.id, tenant=tenant_b, db=db, _user=analyst_b)
@@ -157,12 +168,13 @@ async def test_probe_create_update_register_and_cross_tenant_blocked():
             target = vulnerabilities.items[0]
             updated = await risk_api.update_vulnerability(
                 target.id,
-                VulnerabilityUpdateRequest(status="remediating", remediation_summary="Evidence-supported remediation linkage created."),
+                VulnerabilityUpdateRequest(status="remediating", remediation_summary="Evidence-supported remediation linkage created.", confidence=90),
                 tenant=tenant_a,
                 db=db,
-                _user=analyst_a,
+                _user=admin_a,
             )
             assert updated.status == "remediating"
+            assert updated.confidence == 90
             assert updated.remediation_summary == "Evidence-supported remediation linkage created."
             with pytest.raises(NotFoundException):
                 await risk_api.update_vulnerability(
@@ -182,6 +194,7 @@ async def test_risk_rows_do_not_store_external_attack_payloads_or_call_external_
     source = inspect.getsource(risk_red_teaming)
     forbidden_imports = ("subprocess", "boto3", "terraform", "httpx", "requests", "openai", "anthropic")
     assert not any(term in source for term in forbidden_imports)
+    assert risk_red_teaming.LIVE_PROVIDER_PROBING_ENABLED is False
 
     async with AsyncSessionLocal() as db:
         tenant = await _tenant(db, "risk-storage-" + secrets.token_hex(3))
@@ -190,12 +203,15 @@ async def test_risk_rows_do_not_store_external_attack_payloads_or_call_external_
             await risk_api.seed_demo(tenant=tenant, db=db, current_user=admin)
             await risk_red_teaming.set_tenant_context(db, tenant.id)
             probe_rows = (await db.execute(select(AdversarialProbeRun).where(AdversarialProbeRun.tenant_id == tenant.id))).scalars().all()
+            result_rows = (await db.execute(select(RedTeamProbeResult).where(RedTeamProbeResult.tenant_id == tenant.id))).scalars().all()
             vulnerability_rows = (
                 await db.execute(select(VulnerabilityRegisterItem).where(VulnerabilityRegisterItem.tenant_id == tenant.id))
             ).scalars().all()
             assert probe_rows
+            assert result_rows
             assert vulnerability_rows
             assert all(row.raw_payload_stored is False for row in probe_rows)
+            assert all(row.raw_payload_stored is False for row in result_rows)
             _safe_json(
                 {
                     "probes": [
@@ -205,6 +221,14 @@ async def test_risk_rows_do_not_store_external_attack_payloads_or_call_external_
                             "evidence": row.evidence,
                         }
                         for row in probe_rows
+                    ],
+                    "results": [
+                        {
+                            "input": row.sanitized_input_summary,
+                            "output": row.sanitized_output_summary,
+                            "evidence_summary": row.evidence_summary,
+                        }
+                        for row in result_rows
                     ],
                     "vulnerabilities": [
                         {

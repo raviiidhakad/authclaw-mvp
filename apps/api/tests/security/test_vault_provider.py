@@ -26,14 +26,15 @@ def skip_if_no_vault():
         pytest.skip("Vault dev server not available. Skipping Vault integration tests.")
 
 @pytest.fixture(autouse=True)
-def set_vault_env():
+def set_vault_env(monkeypatch):
     # Force vault provider for these tests
-    os.environ['ENCRYPTION_PROVIDER'] = 'vault'
-    settings.ENCRYPTION_PROVIDER = 'vault'
     # Clear the singleton to reload provider
     import app.core.encryption
+    monkeypatch.setenv('ENCRYPTION_PROVIDER', 'vault')
+    monkeypatch.setattr(settings, 'ENCRYPTION_PROVIDER', 'vault')
     app.core.encryption._provider = None
     yield
+    app.core.encryption._provider = None
 
 def test_vault_provider_generate_and_decrypt():
     provider = VaultEncryptionProvider()

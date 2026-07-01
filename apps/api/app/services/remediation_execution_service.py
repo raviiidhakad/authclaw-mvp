@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events.producer import producer as default_event_producer
 from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.rate_limit.tenant_limiter import TenantPlanLimiter, rate_limit_exception, tenant_plan_limiter
 from app.models.remediation import (
     RemediationApproval,
     RemediationArtifact,
@@ -41,6 +42,7 @@ from app.services.api_safety import sanitize_text
 from app.services.remediation_approval_service import RemediationApprovalService
 from app.services.remediation_sandbox_service import RemediationSandboxService
 from app.services.remediation_state_machine import REMEDIATION_EVENTS_TOPIC, RemediationStateMachine, utcnow
+from app.services.worker_token_service import WorkerTokenScope, WorkerTokenService
 
 logger = logging.getLogger(__name__)
 
@@ -190,12 +192,16 @@ class RemediationExecutionService:
         *,
         event_producer=default_event_producer,
         sandbox_service: RemediationSandboxService | None = None,
+        worker_token_service: WorkerTokenService | None = None,
+        rate_limiter: TenantPlanLimiter | None = None,
     ) -> None:
         self.db = db
         self.event_producer = event_producer
         self.sandbox_service = sandbox_service or RemediationSandboxService()
         self.approval_service = RemediationApprovalService(db, event_producer=event_producer)
         self.state_machine = RemediationStateMachine(db, event_producer=event_producer)
+        self.worker_token_service = worker_token_service or WorkerTokenService(event_producer=event_producer)
+        self.rate_limiter = rate_limiter or tenant_plan_limiter
 
     async def create_execution_job(
         self,
@@ -211,6 +217,13 @@ class RemediationExecutionService:
         artifact = await self._artifact(tenant_uuid, plan.id, self._uuid(artifact_id))
         approval = await self._approval(tenant_uuid, plan.id, self._uuid(approval_id))
         eligibility = await self._eligibility(tenant_uuid, plan, artifact, approval, consume_approval=False)
+        await self.approval_service.verify_approval_for_dry_run(
+            tenant_uuid,
+            plan.id,
+            approval.id,
+            actor_id=actor_id,
+            execution_action="create_execution_job",
+        )
 
         job = RemediationExecutionJob(
             tenant_id=tenant_uuid,
@@ -237,7 +250,13 @@ class RemediationExecutionService:
         )
         return job
 
-    async def execute_job(self, tenant_id: uuid.UUID | str, job_id: uuid.UUID | str) -> RemediationVerificationResult | None:
+    async def execute_job(
+        self,
+        tenant_id: uuid.UUID | str,
+        job_id: uuid.UUID | str,
+        *,
+        actor_id: uuid.UUID | str | None = None,
+    ) -> RemediationVerificationResult | None:
         tenant_uuid = self._uuid(tenant_id)
         await self._set_tenant_context(tenant_uuid)
         job = await self._job(tenant_uuid, self._uuid(job_id))
@@ -248,102 +267,98 @@ class RemediationExecutionService:
         eligibility = await self._eligibility(tenant_uuid, plan, artifact, approval, consume_approval=False)
         adapter = ADAPTERS[eligibility.adapter_type]
 
-        verification = await self.approval_service.verify_approval_for_controlled_execution_start(tenant_uuid, plan.id, approval.id)
+        verification = await self.approval_service.verify_approval_for_controlled_execution_start(
+            tenant_uuid,
+            plan.id,
+            approval.id,
+            actor_id=actor_id,
+            execution_action="execute_job",
+        )
         if verification.artifact_hash != artifact.artifact_hash:
             raise BadRequestException(detail="Approval artifact hash does not match selected artifact")
         if plan.status != RemediationPlanStatus.approved:
             raise BadRequestException(detail="Plan must be approved when controlled execution starts")
+        token_scope = self._worker_token_scope(
+            tenant_uuid,
+            job.id,
+            adapter.adapter_type,
+            plan=plan,
+            actor_id=actor_id,
+        )
+        issued_worker_token = await self.worker_token_service.issue_token(token_scope)
+        await self.worker_token_service.validate_token(issued_worker_token.token, token_scope)
 
-        await self.state_machine.transition_plan(
-            tenant_uuid,
-            plan.id,
-            RemediationPlanStatus.queued_for_execution,
-            reason="Controlled Phase 8 execution queued.",
-            context=EXECUTION_ENABLED_CONTEXT,
-        )
-        started_at = utcnow()
-        job.status = RemediationExecutionStatus.executing
-        job.started_at = started_at
-        await self.db.flush()
-        await self.state_machine.transition_plan(
-            tenant_uuid,
-            plan.id,
-            RemediationPlanStatus.executing,
-            reason="Controlled Phase 8 execution started.",
-            context=EXECUTION_ENABLED_CONTEXT,
-        )
-        await self._emit(
-            RemediationExecutionStartedEvent(
-                tenant_id=tenant_uuid,
-                plan_id=plan.id,
-                artifact_id=artifact.id,
-                job_id=job.id,
-                status=job.status.value,
-                adapter_type=eligibility.adapter_type,
-                simulated=eligibility.simulated,
+        limit_decision = await self.rate_limiter.acquire_remediation_job(self.db, tenant_uuid)
+        if not limit_decision.allowed:
+            raise rate_limit_exception(limit_decision)
+        try:
+            await self.state_machine.transition_plan(
+                tenant_uuid,
+                plan.id,
+                RemediationPlanStatus.queued_for_execution,
+                reason="Controlled Phase 8 execution queued.",
+                context=EXECUTION_ENABLED_CONTEXT,
             )
-        )
-
-        outcome = adapter.execute(plan=plan, artifact=artifact, dry_run=eligibility.dry_run)
-        completed_at = utcnow()
-        job.completed_at = completed_at
-        if outcome.success:
-            job.status = RemediationExecutionStatus.succeeded
+            started_at = utcnow()
+            job.status = RemediationExecutionStatus.executing
+            job.started_at = started_at
             await self.db.flush()
             await self.state_machine.transition_plan(
                 tenant_uuid,
                 plan.id,
-                RemediationPlanStatus.succeeded,
-                reason="Controlled Phase 8 execution succeeded.",
+                RemediationPlanStatus.executing,
+                reason="Controlled Phase 8 execution started.",
                 context=EXECUTION_ENABLED_CONTEXT,
             )
             await self._emit(
-                RemediationExecutionSucceededEvent(
+                RemediationExecutionStartedEvent(
                     tenant_id=tenant_uuid,
                     plan_id=plan.id,
                     artifact_id=artifact.id,
                     job_id=job.id,
                     status=job.status.value,
-                    adapter_type=outcome.adapter_type,
-                    simulated=outcome.simulated,
+                    adapter_type=eligibility.adapter_type,
+                    simulated=eligibility.simulated,
                 )
             )
-            return await self.verify_execution(tenant_uuid, job.id, outcome=outcome, artifact_id=artifact.id)
 
-        job.status = RemediationExecutionStatus.failed
-        await self.db.flush()
-        await self.state_machine.transition_plan(
-            tenant_uuid,
-            plan.id,
-            RemediationPlanStatus.failed,
-            reason="Controlled Phase 8 execution failed.",
-            context=EXECUTION_ENABLED_CONTEXT,
-        )
-        await self._emit(
-            RemediationExecutionFailedEvent(
-                tenant_id=tenant_uuid,
-                plan_id=plan.id,
-                artifact_id=artifact.id,
-                job_id=job.id,
-                status=job.status.value,
-                adapter_type=outcome.adapter_type,
-                simulated=outcome.simulated,
-                reason_category=outcome.reason_category,
-            )
-        )
-        verification_result = await self.verify_execution(tenant_uuid, job.id, outcome=outcome, artifact_id=artifact.id)
-        if outcome.rollback_required and await self._rollback_plan_exists(plan):
-            job.status = RemediationExecutionStatus.rollback_required
+            outcome = adapter.execute(plan=plan, artifact=artifact, dry_run=eligibility.dry_run)
+            completed_at = utcnow()
+            job.completed_at = completed_at
+            if outcome.success:
+                job.status = RemediationExecutionStatus.succeeded
+                await self.db.flush()
+                await self.state_machine.transition_plan(
+                    tenant_uuid,
+                    plan.id,
+                    RemediationPlanStatus.succeeded,
+                    reason="Controlled Phase 8 execution succeeded.",
+                    context=EXECUTION_ENABLED_CONTEXT,
+                )
+                await self._emit(
+                    RemediationExecutionSucceededEvent(
+                        tenant_id=tenant_uuid,
+                        plan_id=plan.id,
+                        artifact_id=artifact.id,
+                        job_id=job.id,
+                        status=job.status.value,
+                        adapter_type=outcome.adapter_type,
+                        simulated=outcome.simulated,
+                    )
+                )
+                return await self.verify_execution(tenant_uuid, job.id, outcome=outcome, artifact_id=artifact.id)
+
+            job.status = RemediationExecutionStatus.failed
             await self.db.flush()
             await self.state_machine.transition_plan(
                 tenant_uuid,
                 plan.id,
-                RemediationPlanStatus.rollback_required,
-                reason="Rollback required after simulated controlled execution failure.",
+                RemediationPlanStatus.failed,
+                reason="Controlled Phase 8 execution failed.",
                 context=EXECUTION_ENABLED_CONTEXT,
             )
             await self._emit(
-                RemediationRollbackRequiredEvent(
+                RemediationExecutionFailedEvent(
                     tenant_id=tenant_uuid,
                     plan_id=plan.id,
                     artifact_id=artifact.id,
@@ -354,7 +369,32 @@ class RemediationExecutionService:
                     reason_category=outcome.reason_category,
                 )
             )
-        return verification_result
+            verification_result = await self.verify_execution(tenant_uuid, job.id, outcome=outcome, artifact_id=artifact.id)
+            if outcome.rollback_required and await self._rollback_plan_exists(plan):
+                job.status = RemediationExecutionStatus.rollback_required
+                await self.db.flush()
+                await self.state_machine.transition_plan(
+                    tenant_uuid,
+                    plan.id,
+                    RemediationPlanStatus.rollback_required,
+                    reason="Rollback required after simulated controlled execution failure.",
+                    context=EXECUTION_ENABLED_CONTEXT,
+                )
+                await self._emit(
+                    RemediationRollbackRequiredEvent(
+                        tenant_id=tenant_uuid,
+                        plan_id=plan.id,
+                        artifact_id=artifact.id,
+                        job_id=job.id,
+                        status=job.status.value,
+                        adapter_type=outcome.adapter_type,
+                        simulated=outcome.simulated,
+                        reason_category=outcome.reason_category,
+                    )
+                )
+            return verification_result
+        finally:
+            await self.rate_limiter.release_remediation_job(tenant_uuid)
 
     async def verify_execution(
         self,
@@ -498,7 +538,12 @@ class RemediationExecutionService:
             raise BadRequestException(detail="Execution objects do not belong to the same plan")
         if plan.status not in {RemediationPlanStatus.approved, RemediationPlanStatus.queued_for_execution}:
             raise BadRequestException(detail="Plan is not approved for controlled execution")
-        verification = await self.approval_service.verify_approval_for_dry_run(tenant_id, plan.id, approval.id)
+        verification = await self.approval_service.verify_approval_for_dry_run(
+            tenant_id,
+            plan.id,
+            approval.id,
+            execution_action="execution_eligibility",
+        )
         if verification.artifact_hash != artifact.artifact_hash:
             raise BadRequestException(detail="Approval artifact hash does not match selected artifact")
         check = await self._policy_check_by_hash(tenant_id, plan.id, verification.policy_check_hash)
@@ -550,6 +595,26 @@ class RemediationExecutionService:
         for code, pattern, message in MUTATION_OR_PROCESS_PATTERNS:
             if pattern.search(raw):
                 raise BadRequestException(detail=message)
+
+    def _worker_token_scope(
+        self,
+        tenant_id: uuid.UUID,
+        job_id: uuid.UUID,
+        adapter_type: str,
+        *,
+        plan: RemediationPlan,
+        actor_id: uuid.UUID | str | None,
+    ) -> WorkerTokenScope:
+        return WorkerTokenScope(
+            tenant_id=tenant_id,
+            worker_type="remediation_execution",
+            job_id=job_id,
+            action_type=adapter_type,
+            provider_scope=sanitize_text(plan.provider or "") or None,
+            resource_scope=sanitize_text(plan.resource_ref or "") or None,
+            created_by=actor_id or "system",
+            one_time=True,
+        )
 
     async def _latest_passed_dry_run(
         self,

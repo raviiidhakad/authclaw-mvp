@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.events.producer import producer as default_event_producer
+from app.core.rate_limit.tenant_limiter import TenantPlanLimiter, tenant_plan_limiter
 from app.models.integration import CloudIntegration, CloudProvider, IntegrationStatus
 from app.schemas.events import (
     FindingsDiscoveredEvent,
@@ -42,6 +43,7 @@ from app.services.connectors.resiliency import CircuitOpenError, async_retry, wi
 from app.services.finding_inventory import FindingInventoryService
 from app.services.finding_raw_store import FindingRawStore
 from app.services.vault_credentials import vault_credential_service
+from app.services.worker_token_service import WorkerTokenScope, WorkerTokenService
 from app.workers.consumer_base import KafkaConsumerBase
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,8 @@ class ConnectorWorker(KafkaConsumerBase):
         event_producer=default_event_producer,
         poll_interval_seconds: int | None = None,
         lock_ttl_seconds: int | None = None,
+        worker_token_service: WorkerTokenService | None = None,
+        rate_limiter: TenantPlanLimiter | None = None,
     ) -> None:
         super().__init__(
             topics=[os.environ.get("KAFKA_CONNECTOR_TOPIC", "authclaw.connector.scan")],
@@ -100,6 +104,8 @@ class ConnectorWorker(KafkaConsumerBase):
         self.inventory_service = inventory_service or FindingInventoryService()
         self.raw_store = raw_store or FindingRawStore()
         self.event_producer = event_producer
+        self.worker_token_service = worker_token_service or WorkerTokenService(event_producer=event_producer)
+        self.rate_limiter = rate_limiter or tenant_plan_limiter
         self.poll_interval_seconds = (
             poll_interval_seconds
             if poll_interval_seconds is not None
@@ -260,9 +266,33 @@ class ConnectorWorker(KafkaConsumerBase):
         if not lock_acquired:
             return await self._skip(integration, scan_id, provider, "lock_held", started)
 
+        limiter_acquired = False
         try:
+            limit_decision = await self.rate_limiter.acquire_connector_scan(
+                db,
+                integration.tenant_id,
+                provider,
+                integration.id,
+            )
+            if not limit_decision.allowed:
+                return await self._skip(integration, scan_id, provider, limit_decision.scope, started)
+            limiter_acquired = True
+
             await self._emit_started(integration, scan_id, provider)
             await self._mark_syncing(db, integration)
+
+            token_scope = WorkerTokenScope(
+                tenant_id=integration.tenant_id,
+                worker_type="connector_scan",
+                job_id=scan_id,
+                action_type="scan",
+                provider_scope=provider,
+                resource_scope=str(integration.id),
+                created_by="connector-worker",
+                one_time=True,
+            )
+            issued_worker_token = await self.worker_token_service.issue_token(token_scope)
+            await self.worker_token_service.validate_token(issued_worker_token.token, token_scope)
 
             credentials = await self.credential_service.retrieve(
                 integration.tenant_id,
@@ -320,6 +350,8 @@ class ConnectorWorker(KafkaConsumerBase):
                 db, integration, scan_id, provider, "connector_error", exc, started, locals().get("secret_values")
             )
         finally:
+            if limiter_acquired:
+                await self.rate_limiter.release_connector_scan(integration.tenant_id)
             try:
                 released = await lock.release()
                 if not released:

@@ -35,6 +35,7 @@ class OpaErrorCategory(str, Enum):
     TIMEOUT = "timeout"
     CONNECTION_FAILURE = "connection_failure"
     RUNTIME_ERROR = "runtime_error"
+    HYBRID_MISMATCH = "hybrid_mismatch"
 
 
 @dataclass(frozen=True)

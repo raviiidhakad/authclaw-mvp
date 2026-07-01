@@ -3,14 +3,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.core.engine.evaluator import EvaluationResult, RuleViolation
+from app.core.engine.evaluator import EvaluationResult, PolicyEngine, RuleViolation
 from app.core.policy.opa_input import OpaInputBuilder, OpaInputContext
-from app.core.policy.opa_runtime import OpaFailureMode, OpaRuntimeDecision, OpaRuntimeEvaluator, OpaRuntimeStatus
+from app.core.policy.opa_runtime import (
+    OpaErrorCategory,
+    OpaFailureMode,
+    OpaRuntimeDecision,
+    OpaRuntimeEvaluator,
+    OpaRuntimeStatus,
+)
 from app.core.policy.yaml_policy import OpaEvaluationContext, OpaRuntimeMode, OpaPolicyAdapter, PythonPolicyAdapter, normalized_from_policy
 from app.models.gateway_route import GatewayRoute
 from app.models.policy import Policy
@@ -34,10 +41,12 @@ class OpaIntegrationResult:
     policy_hash: str
     cache_hit: bool
     evaluation_latency_ms: int
+    engine_mode: str = "opa"
 
     def audit_metadata(self) -> dict[str, Any]:
         return {
             "decision_id": self.decision_id,
+            "engine_mode": self.engine_mode,
             "runtime": "opa",
             "runtime_status": self.decision.runtime_status.value,
             "policy_version": self.policy_version,
@@ -202,20 +211,32 @@ class OpaRuntimeMetrics:
 class OpaRuntimeIntegration:
     """Gateway policy integration point for authoritative OPA-adapter decisions."""
 
+    VALID_POLICY_ENGINE_MODES = {"python", "opa", "hybrid"}
+
     def __init__(
         self,
         *,
         enabled: bool,
         policy_url: str,
         runtime_mode: str = "STRICT",
+        policy_engine_mode: str | None = None,
+        strict_mode: bool = True,
+        fail_closed: bool = True,
+        timeout_seconds: float = 2.0,
         cache: OpaDecisionCache | None = None,
         metrics: OpaRuntimeMetrics | None = None,
         evaluator_factory: Callable[[OpaFailureMode], OpaRuntimeEvaluator] | None = None,
         adapter: OpaPolicyAdapter | None = None,
     ) -> None:
-        self.enabled = enabled
+        self.policy_engine_mode = self._normalize_policy_engine_mode(
+            policy_engine_mode or ("opa" if enabled else "python")
+        )
+        self.enabled = self.policy_engine_mode in {"opa", "hybrid"}
         self.policy_url = policy_url
         self.runtime_mode = runtime_mode.upper()
+        self.strict_mode = bool(strict_mode)
+        self.fail_closed = bool(fail_closed)
+        self.timeout_seconds = float(timeout_seconds)
         self.cache = cache or opa_decision_cache
         self.metrics = metrics or opa_runtime_metrics
         self._evaluator_factory = evaluator_factory
@@ -225,10 +246,19 @@ class OpaRuntimeIntegration:
     def from_settings(cls) -> "OpaRuntimeIntegration":
         from app.core.config import settings
 
+        engine_mode = str(getattr(settings, "POLICY_ENGINE_MODE", "python")).lower()
+        if bool(settings.ENABLE_OPA_RUNTIME_INTEGRATION) and engine_mode == "python":
+            engine_mode = "opa"
+        policy_url = str(getattr(settings, "OPA_URL", "") or settings.OPA_POLICY_URL)
+        strict_mode = bool(getattr(settings, "OPA_STRICT_MODE", True))
         return cls(
             enabled=bool(settings.ENABLE_OPA_RUNTIME_INTEGRATION),
-            policy_url=settings.OPA_POLICY_URL,
+            policy_url=policy_url,
             runtime_mode=settings.OPA_RUNTIME_MODE,
+            policy_engine_mode=engine_mode,
+            strict_mode=strict_mode,
+            fail_closed=bool(getattr(settings, "OPA_FAIL_CLOSED", True)),
+            timeout_seconds=float(getattr(settings, "OPA_TIMEOUT_SECONDS", 2.0)),
         )
 
     async def evaluate_authoritative(
@@ -250,7 +280,7 @@ class OpaRuntimeIntegration:
             model=model,
             policies=policies,
         )
-        if not self.enabled:
+        if self.policy_engine_mode == "python" or not self.enabled:
             return OpaAuthoritativeDecision(
                 evaluation_result=adapter_result,
                 runtime_result=None,
@@ -265,8 +295,10 @@ class OpaRuntimeIntegration:
             provider=provider,
             model=model,
             policies=policies,
+            prompt=prompt,
             action=adapter_result.action_taken,
             matched_rule_count=len(adapter_result.violations),
+            adapter_result=adapter_result,
             request_metadata=request_metadata,
         )
         if runtime_result is None:
@@ -277,7 +309,7 @@ class OpaRuntimeIntegration:
                 decision_source="adapter",
             )
 
-        if runtime_result.decision.runtime_status == OpaRuntimeStatus.ERROR and self.runtime_mode == "COMPATIBILITY":
+        if runtime_result.decision.runtime_status == OpaRuntimeStatus.ERROR and self._uses_compatibility_fallback():
             return OpaAuthoritativeDecision(
                 evaluation_result=adapter_result,
                 runtime_result=runtime_result,
@@ -285,7 +317,30 @@ class OpaRuntimeIntegration:
                 decision_source="adapter_compatibility_fallback",
             )
 
-        if runtime_result.decision.runtime_status == OpaRuntimeStatus.OK and not adapter_result.allowed:
+        if self.policy_engine_mode == "hybrid":
+            mismatch = self._hybrid_mismatch(adapter_result, runtime_result.decision)
+            if mismatch:
+                mismatch_result = OpaIntegrationResult(
+                    decision_id=runtime_result.decision_id,
+                    decision=self._hybrid_mismatch_decision(mismatch),
+                    policy_version=runtime_result.policy_version,
+                    policy_hash=runtime_result.policy_hash,
+                    cache_hit=runtime_result.cache_hit,
+                    evaluation_latency_ms=runtime_result.evaluation_latency_ms,
+                    engine_mode=self.policy_engine_mode,
+                )
+                return OpaAuthoritativeDecision(
+                    evaluation_result=self._evaluation_result_from_runtime(prompt, mismatch_result.decision),
+                    runtime_result=mismatch_result,
+                    adapter_name=self.adapter.name,
+                    decision_source="hybrid_mismatch_fail_closed",
+                )
+
+        if (
+            runtime_result.decision.runtime_status == OpaRuntimeStatus.OK
+            and not adapter_result.allowed
+            and runtime_result.decision.allowed
+        ):
             return OpaAuthoritativeDecision(
                 evaluation_result=adapter_result,
                 runtime_result=runtime_result,
@@ -294,7 +349,11 @@ class OpaRuntimeIntegration:
             )
 
         return OpaAuthoritativeDecision(
-            evaluation_result=self._evaluation_result_from_runtime(prompt, runtime_result.decision),
+            evaluation_result=self._evaluation_result_from_runtime(
+                prompt,
+                runtime_result.decision,
+                adapter_result=adapter_result,
+            ),
             runtime_result=runtime_result,
             adapter_name=self.adapter.name,
             decision_source="opa_runtime",
@@ -309,14 +368,18 @@ class OpaRuntimeIntegration:
         provider: Provider,
         model: str,
         policies: list[Policy],
+        prompt: str = "",
         action: str,
         matched_rule_count: int,
+        adapter_result: EvaluationResult | None = None,
         request_metadata: dict[str, Any] | None = None,
     ) -> OpaIntegrationResult | None:
         if not self.enabled:
             return None
 
         version = OpaPolicyVersionTracker.from_policies(policies)
+        keyword_matches, regex_matches = self._safe_policy_matches(prompt, policies)
+        normalized_policies = [normalized_from_policy(policy) for policy in policies]
         input_document = OpaInputBuilder().build(
             OpaInputContext(
                 tenant_id=tenant_id,
@@ -329,12 +392,19 @@ class OpaRuntimeIntegration:
                 request_type="chat.completions",
                 request_metadata=request_metadata or {},
                 entity_types=[],
+                normalized_policy={"policies": normalized_policies},
+                keyword_matches=keyword_matches,
+                regex_matches=regex_matches,
                 policy_version=version.policy_version,
                 gateway_metadata={
+                    "engine_mode": self.policy_engine_mode,
                     "policy_hash": version.policy_hash,
                     "policy_ids": version.policy_ids,
                     "python_action": action,
+                    "python_allowed": bool(adapter_result.allowed) if adapter_result else action != "block",
                     "python_matched_rule_count": matched_rule_count,
+                    "python_redaction_required": bool(adapter_result and adapter_result.modified_prompt != prompt),
+                    "strict_mode": self.strict_mode,
                 },
             )
         )
@@ -355,6 +425,7 @@ class OpaRuntimeIntegration:
                 policy_hash=version.policy_hash,
                 cache_hit=True,
                 evaluation_latency_ms=0,
+                engine_mode=self.policy_engine_mode,
             )
             self._publish_decision_event(tenant_id, api_key_id, result)
             return result
@@ -372,6 +443,7 @@ class OpaRuntimeIntegration:
             policy_hash=version.policy_hash,
             cache_hit=False,
             evaluation_latency_ms=latency_ms,
+            engine_mode=self.policy_engine_mode,
         )
         self._publish_decision_event(tenant_id, api_key_id, result)
         return result
@@ -379,20 +451,25 @@ class OpaRuntimeIntegration:
     def health(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "policy_engine_mode": self.policy_engine_mode,
             "runtime_available": bool(self.policy_url),
             "runtime_mode": self.runtime_mode,
+            "strict_mode": self.strict_mode,
+            "fail_closed": self.fail_closed,
             "cache": self.cache.health(),
             "policy_version_status": "deterministic_hash",
             "metrics": self.metrics.snapshot(),
         }
 
     def _evaluator(self) -> OpaRuntimeEvaluator:
-        failure_mode = (
-            OpaFailureMode.FAIL_OPEN if self.runtime_mode == "COMPATIBILITY" else OpaFailureMode.FAIL_CLOSED
-        )
+        failure_mode = OpaFailureMode.FAIL_OPEN if self._uses_compatibility_fallback() else OpaFailureMode.FAIL_CLOSED
         if self._evaluator_factory:
             return self._evaluator_factory(failure_mode)
-        return OpaRuntimeEvaluator(self.policy_url, failure_mode=failure_mode)
+        return OpaRuntimeEvaluator(
+            self.policy_url,
+            failure_mode=failure_mode,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def _evaluate_with_adapter(
         self,
@@ -437,6 +514,9 @@ class OpaRuntimeIntegration:
                 return combined
             if bool(decision.get("redaction_required", False)) and combined.action_taken != "block":
                 combined.action_taken = "warn"
+                policy_eval = PolicyEngine().evaluate(current_prompt, [policy], target_model=model)
+                if policy_eval.modified_prompt != current_prompt:
+                    current_prompt = policy_eval.modified_prompt
             elif violations and combined.action_taken == "allow":
                 combined.action_taken = "warn"
 
@@ -466,8 +546,14 @@ class OpaRuntimeIntegration:
         return violations
 
     @staticmethod
-    def _evaluation_result_from_runtime(prompt: str, decision: OpaRuntimeDecision) -> EvaluationResult:
+    def _evaluation_result_from_runtime(
+        prompt: str,
+        decision: OpaRuntimeDecision,
+        *,
+        adapter_result: EvaluationResult | None = None,
+    ) -> EvaluationResult:
         allowed = bool(decision.allowed)
+        wants_redaction = bool(decision.redaction_required or str(decision.action).lower() in {"redact", "warn"})
         action_taken = "allow" if allowed else "block"
         violations: list[RuleViolation] = []
         if not allowed:
@@ -487,11 +573,121 @@ class OpaRuntimeIntegration:
                         context={"source": "opa_runtime"},
                     )
                 )
+        elif wants_redaction:
+            action_taken = "warn"
+            matches = decision.matched_rules or [{"message": decision.reason, "action": decision.action}]
+            for index, matched_rule in enumerate(matches):
+                violations.append(
+                    RuleViolation(
+                        policy_id="opa",
+                        rule_id=str(matched_rule.get("id") or index) if isinstance(matched_rule, dict) else str(index),
+                        rule_type="opa",
+                        action="redact",
+                        message=sanitize_text(
+                            matched_rule.get("message") if isinstance(matched_rule, dict) else decision.reason
+                        )
+                        or sanitize_text(decision.reason)
+                        or "OPA required redaction.",
+                        context={"source": "opa_runtime"},
+                    )
+                )
+            if adapter_result is None or adapter_result.modified_prompt == prompt:
+                return EvaluationResult(
+                    allowed=False,
+                    modified_prompt=prompt,
+                    violations=[
+                        RuleViolation(
+                            policy_id="opa",
+                            rule_id="redaction_unavailable",
+                            rule_type="opa",
+                            action="deny",
+                            message="OPA required redaction but no safe redacted prompt was available.",
+                            context={"source": "opa_runtime"},
+                        )
+                    ],
+                    action_taken="block",
+                )
         return EvaluationResult(
             allowed=allowed,
-            modified_prompt=prompt,
+            modified_prompt=adapter_result.modified_prompt if wants_redaction and adapter_result else prompt,
             violations=violations,
             action_taken=action_taken,
+        )
+
+    @classmethod
+    def _normalize_policy_engine_mode(cls, value: str) -> str:
+        mode = str(value or "python").lower()
+        if mode not in cls.VALID_POLICY_ENGINE_MODES:
+            return "python"
+        return mode
+
+    def _uses_compatibility_fallback(self) -> bool:
+        return (
+            self.runtime_mode == "COMPATIBILITY"
+            or not self.strict_mode
+            or not self.fail_closed
+        )
+
+    @staticmethod
+    def _safe_policy_matches(prompt: str, policies: list[Policy]) -> tuple[list[str], list[str]]:
+        keyword_matches: list[str] = []
+        regex_matches: list[str] = []
+        lower_prompt = prompt.lower()
+        for policy in sorted(policies, key=lambda item: str(getattr(item, "id", ""))):
+            for rule in sorted(getattr(policy, "rules", []) or [], key=lambda item: str(getattr(item, "id", ""))):
+                if not getattr(rule, "is_active", False):
+                    continue
+                conditions = getattr(rule, "conditions", {}) or {}
+                keywords = conditions.get("keywords", conditions.get("blocked_terms", [])) or []
+                if isinstance(keywords, str):
+                    keywords = [keywords]
+                for keyword in keywords:
+                    keyword_text = str(keyword)
+                    if keyword_text and keyword_text.lower() in lower_prompt:
+                        keyword_hash = hashlib.sha256(keyword_text.encode("utf-8")).hexdigest()[:12]
+                        keyword_matches.append(
+                            f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:keyword:{keyword_hash}"
+                        )
+                patterns = conditions.get("regex_patterns", conditions.get("patterns", [])) or []
+                if isinstance(patterns, str):
+                    patterns = [patterns]
+                for pattern in patterns:
+                    try:
+                        if re.search(str(pattern), prompt):
+                            pattern_hash = hashlib.sha256(str(pattern).encode("utf-8")).hexdigest()[:12]
+                            regex_matches.append(
+                                f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:regex:{pattern_hash}"
+                            )
+                    except re.error:
+                        continue
+        return sorted(set(keyword_matches)), sorted(set(regex_matches))
+
+    @staticmethod
+    def _hybrid_mismatch(adapter_result: EvaluationResult, runtime_decision: OpaRuntimeDecision) -> str | None:
+        if runtime_decision.runtime_status != OpaRuntimeStatus.OK:
+            return None
+        runtime_redaction = bool(runtime_decision.redaction_required or str(runtime_decision.action).lower() in {"redact", "warn"})
+        if bool(adapter_result.allowed) != bool(runtime_decision.allowed):
+            return "allowed_mismatch"
+        if bool(adapter_result.action_taken == "block") != bool(str(runtime_decision.action).lower() in {"deny", "block"}):
+            return "action_mismatch"
+        if runtime_redaction and adapter_result.modified_prompt == "":
+            return "redaction_unavailable"
+        if bool(adapter_result.action_taken == "warn") != runtime_redaction and adapter_result.allowed:
+            return "redaction_mismatch"
+        return None
+
+    @staticmethod
+    def _hybrid_mismatch_decision(reason: str) -> OpaRuntimeDecision:
+        return OpaRuntimeDecision(
+            allowed=False,
+            action="deny",
+            reason=f"OPA/Python policy decision mismatch: {reason}.",
+            matched_rules=[{"id": "hybrid_mismatch", "category": reason}],
+            redaction_required=False,
+            runtime_status=OpaRuntimeStatus.ERROR,
+            error_category=OpaErrorCategory.HYBRID_MISMATCH,
+            metadata={"error_category": OpaErrorCategory.HYBRID_MISMATCH.value, "source": "opa"},
         )
 
     @staticmethod

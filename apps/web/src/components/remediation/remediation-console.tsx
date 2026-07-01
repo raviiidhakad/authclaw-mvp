@@ -440,11 +440,17 @@ function GeneratePlanDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 function Overview() {
   const plansQuery = useRemediationPlans({ skip: 0, limit: 100 });
   const approvalsQuery = useRemediationApprovals({ skip: 0, limit: 100 });
+  const jobsQuery = useRemediationJobs({ skip: 0, limit: 100 });
   const plans = plansQuery.data?.items || [];
   const approvals = approvalsQuery.data?.items || [];
+  const jobs = jobsQuery.data?.items || [];
   const pendingApprovals = approvals.filter((item) => item.status === 'pending');
   const elevatedRisk = plans.filter((plan) => ['high', 'critical'].includes(String(plan.risk_level)));
   const blocked = plans.filter((plan) => ['rejected', 'expired', 'failed'].includes(String(plan.status)));
+  const approved = approvals.filter((item) => item.status === 'approved');
+  const executing = jobs.filter((job) => job.status === 'executing' || job.status === 'queued');
+  const succeeded = jobs.filter((job) => job.status === 'succeeded');
+  const failed = jobs.filter((job) => job.status === 'failed' || job.status === 'disabled');
 
   return (
     <ConsoleShell view="overview">
@@ -454,6 +460,15 @@ function Overview() {
         <Metric label="High or critical" value={elevatedRisk.length} hint="Plans requiring careful review" tone="text-orange-300" />
         <Metric label="Blocked or expired" value={blocked.length} hint="Failed validations or closed requests" tone="text-amber-300" />
       </div>
+
+      <WorkflowTracker
+        pending={pendingApprovals.length}
+        approved={approved.length}
+        executing={executing.length}
+        succeeded={succeeded.length}
+        failed={failed.length}
+        loading={approvalsQuery.isLoading || jobsQuery.isLoading}
+      />
 
       <Card className="glass-card">
         <CardContent className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -473,6 +488,57 @@ function Overview() {
         <RecentApprovals approvals={approvals.slice(0, 6)} loading={approvalsQuery.isLoading} />
       </div>
     </ConsoleShell>
+  );
+}
+
+function WorkflowTracker({
+  pending,
+  approved,
+  executing,
+  succeeded,
+  failed,
+  loading,
+}: {
+  pending: number;
+  approved: number;
+  executing: number;
+  succeeded: number;
+  failed: number;
+  loading?: boolean;
+}) {
+  const states = [
+    { label: 'Pending', value: pending, description: 'Awaiting user review' },
+    { label: 'User reviews', value: pending + approved, description: 'Plan, artifact, policy hash, and expiry visible' },
+    { label: 'MFA confirmation', value: approved, description: 'MFA flag captured with approval decision' },
+    { label: 'Approved', value: approved, description: 'Approval envelope accepted' },
+    { label: 'Executing', value: executing, description: 'Safe simulated/no-op job status' },
+    { label: 'Success / Failure', value: succeeded + failed, description: `${succeeded} succeeded, ${failed} failed or disabled` },
+  ];
+  return (
+    <Card className="glass-card overflow-hidden">
+      <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+        <Workflow className="h-4 w-4 text-blue-400" />
+        <CardTitle className="text-neutral-100 text-base">End-to-end approval workflow</CardTitle>
+      </div>
+      <CardContent className="p-4">
+        {loading ? (
+          <TableSkeleton columns={6} rows={1} />
+        ) : (
+          <div className="grid gap-3 md:grid-cols-6">
+            {states.map((state, index) => (
+              <div key={state.label} className="rounded-md border border-white/10 bg-white/[0.02] p-3 min-h-[120px]">
+                <div className="flex items-center justify-between gap-2">
+                  <Badge variant="outline" className="bg-blue-500/10 text-blue-300 border-blue-500/20">{index + 1}</Badge>
+                  <span className="text-xl font-semibold text-neutral-100">{state.value}</span>
+                </div>
+                <div className="mt-3 text-sm font-semibold text-neutral-100">{state.label}</div>
+                <div className="mt-1 text-xs leading-5 text-neutral-400">{state.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

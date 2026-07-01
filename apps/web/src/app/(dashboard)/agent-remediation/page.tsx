@@ -1,12 +1,13 @@
 "use client";
 
 import Link from 'next/link';
-import { Bot, FileSearch, ShieldCheck, TimerReset, Wrench } from 'lucide-react';
+import { Bot, FileSearch, ShieldCheck, TimerReset, Workflow, Wrench } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
   useRemediationApprovals,
   useRemediationDryRuns,
+  useRemediationJobs,
   useRemediationPlans,
   useRemediationVerificationResults,
 } from '@/hooks/use-data';
@@ -22,9 +23,13 @@ export default function AgentRemediationPage() {
   const { data: plans } = useRemediationPlans({ limit: 25 });
   const { data: approvals } = useRemediationApprovals({ limit: 25 });
   const { data: dryRuns } = useRemediationDryRuns({ limit: 25 });
+  const { data: jobs } = useRemediationJobs({ limit: 25 });
   const { data: verification } = useRemediationVerificationResults({ limit: 25 });
 
   const pendingApprovals = approvals?.items?.filter((item) => item.status === 'pending').length ?? 0;
+  const approvedApprovals = approvals?.items?.filter((item) => item.status === 'approved').length ?? 0;
+  const executingJobs = jobs?.items?.filter((item) => item.status === 'executing').length ?? 0;
+  const completedJobs = jobs?.items?.filter((item) => ['succeeded', 'failed', 'disabled'].includes(String(item.status))).length ?? 0;
   const metrics = [
     { label: 'Plans', value: plans?.total ?? 0, Icon: Wrench },
     { label: 'Pending approvals', value: pendingApprovals, Icon: ShieldCheck },
@@ -68,6 +73,31 @@ export default function AgentRemediationPage() {
           <Badge variant="outline" className="bg-amber-500/10 text-amber-300 border-amber-500/20">
             Approval expiry visible in queue
           </Badge>
+        </CardContent>
+      </Card>
+
+      <Card className="glass-card overflow-hidden">
+        <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+          <Workflow className="h-4 w-4 text-blue-400" />
+          <CardTitle className="text-neutral-100 text-base">End-to-end approval workflow</CardTitle>
+        </div>
+        <CardContent className="p-4">
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+            {[
+              { label: 'Pending', value: pendingApprovals, description: 'Approval awaits review' },
+              { label: 'User reviews', value: pendingApprovals + approvedApprovals, description: 'Plan and evidence checked' },
+              { label: 'MFA confirmation', value: approvedApprovals, description: 'Elevated approval MFA visible' },
+              { label: 'Approved', value: approvedApprovals, description: 'Approval decision recorded' },
+              { label: 'Executing', value: executingJobs, description: 'Safe simulated/no-op job status' },
+              { label: 'Success / Failure', value: completedJobs, description: 'Terminal job outcome visible' },
+            ].map((state) => (
+              <div key={state.label} className="rounded-md border border-white/10 bg-white/[0.02] p-3">
+                <p className="text-xs uppercase tracking-wider text-neutral-500">{state.label}</p>
+                <p className="mt-2 text-2xl font-semibold text-neutral-100">{state.value}</p>
+                <p className="mt-1 text-xs leading-5 text-neutral-500">{state.description}</p>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 

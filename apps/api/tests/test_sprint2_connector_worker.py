@@ -247,13 +247,17 @@ async def test_worker_scans_unlocked_integration(monkeypatch):
     assert len(inventory.calls) == 1
     assert len(raw_store.calls) == 1
     event_types = [event["event_type"] for _, event in producer.events]
-    assert event_types == [
+    integration_event_types = [event_type for event_type in event_types if event_type.startswith("integration.")]
+    assert integration_event_types == [
         "integration.sync.started",
         "integration.findings.discovered",
         "integration.sync.completed",
     ]
+    worker_token_events = [event for _, event in producer.events if event["event_type"] == "remediation.worker_token"]
+    assert [event["status"] for event in worker_token_events] == ["issued", "validated"]
     assert "raw-provider-json" not in str(producer.events)
     assert "super-secret-token" not in str(producer.events)
+    assert "awt_" not in str(producer.events)
 
 
 @pytest.mark.asyncio
@@ -387,4 +391,3 @@ def test_connector_worker_entrypoint_importable():
 
     assert hasattr(module, "ConnectorWorker")
     assert hasattr(module, "run_worker")
-

@@ -175,8 +175,10 @@ async def test_gateway_uses_selected_route_provider_and_model(monkeypatch):
             FakeResult(groq_route),
             FakeResult(groq_provider),
             FakeResult(all_items=[]),
+            FakeResult(all_items=[]),
             FakeResult(openai_route),
             FakeResult(openai_provider),
+            FakeResult(all_items=[]),
             FakeResult(all_items=[]),
         )
     )

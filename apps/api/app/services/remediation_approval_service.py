@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
+import json
 import logging
 import secrets
 import uuid
@@ -21,10 +23,12 @@ from app.models.remediation import (
     RemediationPlan,
     RemediationPlanStatus,
     RemediationPolicyCheck,
+    RemediationRiskLevel,
 )
 from app.models.role import Role, UserRole
 from app.schemas.events import (
     RemediationApprovalExpiredEvent,
+    RemediationMfaChallengeEvent,
     RemediationApprovalReplayBlockedEvent,
     RemediationApprovalRequestedEvent,
     RemediationApprovalRevokedEvent,
@@ -54,6 +58,11 @@ MFA_REQUIRED_LEVELS = {
     RemediationApprovalLevel.security_admin,
 }
 
+MFA_REQUIRED_RISK_LEVELS = {
+    RemediationRiskLevel.high,
+    RemediationRiskLevel.critical,
+}
+
 
 @dataclass(frozen=True)
 class ApprovalVerificationResult:
@@ -61,6 +70,28 @@ class ApprovalVerificationResult:
     plan: RemediationPlan
     artifact_hash: str
     policy_check_hash: str
+    action_envelope_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class ActionMfaEnvelope:
+    tenant_id: str
+    approver_user_id: str
+    remediation_plan_id: str
+    artifact_id: str
+    artifact_hash: str
+    policy_check_id: str
+    policy_check_hash: str
+    execution_action: str
+    risk_level: str
+    provider_scope: str | None
+    resource_scope: str | None
+    expires_at: str
+    nonce: str
+
+    def digest(self) -> str:
+        payload = json.dumps(self.__dict__, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class RemediationApprovalService:
@@ -152,6 +183,36 @@ class RemediationApprovalService:
         if artifact is None or check.artifact_id != artifact.id:
             raise BadRequestException(detail="Approval artifact binding is no longer valid")
 
+        envelope = self._mfa_envelope(
+            plan,
+            artifact,
+            check,
+            approval,
+            actor_uuid,
+            execution_action="controlled_remediation_execution",
+        )
+        mfa_required = self._mfa_required(plan, check)
+        if mfa_required:
+            await self._emit_mfa_event(
+                plan,
+                approval,
+                check,
+                actor_id=actor_uuid,
+                action="challenge_requested",
+                envelope_hash=envelope.digest(),
+                reason_category=None,
+            )
+            if not mfa_verified:
+                await self._emit_mfa_event(
+                    plan,
+                    approval,
+                    check,
+                    actor_id=actor_uuid,
+                    action="verification_failed",
+                    envelope_hash=envelope.digest(),
+                    reason_category="mfa_required",
+                )
+
         await self._authorize_actor(
             tenant_uuid,
             actor_uuid,
@@ -182,6 +243,16 @@ class RemediationApprovalService:
             actor_id=actor_uuid,
             reason=approval_reason,
         )
+        if mfa_required:
+            await self._emit_mfa_event(
+                plan,
+                approval,
+                check,
+                actor_id=actor_uuid,
+                action="verified",
+                envelope_hash=envelope.digest(),
+                reason_category=None,
+            )
         return approval
 
     async def reject(
@@ -310,6 +381,9 @@ class RemediationApprovalService:
         tenant_id: uuid.UUID | str,
         plan_id: uuid.UUID | str,
         approval_id: uuid.UUID | str,
+        *,
+        actor_id: uuid.UUID | str | None = None,
+        execution_action: str = "future_execution",
     ) -> ApprovalVerificationResult:
         return await self._verify_approval_binding(
             tenant_id,
@@ -317,6 +391,8 @@ class RemediationApprovalService:
             approval_id,
             consume=True,
             require_plan_approved=True,
+            actor_id=actor_id,
+            execution_action=execution_action,
         )
 
     async def verify_approval_for_controlled_execution_start(
@@ -324,6 +400,9 @@ class RemediationApprovalService:
         tenant_id: uuid.UUID | str,
         plan_id: uuid.UUID | str,
         approval_id: uuid.UUID | str,
+        *,
+        actor_id: uuid.UUID | str | None = None,
+        execution_action: str = "controlled_execution_start",
     ) -> ApprovalVerificationResult:
         return await self._verify_approval_binding(
             tenant_id,
@@ -331,6 +410,8 @@ class RemediationApprovalService:
             approval_id,
             consume=True,
             require_plan_approved=False,
+            actor_id=actor_id,
+            execution_action=execution_action,
         )
 
     async def verify_approval_for_dry_run(
@@ -338,6 +419,9 @@ class RemediationApprovalService:
         tenant_id: uuid.UUID | str,
         plan_id: uuid.UUID | str,
         approval_id: uuid.UUID | str,
+        *,
+        actor_id: uuid.UUID | str | None = None,
+        execution_action: str = "dry_run",
     ) -> ApprovalVerificationResult:
         return await self._verify_approval_binding(
             tenant_id,
@@ -345,6 +429,8 @@ class RemediationApprovalService:
             approval_id,
             consume=False,
             require_plan_approved=True,
+            actor_id=actor_id,
+            execution_action=execution_action,
         )
 
     async def _verify_approval_binding(
@@ -355,6 +441,8 @@ class RemediationApprovalService:
         *,
         consume: bool,
         require_plan_approved: bool,
+        actor_id: uuid.UUID | str | None,
+        execution_action: str,
     ) -> ApprovalVerificationResult:
         tenant_uuid = self._uuid(tenant_id)
         await self._set_tenant_context(tenant_uuid)
@@ -371,14 +459,56 @@ class RemediationApprovalService:
                 approval.status = RemediationApprovalStatus.expired
                 approval.resolved_at = utcnow()
                 await self.db.flush()
+                await self._emit_mfa_event(
+                    plan,
+                    approval,
+                    None,
+                    actor_id=self._uuid(actor_id) if actor_id else approval.approved_by,
+                    action="expired",
+                    envelope_hash=hashlib.sha256(f"{approval.nonce}:expired".encode("utf-8")).hexdigest(),
+                    reason_category="expired",
+                )
                 raise BadRequestException(detail="Approval has expired")
             if require_plan_approved and plan.status != RemediationPlanStatus.approved:
                 raise BadRequestException(detail="Plan is not in approved status")
-            if await self._artifact_by_hash(plan, approval.artifact_hash) is None:
+            artifact = await self._artifact_by_hash(plan, approval.artifact_hash)
+            if artifact is None:
                 raise BadRequestException(detail="Approval artifact hash does not match current plan artifacts")
             check = await self._policy_check_by_hash(plan, approval.policy_check_hash)
             if check is None or not check.passed:
                 raise BadRequestException(detail="Approval policy check hash is invalid")
+            latest_check = await self._latest_policy_check(plan)
+            if latest_check is None or latest_check.policy_check_hash != approval.policy_check_hash:
+                raise BadRequestException(detail="Approval policy check hash does not match latest policy check")
+            if check.artifact_id != artifact.id:
+                raise BadRequestException(detail="Approval policy check hash does not match current artifact")
+            actor_uuid = self._uuid(actor_id) if actor_id else None
+            envelope_hash: str | None = None
+            if self._mfa_required(plan, check):
+                if not approval.mfa_verified:
+                    raise BadRequestException(detail="Fresh MFA verification is required for high-risk remediation execution")
+                if actor_uuid is not None and approval.approved_by != actor_uuid:
+                    raise BadRequestException(detail="MFA approval is bound to a different approver")
+                if approval.approved_by is None:
+                    raise BadRequestException(detail="MFA approval is missing approver binding")
+                envelope = self._mfa_envelope(
+                    plan,
+                    artifact,
+                    check,
+                    approval,
+                    approval.approved_by,
+                    execution_action=execution_action,
+                )
+                envelope_hash = envelope.digest()
+                await self._emit_mfa_event(
+                    plan,
+                    approval,
+                    check,
+                    actor_id=actor_uuid or approval.approved_by,
+                    action="execution_verified",
+                    envelope_hash=envelope_hash,
+                    reason_category=None,
+                )
 
             if consume:
                 approval.status = RemediationApprovalStatus.used
@@ -388,6 +518,7 @@ class RemediationApprovalService:
                 plan=plan,
                 artifact_hash=approval.artifact_hash,
                 policy_check_hash=approval.policy_check_hash,
+                action_envelope_hash=envelope_hash,
             )
         except BadRequestException:
             await self._emit_replay_blocked(plan, approval)
@@ -451,6 +582,35 @@ class RemediationApprovalService:
         allowed = {"admin", "owner", "security_admin"} if privileged_only else {"operator", "analyst", "admin", "owner", "security_admin"}
         if not roles & allowed:
             raise ForbiddenException(detail=f"Action requires one of: {sorted(allowed)}")
+
+    def _mfa_required(self, plan: RemediationPlan, check: RemediationPolicyCheck) -> bool:
+        return plan.risk_level in MFA_REQUIRED_RISK_LEVELS or check.required_approval_level in MFA_REQUIRED_LEVELS
+
+    def _mfa_envelope(
+        self,
+        plan: RemediationPlan,
+        artifact: RemediationArtifact,
+        check: RemediationPolicyCheck,
+        approval: RemediationApproval,
+        approver_user_id: uuid.UUID,
+        *,
+        execution_action: str,
+    ) -> ActionMfaEnvelope:
+        return ActionMfaEnvelope(
+            tenant_id=str(plan.tenant_id),
+            approver_user_id=str(approver_user_id),
+            remediation_plan_id=str(plan.id),
+            artifact_id=str(artifact.id),
+            artifact_hash=artifact.artifact_hash,
+            policy_check_id=str(check.id),
+            policy_check_hash=check.policy_check_hash,
+            execution_action=execution_action,
+            risk_level=plan.risk_level.value,
+            provider_scope=sanitize_text(plan.provider or "") or None,
+            resource_scope=sanitize_text(plan.resource_ref or "") or None,
+            expires_at=approval.expires_at.isoformat(),
+            nonce=approval.nonce,
+        )
 
     async def _actor_roles(self, tenant_id: uuid.UUID, actor_id: uuid.UUID) -> set[str]:
         result = await self.db.execute(
@@ -574,6 +734,35 @@ class RemediationApprovalService:
                 risk_level=plan.risk_level.value,
                 required_approval_level=check.required_approval_level.value if check else None,
                 reason_category="verification_blocked",
+            )
+        )
+
+    async def _emit_mfa_event(
+        self,
+        plan: RemediationPlan,
+        approval: RemediationApproval,
+        check: RemediationPolicyCheck | None,
+        *,
+        actor_id: uuid.UUID | str | None,
+        action: str,
+        envelope_hash: str,
+        reason_category: str | None,
+    ) -> None:
+        await self._emit(
+            RemediationMfaChallengeEvent(
+                tenant_id=plan.tenant_id,
+                actor_id=self._uuid(actor_id) if actor_id else None,
+                plan_id=plan.id,
+                approval_id=approval.id,
+                artifact_hash=approval.artifact_hash,
+                policy_check_hash=approval.policy_check_hash,
+                status=approval.status.value,
+                risk_level=plan.risk_level.value,
+                required_approval_level=check.required_approval_level.value if check else None,
+                action=action,
+                envelope_hash=envelope_hash,
+                expires_at=approval.expires_at,
+                reason_category=reason_category,
             )
         )
 

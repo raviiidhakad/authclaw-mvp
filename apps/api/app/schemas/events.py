@@ -412,6 +412,30 @@ class RemediationApprovalReplayBlockedEvent(RemediationEvent):
     reason_category: Optional[str] = None
 
 
+class RemediationMfaChallengeEvent(RemediationEvent):
+    event_type: str = "remediation.mfa.challenge"
+    plan_id: uuid.UUID
+    approval_id: uuid.UUID
+    artifact_hash: str
+    policy_check_hash: str
+    status: str
+    required_approval_level: Optional[str] = None
+    action: str
+    envelope_hash: str
+    expires_at: Optional[datetime] = None
+    reason_category: Optional[str] = None
+
+
+class RemediationWorkerTokenEvent(RemediationEvent):
+    event_type: str = "remediation.worker_token"
+    worker_type: str
+    job_id: Optional[uuid.UUID] = None
+    action_type: str
+    token_id: str
+    status: str
+    reason_category: Optional[str] = None
+
+
 class RemediationExecutionBlockedEvent(RemediationEvent):
     event_type: str = "remediation.execution.blocked"
     plan_id: uuid.UUID

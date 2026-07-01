@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.core.engine.token_vault import TokenVaultService
 from app.core.performance.performance_enums import BenchmarkAssessment, BenchmarkScenarioId
 from tests.performance.measure_load_e4_3 import (
     CONCURRENCY_LEVELS,
@@ -128,6 +129,8 @@ async def test_audit_export_load_benchmark_collects_export_counts() -> None:
 
 @pytest.mark.asyncio
 async def test_mixed_load_benchmark_splits_workload_counts() -> None:
+    original_store_batch = TokenVaultService.store_batch
+
     report = (
         await run_load_benchmarks(
             scenarios=(
@@ -150,6 +153,7 @@ async def test_mixed_load_benchmark_splits_workload_counts() -> None:
     assert report.resource_profile["concurrent_request_count"] == 1
     assert report.resource_profile["concurrent_stream_count"] == 1
     assert report.resource_profile["concurrent_export_count"] == 1
+    assert TokenVaultService.store_batch is original_store_batch
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,12 @@
 import logging
 import time
+import uuid
 from fastapi import HTTPException
+from sqlalchemy import select
+
 from app.core.redis import RedisClient
+from app.core.rate_limit.plans import plan_limits_for
+from app.models.tenant import Tenant
 import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)
@@ -52,10 +57,18 @@ class RateLimiter:
             self._script = self.redis.register_script(TOKEN_BUCKET_LUA)
         return self._script
 
-    async def check_rate_limit(self, key: str, capacity: int, refill_rate_per_sec: float) -> bool:
+    async def check_rate_limit(
+        self,
+        key: str,
+        capacity: int,
+        refill_rate_per_sec: float,
+        *,
+        fail_open: bool = True,
+    ) -> bool:
         """
         Check if a request is allowed by the token bucket rate limit.
-        Returns True if allowed (or if Redis is down/fail-open), False if 429.
+        Returns True if allowed. Redis failures fail open by default for
+        legacy callers, but security-sensitive call sites pass fail_open=False.
         """
         try:
             script = await self._get_script()
@@ -68,31 +81,96 @@ class RateLimiter:
             )
             return bool(allowed)
         except redis.RedisError as e:
-            logger.error(f"Redis error during rate limiting, failing open for key {key}: {e}")
-            return True
+            mode = "open" if fail_open else "closed"
+            logger.error("Redis error during rate limiting, failing %s for key %s: %s", mode, key, e)
+            return bool(fail_open)
 
 rate_limiter = RateLimiter()
 
 from app.core.engine.audit import AuditEngine
 
-async def check_gateway_limits(tenant_id: str, api_key_id: str, db, provider_id: str = None) -> None:
+async def _load_tenant_plan(db, tenant_id: str):
+    try:
+        tenant_uuid = uuid.UUID(str(tenant_id))
+        result = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
+        tenant = result.scalars().first()
+        if tenant is not None:
+            return plan_limits_for(tenant.plan, tenant.settings)
+    except Exception:
+        pass
+    return plan_limits_for(None, None)
+
+
+async def check_gateway_limits(
+    tenant_id: str,
+    api_key_id: str,
+    db,
+    provider_id: str = None,
+    route_id: str = None,
+    model: str = None,
+    include_base: bool = True,
+) -> None:
     """
     Evaluates global, tenant, apikey, and provider hierarchy.
     Raises HTTPException(429) if exceeded.
     """
-    # Define limits (in a real app, these would come from the database/config)
-    # For Phase A, we use hardcoded safe defaults or read from config if available.
-    limits = [
-        {"key": "rl:global", "capacity": 10000, "rate": 1000},
-        {"key": f"rl:tnt:{tenant_id}", "capacity": 1000, "rate": 100},
-        {"key": f"rl:key:{api_key_id}", "capacity": 100, "rate": 10},
-    ]
+    plan_limits = await _load_tenant_plan(db, tenant_id)
+    limits = []
+    if include_base:
+        limits.extend([
+            {
+                "scope": "tenant_minute",
+                "key": f"rl:tnt:{tenant_id}:minute",
+                "capacity": plan_limits.requests_per_minute,
+                "rate": plan_limits.requests_per_minute / 60,
+            },
+            {
+                "scope": "tenant_day",
+                "key": f"rl:tnt:{tenant_id}:day",
+                "capacity": plan_limits.requests_per_day,
+                "rate": plan_limits.requests_per_day / 86_400,
+            },
+            {
+                "scope": "api_key_minute",
+                "key": f"rl:key:{api_key_id}:minute",
+                "capacity": plan_limits.api_key_requests_per_minute,
+                "rate": plan_limits.api_key_requests_per_minute / 60,
+            },
+        ])
     if provider_id:
-        limits.append({"key": f"rl:prv:{provider_id}", "capacity": 50, "rate": 5})
+        limits.append({
+            "scope": "provider_minute",
+            "key": f"rl:tnt:{tenant_id}:provider:{provider_id}:minute",
+            "capacity": plan_limits.provider_requests_per_minute,
+            "rate": plan_limits.provider_requests_per_minute / 60,
+        })
+    if route_id and model:
+        limits.append({
+            "scope": "route_model_minute",
+            "key": f"rl:tnt:{tenant_id}:route:{route_id}:model:{model}:minute",
+            "capacity": plan_limits.route_model_requests_per_minute,
+            "rate": plan_limits.route_model_requests_per_minute / 60,
+        })
 
     for limit in limits:
-        allowed = await rate_limiter.check_rate_limit(limit["key"], limit["capacity"], limit["rate"])
+        allowed = await rate_limiter.check_rate_limit(
+            limit["key"],
+            limit["capacity"],
+            limit["rate"],
+            fail_open=False,
+        )
         if not allowed:
             audit_engine = AuditEngine(db)
-            await audit_engine.log_rate_limit_exceeded(tenant_id, api_key_id, limit["key"])
-            raise HTTPException(status_code=429, detail=f"Rate limit exceeded for {limit['key']}")
+            try:
+                await audit_engine.log_rate_limit_exceeded(tenant_id, api_key_id, limit["scope"])
+            except Exception as exc:
+                logger.warning("Failed to audit gateway rate limit event: %s", exc)
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please retry later.",
+                headers={
+                    "Retry-After": "60",
+                    "X-RateLimit-Scope": limit["scope"],
+                    "X-RateLimit-Plan": plan_limits.plan_name,
+                },
+            )

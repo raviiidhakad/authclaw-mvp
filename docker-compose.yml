@@ -160,6 +160,20 @@ services:
       timeout: 5s
       retries: 10
 
+  opa:
+    image: openpolicyagent/opa:latest
+    profiles: ["opa"]
+    command:
+      - run
+      - --server
+      - --addr
+      - 0.0.0.0:8181
+      - /policies
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./apps/api/opa:/policies:ro
+
   console:
     image: redpandadata/console:latest
     entrypoint: /app/console

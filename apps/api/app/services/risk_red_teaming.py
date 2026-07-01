@@ -14,6 +14,7 @@ from app.models.risk import (
     AdversarialProbeRun,
     AdversarialProbeStatus,
     GoNoGoVerdict,
+    RedTeamProbeResult,
     RiskPostureSnapshot,
     VulnerabilityRegisterItem,
     VulnerabilitySeverity,
@@ -23,9 +24,12 @@ from app.services.api_safety import sanitize_text
 from app.services.trust_reporting import ExportSanitizer
 
 
-RISK_READ_ROLES = ["owner", "admin", "operator", "analyst", "auditor", "viewer", "security_admin"]
-RISK_WRITE_ROLES = ["owner", "admin", "operator", "analyst", "security_admin"]
+RISK_READ_ROLES = ["owner", "admin", "analyst", "auditor", "viewer", "security_admin"]
+RISK_RUN_ROLES = ["owner", "admin", "analyst", "security_admin"]
+RISK_UPDATE_ROLES = ["owner", "admin", "security_admin"]
+RISK_WRITE_ROLES = RISK_RUN_ROLES
 SAFE_EXECUTION_MODE = "simulated"
+LIVE_PROVIDER_PROBING_ENABLED = False
 
 sanitizer = ExportSanitizer()
 
@@ -76,6 +80,26 @@ DEMO_PROBES: tuple[dict[str, Any], ...] = (
         "vulnerability_count": 1,
         "summary": "Policy-bypass simulation detected one medium severity needs-review pattern.",
     },
+    {
+        "name": "Policy bypass contract probe",
+        "category": AdversarialProbeCategory.policy_bypass,
+        "risk_score": 64,
+        "blocked_count": 8,
+        "allowed_count": 1,
+        "vulnerability_count": 1,
+        "target_surface": "policy",
+        "summary": "Route-attached policy bypass fixtures were denied by the local evaluator; one high-risk review item remains open.",
+    },
+    {
+        "name": "Report export leakage probe",
+        "category": AdversarialProbeCategory.report_export_leakage,
+        "risk_score": 46,
+        "blocked_count": 6,
+        "allowed_count": 1,
+        "vulnerability_count": 0,
+        "target_surface": "report/export",
+        "summary": "Report and export leakage fixtures produced sanitized summaries only. No raw report body was retained.",
+    },
 )
 
 
@@ -115,6 +139,15 @@ DEMO_VULNERABILITIES: tuple[dict[str, Any], ...] = (
         "status": VulnerabilityStatus.open,
         "evidence_summary": "Safe aggregate from sycophancy probe; no raw provider output retained.",
         "remediation_summary": "Add regression test cases for policy-bypass phrasing.",
+    },
+    {
+        "category": AdversarialProbeCategory.policy_bypass,
+        "title": "Policy bypass fixtures need owner review",
+        "description": "A local policy-bypass probe confirmed blocking behavior while leaving one rule contract for owner review.",
+        "severity": VulnerabilitySeverity.high,
+        "status": VulnerabilityStatus.open,
+        "evidence_summary": "Sanitized local policy probe summary only; raw request and provider payloads absent.",
+        "remediation_summary": "Review route policy mappings and attach follow-up control evidence.",
     },
 )
 
@@ -160,7 +193,7 @@ async def seed_risk_demo_data(db: AsyncSession, tenant_id: uuid.UUID, owner_user
             name=item["name"],
             category=item["category"],
             status=AdversarialProbeStatus.completed,
-            target_surface="gateway",
+            target_surface=item.get("target_surface", "gateway"),
             model_target="route-selected model",
             execution_mode=SAFE_EXECUTION_MODE,
             owner_user_id=owner_user_id,
@@ -195,6 +228,29 @@ async def seed_risk_demo_data(db: AsyncSession, tenant_id: uuid.UUID, owner_user
     ).scalars().all()
     run_by_category = {run.category: run for run in runs}
     remediation_plan_id = await _optional_remediation_plan_id(db, tenant_id)
+    created_results = 0
+    existing_result_run_ids = set(
+        (
+            await db.execute(
+                select(RedTeamProbeResult.probe_run_id).where(
+                    RedTeamProbeResult.tenant_id == tenant_id,
+                    RedTeamProbeResult.probe_run_id.in_([run.id for run in runs]),
+                )
+            )
+        ).scalars().all()
+    )
+    for run in runs:
+        if run.id in existing_result_run_ids:
+            continue
+        db.add(
+            _build_probe_result(
+                tenant_id,
+                run,
+                severity=_severity_from_score(run.risk_score),
+                remediation_plan_id=remediation_plan_id if run.vulnerability_count else None,
+            )
+        )
+        created_results += 1
 
     existing_titles = set(
         (
@@ -221,6 +277,8 @@ async def seed_risk_demo_data(db: AsyncSession, tenant_id: uuid.UUID, owner_user
             severity=item["severity"],
             status=item["status"],
             owner_user_id=owner_user_id,
+            confidence=85 if item["severity"] in {VulnerabilitySeverity.high, VulnerabilitySeverity.critical} else 75,
+            due_date=None,
             evidence_summary=_safe_text(item["evidence_summary"]),
             remediation_summary=_safe_text(item["remediation_summary"]),
             first_seen_at=now,
@@ -234,6 +292,7 @@ async def seed_risk_demo_data(db: AsyncSession, tenant_id: uuid.UUID, owner_user
     await db.commit()
     return {
         "probe_runs_created": created_runs,
+        "probe_results_created": created_results,
         "vulnerabilities_created": created_vulnerabilities,
         "posture_snapshots_created": 1 if posture else 0,
     }
@@ -257,13 +316,13 @@ async def compute_posture(db: AsyncSession, tenant_id: uuid.UUID, *, persist: bo
 
     if open_critical:
         verdict = GoNoGoVerdict.no_go
-        summary = "Evidence-supported go/no-go posture is no-go until critical red-team risk is reviewed."
+        summary = "Blocked by high-risk findings until critical red-team risk is reviewed."
     elif open_high or open_items:
         verdict = GoNoGoVerdict.needs_review
-        summary = "Evidence-supported go/no-go posture needs review before production expansion."
+        summary = "Needs review before production expansion."
     else:
         verdict = GoNoGoVerdict.go
-        summary = "Evidence-supported go/no-go posture is go for the currently simulated scope."
+        summary = "Ready for review for the currently simulated scope."
 
     blockers = [
         {
@@ -277,7 +336,7 @@ async def compute_posture(db: AsyncSession, tenant_id: uuid.UUID, *, persist: bo
     recommendations = [
         "Keep probe execution simulated by default unless an explicit internal test harness is approved.",
         "Link high and critical vulnerabilities to evidence-supported remediation before go-live.",
-        "Review policy-bypass and disclosure probes after provider route changes.",
+        "Review policy-bypass and report/export leakage probes after route, policy, or reporting changes.",
     ]
     counts = {
         "probe_runs": len(probe_runs),
@@ -297,7 +356,7 @@ async def compute_posture(db: AsyncSession, tenant_id: uuid.UUID, *, persist: bo
         counts=sanitize(counts),
         blockers=sanitize(blockers),
         recommendations=sanitize(recommendations),
-        evidence_summary="Posture derived from sanitized simulated probe runs and vulnerability register rows; not legal advice.",
+        evidence_summary="Posture derived from sanitized simulated probe runs and vulnerability register rows; auditor review required.",
         generated_at=_now_naive(),
     )
     if persist:
@@ -358,6 +417,14 @@ async def create_simulated_probe_run(
     )
     db.add(run)
     await db.flush()
+    db.add(
+        _build_probe_result(
+            tenant_id,
+            run,
+            severity=_severity_from_score(run.risk_score),
+            remediation_plan_id=None,
+        )
+    )
     await compute_posture(db, tenant_id, persist=True)
     await db.commit()
     await set_tenant_context(db, tenant_id)
@@ -378,3 +445,37 @@ def safe_model_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = sanitizer.sanitize_payload(value)
     payload.pop("sanitization_version", None)
     return payload
+
+
+def _severity_from_score(score: int) -> VulnerabilitySeverity:
+    if score >= 80:
+        return VulnerabilitySeverity.critical
+    if score >= 60:
+        return VulnerabilitySeverity.high
+    if score >= 40:
+        return VulnerabilitySeverity.medium
+    return VulnerabilitySeverity.low
+
+
+def _build_probe_result(
+    tenant_id: uuid.UUID,
+    run: AdversarialProbeRun,
+    *,
+    severity: VulnerabilitySeverity,
+    remediation_plan_id: uuid.UUID | None,
+) -> RedTeamProbeResult:
+    category_label = run.category.value.replace("_", " ")
+    return RedTeamProbeResult(
+        tenant_id=tenant_id,
+        probe_run_id=run.id,
+        category=run.category,
+        target_surface=run.target_surface,
+        status="blocked" if run.blocked_count >= run.allowed_count else "needs_review",
+        severity=severity,
+        confidence=85 if severity in {VulnerabilitySeverity.high, VulnerabilitySeverity.critical} else 75,
+        evidence_summary=_safe_text(f"Sanitized {category_label} result from deterministic local probe runner."),
+        sanitized_input_summary=_safe_text(f"Local fixture for {category_label}; raw prompt removed."),
+        sanitized_output_summary=_safe_text("Blocked or summarized response path only; raw provider output absent."),
+        linked_remediation_plan_id=remediation_plan_id,
+        raw_payload_stored=False,
+    )

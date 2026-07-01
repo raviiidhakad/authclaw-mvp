@@ -54,6 +54,8 @@ async def get_audit_logs(
             "action": r.action,
             "metadata": r.metadata,
             "ip_address": r.ip_address,
+            "previous_hash": r.previous_hash,
+            "integrity_hash": r.integrity_hash,
             "created_at": r.created_at.isoformat(),
         } for r in records],
         "total": await repo.get_latest_sequence_no(tenant.id)

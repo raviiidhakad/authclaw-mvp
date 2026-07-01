@@ -1,12 +1,12 @@
 "use client";
 
 import React, { useState } from 'react';
-import { Clock, Search, Filter, Download, ShieldCheck, Link2, Database, Key, AlertTriangle } from 'lucide-react';
+import { Clock, Search, Filter, Download, ShieldCheck, Link2, Database, Key, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { useAuditLogs } from '@/hooks/use-data';
+import { useAuditIntegrityVerification, useAuditLogs } from '@/hooks/use-data';
 import { apiClient } from '@/lib/api-client';
 import { EmptyState, ErrorState } from '@/components/shared/states';
 import { TableSkeleton } from '@/components/shared/loaders';
@@ -21,40 +21,19 @@ type AuditEvent = {
   resource_id?: string | null;
   user_id?: string | null;
   metadata?: Record<string, unknown> | null;
+  previous_hash?: string | null;
+  integrity_hash?: string | null;
 };
-
-type AuditEventWithHashes = AuditEvent & {
-  prevHash: string;
-  currentHash: string;
-};
-
-// Local digest preview only. A backend verification endpoint should provide canonical hash-chain proof.
-function generatePseudoHash(str: string) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(16).padStart(16, '0');
-}
 
 export default function AuditPage() {
   const [search, setSearch] = useState('');
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const { data, isLoading: loading, error } = useAuditLogs(0, 100);
+  const verification = useAuditIntegrityVerification();
   
   const events = data?.items || [];
-  
-  // Create simulated hash chain for visualization
-  const eventsWithHashes = (events as AuditEvent[]).map((e, index): AuditEventWithHashes => {
-    const prevEvent = index < events.length - 1 ? events[index + 1] : null;
-    const prevHash = prevEvent ? generatePseudoHash(prevEvent.id) : '0000000000000000';
-    const currentHash = generatePseudoHash(e.id + prevHash);
-    return { ...e, prevHash, currentHash };
-  });
 
-  const filteredEvents = eventsWithHashes.filter((e) => 
+  const filteredEvents = (events as AuditEvent[]).filter((e) =>
     search === '' || 
     e.event_type?.toLowerCase().includes(search.toLowerCase()) ||
     e.action?.toLowerCase().includes(search.toLowerCase()) ||
@@ -92,6 +71,9 @@ export default function AuditPage() {
     return <ErrorState title="Audit Engine Offline" description="Cannot connect to the cryptographic ledger." error={error} />;
   }
 
+  const chainIntact = verification.data?.status === 'intact';
+  const verificationStatus = verification.isLoading ? 'Verifying...' : chainIntact ? 'Verified' : verification.data?.status === 'tampered' ? 'Tampered' : 'Not verified';
+
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
       <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-4">
@@ -99,26 +81,32 @@ export default function AuditPage() {
           <h2 className="text-2xl font-bold tracking-tight text-neutral-100 font-sans">Audit & Trust Center</h2>
           <p className="text-sm text-neutral-400 mt-1">Cryptographically verified immutable audit trail.</p>
         </div>
-        <Button onClick={handleExport} variant="outline" className="border-neutral-800 bg-neutral-900/50 hover:bg-neutral-800 text-neutral-300">
-          <Download className="w-4 h-4 mr-2" />
-          Export CSV
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => verification.refetch()} variant="outline" className="border-neutral-800 bg-neutral-900/50 hover:bg-neutral-800 text-neutral-300">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Verify Integrity
+          </Button>
+          <Button onClick={handleExport} variant="outline" className="border-neutral-800 bg-neutral-900/50 hover:bg-neutral-800 text-neutral-300">
+            <Download className="w-4 h-4 mr-2" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       {/* Audit Integrity Monitoring */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="glass-card border-amber-500/20">
+        <Card className={`glass-card ${chainIntact ? 'border-emerald-500/20' : 'border-amber-500/20'}`}>
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-neutral-400 font-medium uppercase tracking-wider">Chain Status</p>
               <div className="flex items-center gap-2 mt-1">
-                <AlertTriangle className="w-5 h-5 text-amber-400" />
-                <span className="text-xl font-bold text-amber-300">Backend proof needed</span>
+                {chainIntact ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> : <AlertTriangle className="w-5 h-5 text-amber-400" />}
+                <span className={`text-xl font-bold ${chainIntact ? 'text-emerald-300' : 'text-amber-300'}`}>{verificationStatus}</span>
               </div>
             </div>
             <div className="text-right">
-              <p className="text-xs text-neutral-500">Local digest preview</p>
-              <p className="text-sm font-mono text-neutral-300">{(eventsWithHashes[0]?.currentHash || '00000000').substring(0, 8)}</p>
+              <p className="text-xs text-neutral-500">Backend chain proof</p>
+              <p className="text-sm font-mono text-neutral-300">{verification.data?.scanned_records ?? 0} scanned</p>
             </div>
           </CardContent>
         </Card>
@@ -138,10 +126,10 @@ export default function AuditPage() {
         <Card className="glass-card">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-neutral-400 font-medium uppercase tracking-wider">Encryption</p>
+              <p className="text-xs text-neutral-400 font-medium uppercase tracking-wider">Integrity Findings</p>
               <div className="flex items-center gap-2 mt-1">
                 <Key className="w-5 h-5 text-purple-500" />
-                <span className="text-xl font-bold text-neutral-100">AES-256-GCM</span>
+                <span className="text-xl font-bold text-neutral-100">{verification.data ? `${verification.data.tampered_records}/${verification.data.chain_breaks}` : '0/0'}</span>
               </div>
             </div>
           </CardContent>
@@ -212,7 +200,7 @@ export default function AuditPage() {
                         <td className="p-4 text-right">
                           <Badge variant="outline" className="font-mono text-[10px] border-emerald-500/20 text-emerald-400 bg-emerald-500/5">
                             <Link2 className="w-3 h-3 mr-1" />
-                            {event.currentHash.substring(0, 8)}
+                            {(event.integrity_hash || 'not-returned').substring(0, 12)}
                           </Badge>
                         </td>
                       </tr>
@@ -240,18 +228,18 @@ export default function AuditPage() {
                                   <div className="space-y-3">
                                     <div className="p-3 rounded-lg border border-neutral-800 bg-[#0a0a0a]/50">
                                       <p className="text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Previous Block Hash (t-1)</p>
-                                      <p className="font-mono text-xs text-neutral-400 break-all">{event.prevHash}</p>
+                                      <p className="font-mono text-xs text-neutral-400 break-all">{event.previous_hash || 'genesis or not returned'}</p>
                                     </div>
                                     <div className="flex justify-center text-neutral-600">
                                       <Link2 className="w-4 h-4 rotate-90" />
                                     </div>
                                     <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5">
                                       <p className="text-[10px] text-emerald-500/70 uppercase tracking-wider mb-1">Current Block Hash (t)</p>
-                                      <p className="font-mono text-xs text-emerald-400 break-all font-semibold">{event.currentHash}</p>
+                                      <p className="font-mono text-xs text-emerald-400 break-all font-semibold">{event.integrity_hash || 'not returned'}</p>
                                     </div>
-                                    <div className="pt-2 flex items-center gap-2 text-xs text-amber-300">
-                                      <AlertTriangle className="w-3.5 h-3.5" />
-                                      Local hash preview only. Backend chain verification endpoint is not wired in this console.
+                                    <div className={`pt-2 flex items-center gap-2 text-xs ${chainIntact ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                      {chainIntact ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                                      Backend verification: {verificationStatus}. Missing records {verification.data?.missing_records ?? 0}, tampered records {verification.data?.tampered_records ?? 0}, chain breaks {verification.data?.chain_breaks ?? 0}.
                                     </div>
                                   </div>
                                 </div>

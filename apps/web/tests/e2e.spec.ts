@@ -65,9 +65,37 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   const providerSummary = { id: 'provider-1', name: 'OpenAI production', provider_type: 'openai', is_active: true, key_prefix: 'prov_live' };
   const policySummary = { id: 'policy-1', name: 'Credential leakage block', description: 'Blocks demo credential markers.', is_active: true, priority: 10, rules: [], created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
   const frameworkSummary = { id: 'fw-1', key: 'soc2', version: '2026.1', name: 'SOC 2', description: 'Internal summarized framework', source_url: null, license_note: 'Internal summary', status: 'active', metadata: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' };
+  const remediationPlan = { id: 'plan-1', tenant_id: 'tenant-1', summary: 'Rotate exposed development token', expected_impact: 'Credential leakage risk reduced.', risk_level: 'high', status: 'approved', provider: 'github', resource_ref: 'repo/authclaw', created_by: 'user-1', created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:05:00Z' };
+  const remediationApproval = { id: 'approval-1', tenant_id: 'tenant-1', plan_id: 'plan-1', status: 'pending', requested_by: 'user-2', approved_by: null, required_approval_level: 'admin', approval_reason: null, rejection_reason: null, artifact_hash: 'artifact-hash-123', policy_check_hash: 'policy-hash-456', expires_at: '2026-06-23T10:30:00Z', decided_at: null, mfa_verified: false, created_at: '2026-06-23T10:01:00Z', updated_at: '2026-06-23T10:01:00Z' };
+  const remediationJob = { id: 'job-1', tenant_id: 'tenant-1', plan_id: 'plan-1', approval_id: 'approval-2', dry_run_result_id: 'dry-1', status: 'executing', disabled_reason: 'Safe simulated/no-op execution record.', created_at: '2026-06-23T10:10:00Z', updated_at: '2026-06-23T10:11:00Z' };
+  const reportArtifact = { id: 'artifact-1', tenant_id: 'tenant-1', run_id: 'run-1', artifact_type: 'trust_report_json', content_hash: 'sha256-content-hash', size_bytes: 4096, sanitization_version: 'authclaw.sanitizer/v1', created_at: '2026-06-23T10:00:00Z', expires_at: '2026-07-23T10:00:00Z', manifest_hash: 'manifest-hash-123' };
+  let tenantPatchCalled = false;
+  let rolePatchCalled = false;
+  let shareCreated = false;
 
   await page.route(/\/api\/v1\/(?!auth\/me).*/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 100 }));
   await page.route(/\/api\/v1\/tenants\/stats$/, async (route) => fulfillJson(route, { total: 1 }));
+  await page.route(/\/api\/v1\/tenants$/, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      tenantPatchCalled = true;
+      await fulfillJson(route, { id: 'tenant-1', name: 'Acme Security', slug: 'acme', plan: 'enterprise', status: 'active', settings: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:05:00Z' });
+      return;
+    }
+    await fulfillJson(route, { id: 'tenant-1', name: 'Acme Security', slug: 'acme', plan: 'team', status: 'active', settings: {}, created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' });
+  });
+  await page.route(/\/api\/v1\/tenants\/rate-limit-tiers$/, async (route) => fulfillJson(route, [
+    { plan_name: 'free', requests_per_minute: 60, requests_per_day: 1000, api_key_requests_per_minute: 30, route_model_requests_per_minute: 30, provider_requests_per_minute: 60, concurrent_gateway_requests: 5, concurrent_streams: 1, max_body_bytes: 32768, connector_scan_concurrency: 1, connector_scan_interval_seconds: 3600, report_generation_per_hour: 5, remediation_job_concurrency: 1 },
+    { plan_name: 'team', requests_per_minute: 600, requests_per_day: 10000, api_key_requests_per_minute: 300, route_model_requests_per_minute: 300, provider_requests_per_minute: 600, concurrent_gateway_requests: 25, concurrent_streams: 5, max_body_bytes: 131072, connector_scan_concurrency: 2, connector_scan_interval_seconds: 900, report_generation_per_hour: 30, remediation_job_concurrency: 2 },
+    { plan_name: 'enterprise', requests_per_minute: 6000, requests_per_day: 250000, api_key_requests_per_minute: 3000, route_model_requests_per_minute: 3000, provider_requests_per_minute: 6000, concurrent_gateway_requests: 250, concurrent_streams: 50, max_body_bytes: 524288, connector_scan_concurrency: 10, connector_scan_interval_seconds: 300, report_generation_per_hour: 250, remediation_job_concurrency: 10 },
+  ]));
+  await page.route(/\/api\/v1\/users(?:\?.*)?$/, async (route) => fulfillJson(route, [
+    { id: 'user-1', email: 'admin@example.com', first_name: 'Ava', last_name: 'Admin', tenant_id: 'tenant-1', is_active: true, roles: ['admin'], created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' },
+    { id: 'user-2', email: 'auditor@example.com', first_name: 'Audrey', last_name: 'Audit', tenant_id: 'tenant-1', is_active: true, roles: ['auditor'], created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:00:00Z' },
+  ]));
+  await page.route(/\/api\/v1\/users\/user-2\/roles$/, async (route) => {
+    rolePatchCalled = true;
+    await fulfillJson(route, { id: 'user-2', email: 'auditor@example.com', first_name: 'Audrey', last_name: 'Audit', tenant_id: 'tenant-1', is_active: true, roles: ['analyst'], created_at: '2026-06-23T10:00:00Z', updated_at: '2026-06-23T10:05:00Z' });
+  });
   await page.route(/\/api\/v1\/audit\/stats$/, async (route) => fulfillJson(route, { total_events: 1, events_by_type: { 'policy.violation': 1 }, gateway_by_status: { blocked: 1 } }));
   await page.route(/\/api\/v1\/compliance\/dashboard$/, async (route) => fulfillJson(route, {
     soc2: { score: 82, status: 'calculated' },
@@ -85,10 +113,13 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/policies(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [policySummary], total: 1 }));
   await page.route(/\/api\/v1\/policies\/validate$/, async (route) => fulfillJson(route, { valid: true, schema_version: 'authclaw.policy/v1', normalized: { name: 'Credential leakage block' }, errors: [], warnings: [], opa: { runtime: 'adapter_seam', full_opa_runtime: false } }));
   await page.route(/\/api\/v1\/policies\/test$/, async (route) => fulfillJson(route, { allowed: false, blocked: true, action: 'block', matched_rules: [{ rule_type: 'content_filter', action: 'block', message: 'Credential marker blocked.' }], redaction_required: false, reason: 'Policy matched sample text.' }));
-  await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
-  await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
-  await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
-  await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/ai\/chat$/, async (route) => fulfillJson(route, { status: 'success', data: { role: 'assistant', content: 'Compliance assistant reviewed SOC 2 evidence-supported posture and found one approval to review.' } }));
+  await page.route(/\/api\/v1\/remediation\/plans(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationPlan], total: 1, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/approvals(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationApproval, { ...remediationApproval, id: 'approval-2', status: 'approved', mfa_verified: true }], total: 2, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/approvals\/approval-1\/approve$/, async (route) => fulfillJson(route, { ...remediationApproval, status: 'approved', mfa_verified: true, approval_reason: 'Reviewed in console.' }));
+  await page.route(/\/api\/v1\/remediation\/dry-runs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'dry-1', tenant_id: 'tenant-1', plan_id: 'plan-1', artifact_id: 'artifact-1', status: 'succeeded', dry_run_type: 'no_op', output_summary: 'No external mutation attempted.', created_at: '2026-06-23T10:08:00Z', updated_at: '2026-06-23T10:08:00Z' }], total: 1, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/jobs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [remediationJob], total: 1, skip: 0, limit: 25 }));
+  await page.route(/\/api\/v1\/remediation\/verification-results(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'verify-1', tenant_id: 'tenant-1', plan_id: 'plan-1', job_id: 'job-1', status: 'succeeded', verified: true, verification_summary: 'Safe simulated verification completed.', created_at: '2026-06-23T10:12:00Z', updated_at: '2026-06-23T10:12:00Z' }], total: 1, skip: 0, limit: 25 }));
   await page.route(/\/api\/v1\/risk\/posture$/, async (route) => fulfillJson(route, {
     verdict: 'needs_review',
     summary: 'Needs review before production expansion.',
@@ -202,7 +233,28 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.route(/\/api\/v1\/risk\/seed-demo$/, async (route) => fulfillJson(route, { probe_runs_created: 7, probe_results_created: 7, vulnerabilities_created: 5, posture_snapshots_created: 1 }));
   await page.route(/\/api\/v1\/compliance\/frameworks(?:\?.*)?$/, async (route) => fulfillJson(route, [frameworkSummary]));
   await page.route(/\/api\/v1\/compliance\/assessments(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0, skip: 0, limit: 20 }));
-  await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' } }], total: 1 }));
+  await page.route(/\/api\/v1\/audit\/logs(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [{ id: 'audit-1', created_at: '2026-06-23T10:00:00Z', event_type: 'gateway.request', action: 'recorded', resource: 'gateway', resource_id: 'gw-1', user_id: null, metadata: { status: 'recorded' }, previous_hash: '0000000000000000', integrity_hash: 'hash-current-1234567890' }], total: 1 }));
+  await page.route(/\/api\/v1\/audit\/verify$/, async (route) => fulfillJson(route, { status: 'intact', scanned_records: 12, missing_records: 0, tampered_records: 0, chain_breaks: 0 }));
+  await page.route(/\/api\/v1\/trust\/overview$/, async (route) => fulfillJson(route, {
+    tenant_id: 'tenant-1',
+    generated_at: '2026-06-23T10:00:00Z',
+    language: 'evidence-supported posture',
+    security_posture: { tenant_id: 'tenant-1', generated_at: '2026-06-23T10:00:00Z', language: 'review required', posture: 'evidence-supported posture', counts: {}, status_counts: {}, severity_counts: {}, freshness: {} },
+    compliance_posture: { tenant_id: 'tenant-1', generated_at: '2026-06-23T10:00:00Z', language: 'review required', posture: 'needs review', counts: {}, status_counts: {}, severity_counts: {}, freshness: {} },
+    remediation_posture: { tenant_id: 'tenant-1', generated_at: '2026-06-23T10:00:00Z', language: 'review required', posture: 'needs review', counts: {}, status_counts: {}, severity_counts: {}, freshness: {} },
+    integration_health: { tenant_id: 'tenant-1', generated_at: '2026-06-23T10:00:00Z', language: 'review required', posture: 'healthy', counts: {}, status_counts: {}, severity_counts: {}, freshness: {} },
+  }));
+  await page.route(/\/api\/v1\/trust\/audit-export-verification-states$/, async (route) => fulfillJson(route, { generated_at: '2026-06-23T10:00:00Z', language: 'review states only', states: [{ state: 'Verified', severity: 'info', meaning: 'Package verification succeeded.' }, { state: 'Tampered', severity: 'critical', meaning: 'Package content changed.' }] }));
+  await page.route(/\/api\/v1\/reports\/artifacts(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [reportArtifact], total: 1, skip: 0, limit: 50 }));
+  await page.route(/\/api\/v1\/reports\/artifacts\/artifact-1\/manifest$/, async (route) => fulfillJson(route, { id: 'manifest-1', tenant_id: 'tenant-1', artifact_id: 'artifact-1', manifest_json: { schema: 'authclaw.audit.export/v1' }, manifest_hash: 'manifest-hash-123', hash_algorithm: 'sha256', created_at: '2026-06-23T10:00:00Z' }));
+  await page.route(/\/api\/v1\/trust\/share-links(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      shareCreated = true;
+      await fulfillJson(route, { id: 'share-1', tenant_id: 'tenant-1', artifact_id: 'artifact-1', scope: { artifact_id: 'artifact-1' }, created_by: 'user-1', expires_at: '2026-07-01T10:00:00Z', revoked_at: null, max_downloads: 5, token: 'share-token-once' }, 201);
+      return;
+    }
+    await fulfillJson(route, { items: [{ id: 'share-0', tenant_id: 'tenant-1', artifact_id: 'artifact-1', scope: {}, created_by: 'user-1', expires_at: '2026-07-01T10:00:00Z', revoked_at: null, max_downloads: 5 }], total: 1, skip: 0, limit: 50 });
+  });
   await page.route(/\/api\/v1\/integrations(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [], total: 0 }));
   await page.route(/\/api\/v1\/integrations\/health$/, async (route) => fulfillJson(route, { registered_providers: [], circuit_breakers: {}, items: [] }));
   const generatedGatewayKey = 'ac_testgatewaykey1234567890abcdef';
@@ -263,14 +315,47 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await page.goto('/agent-remediation');
   await expect(page.getByText(/Safe execution only/i)).toBeVisible();
   await expect(page.getByText(/^Assistant$/i)).toBeVisible();
+  await expect(page.getByText(/End-to-end approval workflow/i)).toBeVisible();
+  for (const label of ['Pending', 'User reviews', 'MFA confirmation', 'Approved', 'Executing', 'Success / Failure']) {
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+  }
   await expect(page.getByRole('link', { name: /^Open$/i }).first()).toBeVisible();
+
+  await page.goto('/agent');
+  await page.getByPlaceholder(/Ask about policy/i).fill('Summarize SOC2 posture');
+  await page.getByRole('button', { name: /Send message/i }).click();
+  await expect(page.getByText(/Compliance assistant reviewed SOC 2/i)).toBeVisible();
+
+  await page.goto('/remediation/approvals');
+  await expect(page.getByRole('link', { name: /Rotate exposed development token/i }).first()).toBeVisible();
+  await expect(page.getByText(/artifact artifact-hash-123/i).first()).toBeVisible();
+  await page.getByRole('button', { name: /^Approve$/i }).first().click();
+  await page.getByLabel(/Reason/i).fill('Reviewed in console.');
+  await page.getByLabel(/MFA verified for elevated approval/i).check();
+  await page.getByRole('button', { name: /^approve$/i }).click();
+
+  await page.goto('/remediation/jobs');
+  await expect(page.getByText('executing', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Safe simulated verification completed/i)).toBeVisible();
 
   await page.goto('/frameworks');
   await expect(page.getByText(/SOC 2/i)).toBeVisible();
   await expect(page.getByText(/View controls/i)).toBeVisible();
 
   await page.goto('/audit');
-  await expect(page.getByText(/Backend proof needed/i)).toBeVisible();
+  await expect(page.getByText('Verified', { exact: true })).toBeVisible();
+  await expect(page.getByText(/12 scanned/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: /Verify Integrity/i })).toBeVisible();
+  await page.getByText(/gateway.request/i).click();
+  await expect(page.getByText(/Backend verification: Verified/i)).toBeVisible();
+
+  await page.goto('/reports/artifacts');
+  await expect(page.getByText(/Artifact metadata/i)).toBeVisible();
+  await expect(page.getByText(/Shareable Trust Center links/i)).toBeVisible();
+  await page.getByRole('button', { name: /^Share$/i }).click();
+  await expect(page.getByRole('heading', { name: /Trust Center share link created/i })).toBeVisible();
+  await expect(page.getByText(/share-token-once/i)).toBeVisible();
+  expect(shareCreated).toBeTruthy();
 
   await page.goto('/risk');
   await expect(page.getByText(/Go \/ No-Go Posture/i)).toBeVisible();
@@ -281,6 +366,15 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
 
   await page.goto('/settings');
   await expect(page.getByText(/Organization Profile/i)).toBeVisible();
+  await expect(page.getByText(/Tenant Administration/i)).toBeVisible();
+  await expect(page.getByText(/User management and RBAC/i)).toBeVisible();
+  await expect(page.getByText('Rate-limit tiers', { exact: true })).toBeVisible();
+  await expect(page.locator('input[value="Acme Security"]')).toBeVisible();
+  await page.getByLabel(/Rate-limit tier/i).selectOption('enterprise');
+  await page.getByRole('button', { name: /^Save Tenant$/i }).click();
+  expect(tenantPatchCalled).toBeTruthy();
+  await page.getByLabel(/Role for auditor@example.com/i).selectOption('analyst');
+  await expect.poll(() => rolePatchCalled).toBeTruthy();
   await page.getByRole('button', { name: /^Generate Key$/i }).first().click();
   await page.getByPlaceholder(/Production Application Server/i).fill('Agent key');
   await page.getByRole('button', { name: /^Generate Token$/i }).click();
@@ -1364,6 +1458,14 @@ async function mockTrustReportApi(page: Page) {
   await page.route(/\/api\/v1\/trust\/compliance-posture$/, async (route) => fulfillJson(route, trustCompliancePosture));
   await page.route(/\/api\/v1\/trust\/remediation-posture$/, async (route) => fulfillJson(route, trustRemediationPosture));
   await page.route(/\/api\/v1\/trust\/integration-health$/, async (route) => fulfillJson(route, trustIntegrationPosture));
+  await page.route(/\/api\/v1\/trust\/audit-export-verification-states$/, async (route) => fulfillJson(route, {
+    generated_at: '2026-06-22T10:00:00Z',
+    language: 'review states only',
+    states: [
+      { state: 'Verified', severity: 'info', meaning: 'Package verification succeeded.' },
+      { state: 'Tampered', severity: 'critical', meaning: 'Package content changed.' },
+    ],
+  }));
   await page.route(/\/api\/v1\/trust\/activity(?:\?.*)?$/, async (route) => fulfillJson(route, { items: activityTimeline, total: activityTimeline.length, skip: 0, limit: 50 }));
   await page.route(/\/api\/v1\/trust\/notifications\/unread-count$/, async (route) => fulfillJson(route, { unread: 1 }));
   await page.route(`**/api/v1/trust/notifications/${trustNotification.id}/read`, async (route) => fulfillJson(route, { ...trustNotification, read_at: '2026-06-22T10:07:00Z' }));
@@ -1414,6 +1516,13 @@ async function mockTrustReportApi(page: Page) {
   await page.route(`**/api/v1/reports/runs/${reportRun.id}`, async (route) => fulfillJson(route, reportRun));
   await page.route(/\/api\/v1\/reports\/artifacts(?:\?.*)?$/, async (route) => fulfillJson(route, { items: [reportArtifact], total: 1, skip: 0, limit: 50 }));
   await page.route(`**/api/v1/reports/artifacts/${reportArtifact.id}`, async (route) => fulfillJson(route, reportArtifact));
+  await page.route(/\/api\/v1\/trust\/share-links(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      await fulfillJson(route, { id: 'share-link-2', tenant_id: 'tenant-1', artifact_id: reportArtifact.id, scope: { artifact_id: reportArtifact.id }, created_by: 'user-1', expires_at: '2026-07-01T10:00:00Z', revoked_at: null, max_downloads: 5, token: 'trust-share-token-once' }, 201);
+      return;
+    }
+    await fulfillJson(route, { items: [{ id: 'share-link-1', tenant_id: 'tenant-1', artifact_id: reportArtifact.id, scope: {}, created_by: 'user-1', expires_at: '2026-07-01T10:00:00Z', revoked_at: null, max_downloads: 5 }], total: 1, skip: 0, limit: 50 });
+  });
   await page.route(/\/api\/v1\/evidence-packages(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
       await fulfillJson(route, { run: evidencePackageRun, artifact: reportArtifact, manifest: reportManifest }, 201);
@@ -1519,7 +1628,7 @@ test('report run creation and detail show metadata, artifact hashes, and no raw 
   await expect(page.getByText(/raw report body|super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
 });
 
-test('artifact manifest and download flow display safe metadata without share controls', async ({ page }) => {
+test('artifact manifest download and share flow display safe metadata', async ({ page }) => {
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
@@ -1533,7 +1642,11 @@ test('artifact manifest and download flow display safe metadata without share co
   await expect(page.getByText('Sanitized download metadata')).toBeVisible();
   await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
   await expect(page.getByText('Raw report body preview remains hidden', { exact: false })).toBeVisible();
-  await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByText(/Shareable Trust Center links/i)).toBeVisible();
+  await page.getByRole('button', { name: /^share$/i }).click();
+  await expect(page.getByRole('heading', { name: /Trust Center share link created/i })).toBeVisible();
+  await expect(page.getByText(/trust-share-token-once/i)).toBeVisible();
   await expect(page.getByText(/super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
 });
 

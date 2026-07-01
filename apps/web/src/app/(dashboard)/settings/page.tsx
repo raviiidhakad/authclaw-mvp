@@ -1,13 +1,30 @@
 "use client";
 
 import { useState } from 'react';
-import { Copy, Eye, EyeOff, Plus, Server, Trash2, Key, ShieldCheck, Building, KeyRound } from 'lucide-react';
+import { Copy, Eye, EyeOff, Plus, Server, Trash2, Key, ShieldCheck, Building, KeyRound, Users, Gauge, UserPlus, Save } from 'lucide-react';
 import { Card, CardContent, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { useProviders, useCreateProvider, useDeleteProvider, useApiKeys, useCreateApiKey, useRevokeApiKey } from '@/hooks/use-data';
+import {
+  RateLimitTier,
+  TenantUser,
+  useApiKeys,
+  useAssignTenantUserRoles,
+  useCreateApiKey,
+  useCreateProvider,
+  useCreateTenantUser,
+  useDeleteProvider,
+  useDeleteTenantUser,
+  useProviders,
+  useRateLimitTiers,
+  useRevokeApiKey,
+  useTenantDetails,
+  useTenantUsers,
+  useUpdateTenantDetails,
+  useUpdateTenantUser,
+} from '@/hooks/use-data';
 import { CardSkeleton } from '@/components/shared/loaders';
 import { EmptyState } from '@/components/shared/states';
 import { toast } from 'sonner';
@@ -46,8 +63,34 @@ type ApiError = {
   };
 };
 
+type RoleAwareUser = {
+  role?: string;
+  role_name?: string;
+  roles?: string[];
+};
+
+function rolesFor(user: unknown) {
+  const roleUser = (user || {}) as RoleAwareUser;
+  const roles = [
+    roleUser.role,
+    roleUser.role_name,
+    ...(Array.isArray(roleUser.roles) ? roleUser.roles : []),
+  ].filter((role): role is string => typeof role === 'string' && role.length > 0).map((role) => role.toLowerCase());
+  return roles.length ? roles : ['owner'];
+}
+
+function hasAnyRole(user: unknown, allowed: string[]) {
+  return rolesFor(user).some((role) => allowed.includes(role));
+}
+
+function errorMessage(error: unknown) {
+  const apiError = error as ApiError;
+  return apiError.response?.data?.detail || 'Request failed';
+}
+
 export default function SettingsPage() {
   const { user } = useAuth();
+  const canManageTenant = hasAnyRole(user, ['owner', 'admin']);
   
   // Providers
   const { data: providers = [], isLoading: loading } = useProviders();
@@ -67,6 +110,14 @@ export default function SettingsPage() {
   const apiKeys = (Array.isArray(apiKeysData) ? apiKeysData : (apiKeysData?.items || [])) as ApiKeyRecord[];
   const createKeyMutation = useCreateApiKey();
   const revokeKeyMutation = useRevokeApiKey();
+  const tenantQuery = useTenantDetails();
+  const updateTenantMutation = useUpdateTenantDetails();
+  const usersQuery = useTenantUsers();
+  const createUserMutation = useCreateTenantUser();
+  const updateUserMutation = useUpdateTenantUser();
+  const assignRolesMutation = useAssignTenantUserRoles();
+  const deleteUserMutation = useDeleteTenantUser();
+  const rateTiersQuery = useRateLimitTiers();
 
   const [showCreateKey, setShowCreateKey] = useState(false);
   const [generatedApiKey, setGeneratedApiKey] = useState<{ rawKey?: string; keyPrefix?: string; visible: boolean } | null>(null);
@@ -74,6 +125,14 @@ export default function SettingsPage() {
     name: '',
     expires_in_days: 0,
   });
+  const [tenantDraft, setTenantDraft] = useState<Partial<{ name: string; status: string; plan: string }>>({});
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [newUser, setNewUser] = useState({ email: '', first_name: '', last_name: '', password: '', role_name: 'viewer' });
+  const tenantForm = {
+    name: tenantDraft.name ?? tenantQuery.data?.name ?? '',
+    status: tenantDraft.status ?? tenantQuery.data?.status ?? 'active',
+    plan: tenantDraft.plan ?? tenantQuery.data?.plan ?? 'free',
+  };
 
   // MFA
   const [showMfaSetup, setShowMfaSetup] = useState(false);
@@ -122,6 +181,53 @@ export default function SettingsPage() {
     } catch (err: unknown) {
       const apiError = err as ApiError;
       toast.error(apiError.response?.data?.detail || 'Failed to create API key');
+    }
+  };
+
+  const saveTenant = async () => {
+    try {
+      await updateTenantMutation.mutateAsync(tenantForm);
+      toast.success('Tenant settings updated');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const createTenantUser = async () => {
+    try {
+      await createUserMutation.mutateAsync(newUser);
+      toast.success('User created');
+      setShowCreateUser(false);
+      setNewUser({ email: '', first_name: '', last_name: '', password: '', role_name: 'viewer' });
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const setUserRole = async (tenantUser: TenantUser, role: string) => {
+    try {
+      await assignRolesMutation.mutateAsync({ id: tenantUser.id, roles: [role] });
+      toast.success('User role updated');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const toggleUserActive = async (tenantUser: TenantUser) => {
+    try {
+      await updateUserMutation.mutateAsync({ id: tenantUser.id, data: { is_active: !tenantUser.is_active } });
+      toast.success(tenantUser.is_active ? 'User deactivated' : 'User activated');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const removeTenantUser = async (id: string) => {
+    try {
+      await deleteUserMutation.mutateAsync(id);
+      toast.success('User removed');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
     }
   };
 
@@ -271,6 +377,162 @@ export default function SettingsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <motion.div className="space-y-4" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-neutral-100 flex items-center gap-2">
+              <Building className="w-5 h-5 text-neutral-500" />
+              Tenant Administration
+            </h3>
+            <p className="text-sm text-neutral-400 mt-1">Manage tenant status, plan tier, users, RBAC, API keys, and rate-limit tiers from one admin surface.</p>
+          </div>
+          {!canManageTenant && (
+            <Badge variant="outline" className="bg-amber-500/10 text-amber-300 border-amber-500/20">Read-only role</Badge>
+          )}
+        </div>
+
+        <Card className="glass-card">
+          <CardContent className="p-5 space-y-4">
+            <div className="grid md:grid-cols-4 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Tenant name</label>
+                <Input value={tenantForm.name} disabled={!canManageTenant || tenantQuery.isLoading} onChange={(e) => setTenantDraft((current) => ({ ...current, name: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Tenant status</label>
+                <select aria-label="Tenant status" value={tenantForm.status} disabled={!canManageTenant} onChange={(e) => setTenantDraft((current) => ({ ...current, status: e.target.value }))} className="w-full h-10 rounded-md bg-black/40 border border-white/10 text-neutral-100 px-3 text-sm">
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
+                  <option value="deactivated">Deactivated</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Rate-limit tier</label>
+                <select aria-label="Rate-limit tier" value={tenantForm.plan} disabled={!canManageTenant} onChange={(e) => setTenantDraft((current) => ({ ...current, plan: e.target.value }))} className="w-full h-10 rounded-md bg-black/40 border border-white/10 text-neutral-100 px-3 text-sm">
+                  {['free', 'starter', 'professional', 'enterprise'].map((plan) => <option key={plan} value={plan}>{plan}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">Tenant slug</label>
+                <p className="h-10 flex items-center rounded-md border border-white/10 bg-black/40 px-3 text-xs font-mono text-neutral-400">{tenantQuery.data?.slug || 'loading'}</p>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={saveTenant} disabled={!canManageTenant || updateTenantMutation.isPending} className="bg-blue-600 hover:bg-blue-500 text-white">
+                <Save className="w-4 h-4 mr-2" />
+                Save Tenant
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="glass-card overflow-hidden">
+            <div className="p-4 border-b border-white/5 bg-black/20 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Users className="w-4 h-4 text-blue-400" />
+                <CardTitle className="text-neutral-100 text-base">User management and RBAC</CardTitle>
+              </div>
+              <Button size="sm" variant="outline" disabled={!canManageTenant} onClick={() => setShowCreateUser((current) => !current)}>
+                <UserPlus className="w-4 h-4 mr-2" />
+                Add User
+              </Button>
+            </div>
+            <CardContent className="p-0">
+              <AnimatePresence>
+                {showCreateUser && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden border-b border-white/5">
+                    <div className="p-4 grid md:grid-cols-2 gap-3">
+                      <Input aria-label="New user email" placeholder="email" value={newUser.email} onChange={(e) => setNewUser((current) => ({ ...current, email: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+                      <Input aria-label="New user password" placeholder="temporary password" type="password" value={newUser.password} onChange={(e) => setNewUser((current) => ({ ...current, password: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+                      <Input aria-label="New user first name" placeholder="first name" value={newUser.first_name} onChange={(e) => setNewUser((current) => ({ ...current, first_name: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+                      <Input aria-label="New user last name" placeholder="last name" value={newUser.last_name} onChange={(e) => setNewUser((current) => ({ ...current, last_name: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100" />
+                      <select aria-label="New user role" value={newUser.role_name} onChange={(e) => setNewUser((current) => ({ ...current, role_name: e.target.value }))} className="h-10 rounded-md bg-black/40 border border-white/10 text-neutral-100 px-3 text-sm">
+                        {['viewer', 'analyst', 'auditor', 'operator', 'admin', 'owner'].map((role) => <option key={role} value={role}>{role}</option>)}
+                      </select>
+                      <Button onClick={createTenantUser} disabled={createUserMutation.isPending || !newUser.email || !newUser.password}>Create User</Button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              {usersQuery.isLoading ? (
+                <div className="p-4"><CardSkeleton /></div>
+              ) : (usersQuery.data || []).length === 0 ? (
+                <EmptyState title="No tenant users" description="Users with tenant roles appear here." icon={Users} />
+              ) : (
+                <div className="overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-neutral-900/90 border-b border-white/5">
+                      <tr>
+                        {['User', 'Role', 'Status', 'Actions'].map((header) => <th key={header} className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">{header}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {(usersQuery.data || []).map((tenantUser: TenantUser) => (
+                        <tr key={tenantUser.id} className="hover:bg-white/[0.02]">
+                          <td className="p-4">
+                            <div className="font-medium text-neutral-100">{tenantUser.first_name || ''} {tenantUser.last_name || ''}</div>
+                            <div className="text-xs text-neutral-500">{tenantUser.email}</div>
+                          </td>
+                          <td className="p-4">
+                            <select aria-label={`Role for ${tenantUser.email}`} value={tenantUser.roles?.[0] || 'viewer'} disabled={!canManageTenant} onChange={(e) => setUserRole(tenantUser, e.target.value)} className="h-9 rounded-md bg-black/40 border border-white/10 text-neutral-100 px-2 text-sm">
+                              {['viewer', 'analyst', 'auditor', 'operator', 'admin', 'owner'].map((role) => <option key={role} value={role}>{role}</option>)}
+                            </select>
+                          </td>
+                          <td className="p-4">
+                            <Badge variant="outline" className={tenantUser.is_active ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-neutral-800 text-neutral-400 border-neutral-700'}>{tenantUser.is_active ? 'Active' : 'Disabled'}</Badge>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex flex-wrap gap-2">
+                              <Button size="sm" variant="outline" disabled={!canManageTenant} onClick={() => toggleUserActive(tenantUser)}>{tenantUser.is_active ? 'Disable' : 'Enable'}</Button>
+                              <Button size="sm" variant="outline" disabled={!canManageTenant || tenantUser.id === user?.id} onClick={() => removeTenantUser(tenantUser.id)}>Remove</Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="glass-card overflow-hidden">
+            <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-blue-400" />
+              <CardTitle className="text-neutral-100 text-base">Rate-limit tiers</CardTitle>
+            </div>
+            <CardContent className="p-0">
+              {rateTiersQuery.isLoading ? (
+                <div className="p-4"><CardSkeleton /></div>
+              ) : (
+                <div className="overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-neutral-900/90 border-b border-white/5">
+                      <tr>
+                        {['Tier', 'RPM', 'Daily', 'Concurrent', 'Streams', 'Reports/hr'].map((header) => <th key={header} className="text-left p-4 text-xs font-medium text-neutral-400 uppercase tracking-wider">{header}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {(rateTiersQuery.data || []).map((tier: RateLimitTier) => (
+                        <tr key={tier.plan_name} className={tenantForm.plan === tier.plan_name ? 'bg-blue-500/5' : 'hover:bg-white/[0.02]'}>
+                          <td className="p-4"><Badge variant="outline" className={tenantForm.plan === tier.plan_name ? 'bg-blue-500/10 text-blue-300 border-blue-500/20' : 'bg-white/5 text-neutral-300 border-white/10'}>{tier.plan_name}</Badge></td>
+                          <td className="p-4 text-neutral-300">{tier.requests_per_minute.toLocaleString()}</td>
+                          <td className="p-4 text-neutral-300">{tier.requests_per_day.toLocaleString()}</td>
+                          <td className="p-4 text-neutral-300">{tier.concurrent_gateway_requests.toLocaleString()}</td>
+                          <td className="p-4 text-neutral-300">{tier.concurrent_streams.toLocaleString()}</td>
+                          <td className="p-4 text-neutral-300">{tier.report_generation_per_hour.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </motion.div>
 
       {/* AI Providers */}
       <motion.div className="space-y-4" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>

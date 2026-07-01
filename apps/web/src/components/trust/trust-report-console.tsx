@@ -15,6 +15,7 @@ import {
   LockKeyhole,
   PackageCheck,
   Plus,
+  Share2,
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
@@ -44,6 +45,7 @@ import {
   useCreateEvidencePackage,
   useCreateReportRun,
   useCreateReportTemplate,
+  useCreateShareLink,
   useDeleteReportTemplate,
   useDownloadReportArtifact,
   useEvidencePackages,
@@ -55,6 +57,8 @@ import {
   useReportArtifacts,
   useReportRuns,
   useReportTemplates,
+  useRevokeShareLink,
+  useShareLinks,
   useTrustNotifications,
   useTrustOverview,
   useTrustPosture,
@@ -109,6 +113,7 @@ function permissionsFor(user: unknown) {
     canDownload: hasAnyRole(user, ['owner', 'admin', 'auditor']),
     canManageTemplates: hasAnyRole(user, ['owner', 'admin']),
     canViewAccessLogs: hasAnyRole(user, ['owner', 'admin', 'auditor']),
+    canShare: hasAnyRole(user, ['owner', 'admin', 'auditor']),
   };
 }
 
@@ -800,12 +805,16 @@ function ArtifactMiniList({ artifacts }: { artifacts: ReportArtifactMetadata[] }
   );
 }
 
-function ArtifactsView({ canDownload }: { canDownload: boolean }) {
+function ArtifactsView({ canDownload, canShare }: { canDownload: boolean; canShare: boolean }) {
   const [selected, setSelected] = useState<ReportArtifactMetadata | null>(null);
   const [downloaded, setDownloaded] = useState<ReportArtifactDownload | null>(null);
+  const [createdShare, setCreatedShare] = useState<{ token?: string; artifact_id: string; expires_at: string } | null>(null);
   const [filters, setFilters] = useState({ artifact_type: '', run_id: '' });
   const artifactsQuery = useReportArtifacts({ ...filters, skip: 0, limit: PAGE_SIZE });
   const downloadArtifact = useDownloadReportArtifact();
+  const createShare = useCreateShareLink();
+  const shareLinksQuery = useShareLinks({ skip: 0, limit: PAGE_SIZE });
+  const revokeShare = useRevokeShareLink();
   const handleDownload = async (artifact: ReportArtifactMetadata) => {
     try {
       const result = await downloadArtifact.mutateAsync(artifact.id);
@@ -815,9 +824,20 @@ function ArtifactsView({ canDownload }: { canDownload: boolean }) {
       toast.error(errorMessage(err));
     }
   };
+  const handleShare = async (artifact: ReportArtifactMetadata) => {
+    try {
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await createShare.mutateAsync({ artifact_id: artifact.id, expires_at: expiresAt, max_downloads: 5 });
+      setCreatedShare({ token: result.token, artifact_id: result.artifact_id, expires_at: result.expires_at });
+      toast.success('Trust Center share link created');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err));
+    }
+  };
   return (
     <ReportShell view="artifacts">
       {!canDownload && <RoleNotice text="Artifact download controls are hidden for this role. Metadata remains visible where permitted." />}
+      {!canShare && <RoleNotice text="Shareable Trust Center controls require auditor, admin, or owner role." />}
       <Card className="glass-card">
         <CardContent className="p-4">
           <div className="grid md:grid-cols-2 gap-3">
@@ -826,9 +846,11 @@ function ArtifactsView({ canDownload }: { canDownload: boolean }) {
           </div>
         </CardContent>
       </Card>
-      <ArtifactsTable artifacts={artifactsQuery.data?.items || []} loading={artifactsQuery.isLoading} onSelect={setSelected} onDownload={handleDownload} canDownload={canDownload} />
+      <ArtifactsTable artifacts={artifactsQuery.data?.items || []} loading={artifactsQuery.isLoading} onSelect={setSelected} onDownload={handleDownload} onShare={handleShare} canDownload={canDownload} canShare={canShare} />
+      <ShareLinksTable links={shareLinksQuery.data?.items || []} loading={shareLinksQuery.isLoading} onRevoke={(id) => revokeShare.mutate(id)} canShare={canShare} />
       <ArtifactDetailSheet artifact={selected} onClose={() => setSelected(null)} />
       <DownloadMetadataSheet result={downloaded} onClose={() => setDownloaded(null)} />
+      <ShareLinkSheet result={createdShare} onClose={() => setCreatedShare(null)} />
     </ReportShell>
   );
 }
@@ -838,13 +860,17 @@ function ArtifactsTable({
   loading,
   onSelect,
   onDownload,
+  onShare,
   canDownload = false,
+  canShare = false,
 }: {
   artifacts: ReportArtifactMetadata[];
   loading?: boolean;
   onSelect?: (artifact: ReportArtifactMetadata) => void;
   onDownload?: (artifact: ReportArtifactMetadata) => void;
+  onShare?: (artifact: ReportArtifactMetadata) => void;
   canDownload?: boolean;
+  canShare?: boolean;
 }) {
   return (
     <Card className="glass-card overflow-hidden">
@@ -862,12 +888,71 @@ function ArtifactsTable({
               <div className="flex flex-wrap gap-2">
                 {onSelect && <Button size="sm" variant="outline" onClick={() => onSelect(artifact)}>Manifest</Button>}
                 {onDownload && canDownload && <Button size="sm" variant="outline" onClick={() => onDownload(artifact)}>Download</Button>}
+                {onShare && canShare && <Button size="sm" variant="outline" onClick={() => onShare(artifact)}><Share2 className="h-3.5 w-3.5 mr-1" />Share</Button>}
               </div>
             </td>
           </tr>
         ))}
       </DataTable>
     </Card>
+  );
+}
+
+function ShareLinksTable({
+  links,
+  loading,
+  onRevoke,
+  canShare,
+}: {
+  links: Array<{ id: string; artifact_id: string; expires_at: string; revoked_at?: string | null; max_downloads: number }>;
+  loading?: boolean;
+  onRevoke: (id: string) => void;
+  canShare: boolean;
+}) {
+  return (
+    <Card className="glass-card overflow-hidden">
+      <div className="p-4 border-b border-white/5 bg-black/20 flex items-center gap-2">
+        <Share2 className="h-4 w-4 text-blue-400" />
+        <CardTitle className="text-neutral-100 text-base">Shareable Trust Center links</CardTitle>
+      </div>
+      <DataTable headers={['Status', 'Artifact', 'Max downloads', 'Expires', 'Actions']} loading={loading} emptyTitle="No share links" emptyDescription="Create a share link from a sanitized artifact to share Trust Center evidence externally.">
+        {links.map((link) => (
+          <tr key={link.id} className="hover:bg-white/[0.02]">
+            <td className="p-4"><LabelBadge value={link.revoked_at ? 'revoked' : 'active'} /></td>
+            <td className="p-4 font-mono text-xs text-neutral-400 max-w-[220px] truncate">{safeExportText(link.artifact_id)}</td>
+            <td className="p-4 text-neutral-300">{link.max_downloads}</td>
+            <td className="p-4 text-neutral-400 text-xs">{dateText(link.expires_at)}</td>
+            <td className="p-4">
+              <Button size="sm" variant="outline" disabled={!canShare || !!link.revoked_at} onClick={() => onRevoke(link.id)}>Revoke</Button>
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+    </Card>
+  );
+}
+
+function ShareLinkSheet({ result, onClose }: { result: { token?: string; artifact_id: string; expires_at: string } | null; onClose: () => void }) {
+  return (
+    <Sheet open={!!result} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="w-full sm:max-w-xl bg-[#0a0a0a] border-white/10 text-neutral-100 overflow-y-auto">
+        {result && (
+          <>
+            <SheetHeader className="border-b border-white/5">
+              <SheetTitle>Trust Center share link created</SheetTitle>
+              <SheetDescription className="font-mono text-xs">{result.artifact_id}</SheetDescription>
+            </SheetHeader>
+            <div className="p-4 space-y-4">
+              <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                Copy this token now. The console only displays the external share token immediately after creation.
+              </div>
+              <Info label="Share token" value={result.token || 'not returned'} mono />
+              <Info label="Expires" value={dateText(result.expires_at)} />
+            </div>
+          </>
+        )}
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -1148,7 +1233,7 @@ export function ReportConsole({ view = 'overview' }: { view?: ReportView }) {
   if (!permissions.canViewReports) return <NoReportAccess />;
   if (view === 'templates') return <TemplatesView canManageTemplates={permissions.canManageTemplates} />;
   if (view === 'runs') return <RunsView canGenerate={permissions.canGenerate} />;
-  if (view === 'artifacts') return <ArtifactsView canDownload={permissions.canDownload} />;
+  if (view === 'artifacts') return <ArtifactsView canDownload={permissions.canDownload} canShare={permissions.canShare} />;
   if (view === 'evidence-packages') return <EvidencePackagesView canGenerate={permissions.canGenerate} />;
   if (view === 'access-logs') return <AccessLogsView canViewAccessLogs={permissions.canViewAccessLogs} />;
   return <ReportOverviewView canGenerate={permissions.canGenerate} canDownload={permissions.canDownload} />;

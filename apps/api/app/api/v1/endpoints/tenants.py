@@ -3,12 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.api.dependencies import get_db, get_current_tenant, require_roles
-from app.models.tenant import Tenant
+from app.core.exceptions import BadRequestException
+from app.core.rate_limit.plans import PLAN_LIMITS
+from app.models.tenant import Tenant, TenantPlan
 from app.models.user import User
 from app.models.policy import Policy
 from app.models.api_key import ApiKey
 from app.models.gateway import GatewayRequest, RequestStatus
-from app.schemas.tenant import TenantResponse, TenantUpdate, TenantStats
+from app.schemas.tenant import RateLimitTierResponse, TenantResponse, TenantUpdate, TenantStats
 
 router = APIRouter()
 
@@ -37,6 +39,13 @@ async def update_tenant_details(
         tenant.name = body.name
     if body.status is not None:
         tenant.status = body.status
+    if body.plan is not None:
+        try:
+            tenant.plan = TenantPlan(body.plan)
+        except ValueError as exc:
+            raise BadRequestException(detail="Unsupported tenant plan.") from exc
+    if body.settings is not None:
+        tenant.settings = body.settings
 
     await db.flush()
     await db.refresh(tenant)
@@ -48,6 +57,17 @@ async def update_tenant_details(
     await policy_cache.invalidate(tenant.id)
 
     return tenant
+
+
+@router.get("/rate-limit-tiers", response_model=list[RateLimitTierResponse])
+async def get_rate_limit_tiers(
+    _tenant: Tenant = Depends(get_current_tenant),
+    _user: User = Depends(require_roles(["owner", "admin", "analyst", "auditor", "viewer"]))
+):
+    """
+    Return the configured tenant-plan rate limit tiers for console administration.
+    """
+    return [RateLimitTierResponse(**limits.__dict__) for limits in PLAN_LIMITS.values()]
 
 
 

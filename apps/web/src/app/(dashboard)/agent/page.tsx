@@ -88,7 +88,7 @@ export default function AgentPage() {
       // Create payload without the initial welcome message, only real history
       const payloadMessages = newMessages.filter(m => m.role !== 'assistant' || !m.content.includes('Hello! I am your **AuthClaw AI Assistant**'));
       
-      const response = await apiClient.post('/agent/chat', { messages: payloadMessages });
+      const response = await apiClient.post('/ai/chat', { messages: payloadMessages });
       
       if (response.data && response.data.status === 'success') {
         const reply = response.data.data;
@@ -227,6 +227,7 @@ export default function AgentPage() {
               />
               <Button 
                 onClick={handleSend} 
+                aria-label="Send message"
                 disabled={isLoading || !input.trim()} 
                 className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg h-11 px-4 shadow-lg shrink-0 transition-all active:scale-95 disabled:opacity-50"
               >

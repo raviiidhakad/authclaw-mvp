@@ -6,6 +6,8 @@ import pytest
 from app.core.policy.opa_input import OpaInputBuilder, OpaInputContext
 from app.core.policy.opa_runtime import OpaErrorCategory, OpaFailureMode, OpaRuntimeEvaluator, OpaRuntimeStatus
 
+RealAsyncClient = httpx.AsyncClient
+
 
 def _input_document():
     return OpaInputBuilder().build(
@@ -31,7 +33,7 @@ def _client(body=None, *, status_code=200, exc=None, text=None, capture=None):
             return httpx.Response(status_code, text=text, request=request)
         return httpx.Response(status_code, json=body, request=request)
 
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return RealAsyncClient(transport=httpx.MockTransport(handler))
 
 
 @pytest.mark.asyncio

@@ -45,7 +45,7 @@ pyotp==2.9.0
 python-slugify==8.0.4
 PyYAML==6.0.3
 boto3==1.34.14
-hvac==2.1.0
+hvac==2.4.0
 
 # Transitive security constraints
 azure-core==1.41.0

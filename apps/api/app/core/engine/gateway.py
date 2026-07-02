@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 from sqlalchemy import select
@@ -599,7 +599,7 @@ class GatewayService:
                 from app.schemas.security_events import (
                     PIIDetectedEvent, PHIDetectedEvent,
                     ContentRedactedEvent, RequestBlockedEvent,
-                    PolicyViolationEvent, PolicyEvaluatedEvent,
+                    PolicyEvaluatedEvent,
                 )
                 from app.core.events.producer import producer as event_producer
 

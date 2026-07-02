@@ -3,8 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -12,7 +11,6 @@ from app.core.oidc import oauth
 # ... (rest of imports are fine)
 from app.api.dependencies import get_db
 from app.core.security import create_access_token
-from app.core.exceptions import BadRequestException
 from app.models.user import User
 from app.models.tenant import Tenant, TenantDomain, TenantInvite
 from app.models.role import Role, UserRole
@@ -181,7 +179,6 @@ async def oidc_callback(
 
 
 def _issue_tokens(user: User) -> dict:
-    from app.models.token import RefreshToken
     import secrets
     import hashlib
 

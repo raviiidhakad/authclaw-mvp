@@ -387,7 +387,3 @@ async def list_artifact_access_logs(
 
 async def assert_download_permission(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID) -> None:
     await ensure_permission(db, tenant_id, user_id, DOWNLOAD_REPORT)
-
-
-def _unused_download_guard() -> None:
-    raise BadRequestException(detail="Raw report downloads are not available in Sprint 5 Phase 3")

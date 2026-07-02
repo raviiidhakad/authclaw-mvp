@@ -82,8 +82,3 @@ async def health_check():
         "environment": settings.APP_ENV
     }
 
-# Placeholders for future routers (will be added in later days)
-# from app.routes import auth, tenants, users, providers, policies, gateway, audit, compliance, settings_route
-# app.include_router(auth.router, prefix=f"{settings.API_PREFIX}/auth", tags=["Auth"])
-# app.include_router(tenants.router, prefix=f"{settings.API_PREFIX}/tenants", tags=["Tenants"])
-

@@ -38,7 +38,6 @@ structlog==25.4.0
 pytest==9.0.3
 pytest-asyncio==1.4.0
 pytest-cov==6.2.1
-httpx==0.28.1
 moto[kms]==5.0.0
 
 # Utilities

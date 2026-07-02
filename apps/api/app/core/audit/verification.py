@@ -1,7 +1,5 @@
 import uuid
 import logging
-from typing import List, Optional
-from datetime import datetime
 from app.core.audit.repository import AuditRepository, VerificationReport
 from app.core.events.audit_hash import compute_audit_hash, GENESIS_HASH
 

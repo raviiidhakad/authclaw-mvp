@@ -131,7 +131,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
 
       - name: Deploy API to ECS (rolling update)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE_API }}

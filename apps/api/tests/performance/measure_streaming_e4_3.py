@@ -32,10 +32,8 @@ if str(API_ROOT) not in sys.path:
 import httpx
 
 from app.core.engine.audit import AuditEngine
-from app.core.engine.sse_parser import ParsedSseEvent, SseParser
-from app.core.engine.streaming import StreamingEngine, StreamingMode
+from app.core.engine.streaming import ParsedSseEvent, SseParser, StreamingEngine, StreamingMode, Utf8IncrementalDecoder
 from app.core.engine.streaming_state_machine import StreamingRedactionStateMachine
-from app.core.engine.utf8_decoder import Utf8IncrementalDecoder
 from app.core.performance.benchmark_contracts import (
     BenchmarkEnvironmentContract,
     BenchmarkResultContract,

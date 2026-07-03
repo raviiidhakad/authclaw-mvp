@@ -1,3 +1,4 @@
+import hashlib
 import re
 import uuid
 import logging
@@ -20,6 +21,97 @@ class TokenVaultService:
 
     TOKEN_REGEX = re.compile(r"\{\{AUTHCLAW:TOKEN:([a-fA-F0-9\-]+)\}\}")
     TOKEN_FORMAT = "{{{{AUTHCLAW:TOKEN:{token_uuid}}}}}"
+
+    @staticmethod
+    def _hash_detections(text: str, detections: List[Dict[str, Any]]) -> str:
+        result = text
+        for detection in sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True):
+            start = int(detection.get("start", 0))
+            end = int(detection.get("end", 0))
+            if start < 0 or end < start or end > len(text):
+                continue
+            entity_type = str(detection.get("entity_type", "PII")).upper()
+            digest = hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()[:16]
+            result = result[:start] + f"<HASHED_{entity_type}_{digest}>" + result[end:]
+        return result
+
+    @classmethod
+    async def apply_redaction(
+        cls,
+        text: str,
+        detections: List[Dict[str, Any]],
+        sanitized_text: str,
+        route_mode: str,
+        entity_actions: Dict[str, str],
+        reversible_entities: List[str],
+        tenant_id: str | uuid.UUID,
+    ) -> tuple[str, str]:
+        from app.core.engine.pii import PIIRedactor
+
+        requested_modes = {
+            entity_actions.get(str(detection.get("entity_type", "")).upper(), "").upper()
+            for detection in detections
+        }
+        mode = route_mode if route_mode in {"MASK", "HASH", "SYNTHETIC"} else ""
+        if not mode:
+            if "SYNTHETIC" in requested_modes:
+                mode = "SYNTHETIC"
+            elif "HASH" in requested_modes:
+                mode = "HASH"
+            else:
+                mode = "MASK"
+
+        has_reversible = any(str(d.get("entity_type", "")).upper() in reversible_entities for d in detections)
+        if not has_reversible:
+            if mode == "SYNTHETIC":
+                return PIIRedactor.synthesize_detections(text, detections), mode
+            if mode == "HASH":
+                return cls._hash_detections(text, detections), mode
+            return sanitized_text, "MASK"
+
+        sorted_detections = sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True)
+        result = text
+        mappings = {}
+
+        for idx, detection in enumerate(sorted_detections, start=1):
+            start = int(detection.get("start", 0))
+            end = int(detection.get("end", 0))
+            if start < 0 or end < start or end > len(text):
+                continue
+
+            entity_type = str(detection.get("entity_type", "PII")).upper()
+            original_value = text[start:end]
+
+            if entity_type in reversible_entities:
+                token_uuid = str(uuid.uuid4())
+                placeholder = cls.TOKEN_FORMAT.format(token_uuid=token_uuid)
+                mappings[token_uuid] = original_value
+                result = result[:start] + placeholder + result[end:]
+            else:
+                action = entity_actions.get(entity_type, mode)
+                if action == "SYNTHETIC":
+                    replacement = PIIRedactor.synthetic_value(entity_type, idx)
+                elif action == "HASH":
+                    digest = hashlib.sha256(original_value.encode("utf-8")).hexdigest()[:16]
+                    replacement = f"<HASHED_{entity_type}_{digest}>"
+                else:
+                    replacement = f"[{entity_type}]"
+                result = result[:start] + replacement + result[end:]
+
+        if mappings:
+            await cls.store_batch(tenant_id, mappings)
+
+        return result, mode
+
+    @classmethod
+    async def detokenize_payload(cls, tenant_id: str | uuid.UUID, obj: Any) -> Any:
+        if isinstance(obj, str):
+            return await cls.detokenize(tenant_id, obj)
+        if isinstance(obj, list):
+            return [await cls.detokenize_payload(tenant_id, value) for value in obj]
+        if isinstance(obj, dict):
+            return {key: await cls.detokenize_payload(tenant_id, value) for key, value in obj.items()}
+        return obj
 
     @classmethod
     def _build_key(cls, tenant_id: str | uuid.UUID, token_uuid: str) -> str:

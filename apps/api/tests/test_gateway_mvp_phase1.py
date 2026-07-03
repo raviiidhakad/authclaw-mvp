@@ -12,71 +12,7 @@ from app.core.exceptions import UnauthorizedException
 from app.models.api_key import ApiKeyScope
 from app.models.gateway_route import RedactionStrategy
 from app.models.provider import ProviderType
-
-
-class FakeScalarResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._all_items = all_items if all_items is not None else ([] if first is None else [first])
-
-    def first(self):
-        return self._first
-
-    def all(self):
-        return self._all_items
-
-
-class FakeResult:
-    def __init__(self, first=None, all_items=None):
-        self._scalars = FakeScalarResult(first=first, all_items=all_items)
-
-    def scalars(self):
-        return self._scalars
-
-
-class FakeDb:
-    def __init__(self, *results):
-        self.results = list(results)
-
-    async def execute(self, _stmt):
-        if not self.results:
-            raise AssertionError("Unexpected DB query in gateway test")
-        return self.results.pop(0)
-
-    async def commit(self):
-        return None
-
-    async def rollback(self):
-        return None
-
-    async def flush(self):
-        return None
-
-
-class FakeScanResult:
-    def __init__(self, text, detected=True):
-        start = text.find("person@example.test")
-        self.detections = []
-        self.sanitized_text = text
-        self.latency_ms = 1
-        if detected and start >= 0:
-            self.detections = [
-                {
-                    "entity_type": "EMAIL_ADDRESS",
-                    "start": start,
-                    "end": start + len("person@example.test"),
-                    "score": 0.99,
-                }
-            ]
-            self.sanitized_text = text.replace("person@example.test", "<EMAIL_ADDRESS>")
-
-    @property
-    def has_detections(self):
-        return bool(self.detections)
-
-    @property
-    def entity_types(self):
-        return [detection["entity_type"] for detection in self.detections]
+from tests.gateway_test_helpers import FakeDb, FakeResult, FakeScanResult
 
 
 def _provider(provider_type=ProviderType.groq, provider_id=None, active=True):

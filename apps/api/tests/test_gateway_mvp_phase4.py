@@ -24,6 +24,7 @@ from app.models.gateway_route import RedactionStrategy
 from app.models.policy import PolicyAction, RuleType
 from app.models.provider import ProviderType
 from app.schemas.policy import PolicyTestRequest, PolicyYamlRequest
+from tests.gateway_test_helpers import FakeDb, FakeResult
 
 
 VALID_YAML = """
@@ -45,45 +46,6 @@ rules:
       pii_types: [EMAIL_ADDRESS]
       redaction_mode: MASK
 """
-
-
-class FakeScalarResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._all_items = all_items if all_items is not None else ([] if first is None else [first])
-
-    def first(self):
-        return self._first
-
-    def all(self):
-        return self._all_items
-
-
-class FakeResult:
-    def __init__(self, first=None, all_items=None):
-        self._scalars = FakeScalarResult(first=first, all_items=all_items)
-
-    def scalars(self):
-        return self._scalars
-
-
-class FakeDb:
-    def __init__(self, *results):
-        self.results = list(results)
-
-    async def execute(self, _stmt):
-        if not self.results:
-            raise AssertionError("Unexpected DB query in phase 4 test")
-        return self.results.pop(0)
-
-    async def commit(self):
-        return None
-
-    async def rollback(self):
-        return None
-
-    async def flush(self):
-        return None
 
 
 def _provider():

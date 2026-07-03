@@ -1,6 +1,6 @@
 import pytest
 
-from app.core.engine.sse_parser import ParsedSseEvent, SseField, SseParser, SseParserError
+from app.core.engine.streaming import ParsedSseEvent, SseField, SseParser, SseParserError
 
 
 async def _aiter(chunks):

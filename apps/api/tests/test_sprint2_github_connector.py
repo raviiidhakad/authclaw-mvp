@@ -1,23 +1,3 @@
-"""
-AuthClaw Sprint 2 — GitHub Connector Tests
--------------------------------------------
-All tests use httpx mock transport (respx or unittest.mock) — no live GitHub calls.
-
-Coverage:
-  - validate_credentials: token valid, missing token, wrong org, HTTP 401,
-    missing OAuth scopes, org 404
-  - fetch_findings GHAS primary path: code scanning + secret scanning alerts
-  - fetch_findings fallback trigger on 403/404/422
-  - _map_code_scanning_alert: severity mapping, external_id format
-  - _map_secret_scanning_alert: always CRITICAL, title format
-  - _scan_branch_protection: no protection → high finding; 200 → no finding
-  - _scan_repo_visibility: public repo → medium finding; private → no finding
-  - _scan_actions_security: write perms → medium finding; read → no finding
-  - _scan_outside_collaborators: admin outside collab → high finding
-  - _extract_next_link: Link header parsing
-  - _paginate: pagination stops at limit
-  - MAX_FINDINGS_PER_SYNC enforcement
-"""
 from __future__ import annotations
 
 import uuid
@@ -34,8 +14,6 @@ from app.services.connectors.github import GitHubConnector, _REQUIRED_SCOPES
 from app.services.connectors.base import RawFindingData
 from app.services.connectors.registry import ConnectorRegistry
 
-
-# ── Fixtures ───────────────────────────────────────────────────────────────────
 
 GITHUB_ORG   = "acme-corp"
 GITHUB_TOKEN = "ghp_test_token_1234567890abcdef"
@@ -99,10 +77,6 @@ def reset_registry():
 def connector():
     return _make_connector()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# validate_credentials
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGitHubValidateCredentials:
 
@@ -197,10 +171,6 @@ class TestGitHubValidateCredentials:
             with pytest.raises(ValueError, match="missing required OAuth scopes"):
                 await connector.validate_credentials()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# fetch_findings — primary GHAS path
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGitHubFetchFindingsGHAS:
 
@@ -303,10 +273,6 @@ class TestGitHubFetchFindingsGHAS:
                     await connector.fetch_findings()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Severity and alert mapping
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestGitHubAlertMapping:
 
     @pytest.mark.parametrize("gh_severity,expected", [
@@ -361,10 +327,6 @@ class TestGitHubAlertMapping:
         assert "GitHub PAT" in finding.title
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Fallback scanners
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestGitHubFallbackScanners:
 
     def _make_repos(self, *names: str, public: bool = False) -> list[dict]:
@@ -378,8 +340,6 @@ class TestGitHubFallbackScanners:
             }
             for n in names
         ]
-
-    # ── Branch protection ───────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_branch_protection_no_rule_gives_high_finding(self, connector):
@@ -401,8 +361,6 @@ class TestGitHubFallbackScanners:
         findings = await connector._scan_branch_protection(mock_client, repos)
         assert findings == []
 
-    # ── Repo visibility ─────────────────────────────────────────────────────
-
     @pytest.mark.asyncio
     async def test_visibility_public_repo_gives_medium_finding(self, connector):
         repos = self._make_repos("public-repo", public=True)
@@ -416,8 +374,6 @@ class TestGitHubFallbackScanners:
         repos = self._make_repos("private-repo", public=False)
         findings = await connector._scan_repo_visibility(AsyncMock(), repos)
         assert findings == []
-
-    # ── Actions security ────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_actions_write_perms_gives_medium_finding(self, connector):
@@ -440,14 +396,10 @@ class TestGitHubFallbackScanners:
         findings = await connector._scan_actions_security(mock_client, repos)
         assert findings == []
 
-    # ── Outside collaborators ───────────────────────────────────────────────
-
     @pytest.mark.asyncio
     async def test_outside_collab_admin_gives_high_finding(self, connector):
         repos = self._make_repos("repo-x")
         mock_client = AsyncMock()
-        # First call = list outside_collaborators (returns one user)
-        # Second call = check that user's permission on repo-x
         mock_client.get.side_effect = [
             _mock_response(200, [{"login": "evil-outsider"}], {"Link": ""}),
             _mock_response(200, {"permission": "admin"}),
@@ -476,10 +428,6 @@ class TestGitHubFallbackScanners:
         findings = await connector._scan_outside_collaborators(mock_client, repos)
         assert findings == []
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Utilities
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGitHubUtilities:
 

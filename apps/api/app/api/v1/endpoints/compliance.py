@@ -30,7 +30,6 @@ from app.models.compliance import (
     EvidenceStatus,
     EvidenceSourceType,
     FindingControlMapping,
-    KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeDocumentStatus,
     MappingReviewStatus,
@@ -50,23 +49,34 @@ from app.schemas.compliance import (
     ComplianceGapListResponse,
     ComplianceGapResponse,
     ComplianceRecommendationListResponse,
-    ComplianceRecommendationResponse,
     FindingControlMappingListResponse,
     FindingControlMappingResponse,
     MappingReviewRequest,
-    ControlRequirementResponse,
     ControlAssessmentResultResponse,
     EvidenceItemListResponse,
     EvidenceItemResponse,
-    KnowledgeChunkResponse,
     KnowledgeDocumentListResponse,
     KnowledgeDocumentResponse,
     KnowledgeIngestRequest,
     KnowledgeIngestResponse,
-    RetrievalCitationResponse,
-    RetrievalChunkResultResponse,
     RetrievalQueryRequest,
     RetrievalQueryResponse,
+)
+from app.api.v1.endpoints.compliance_presenters import (
+    assessment_response,
+    ask_response,
+    ask_session_response,
+    control_response,
+    control_result_response,
+    enum_value,
+    evidence_response,
+    framework_response,
+    gap_response,
+    knowledge_document_response,
+    legacy_posture_status,
+    mapping_response,
+    recommendation_response,
+    retrieval_response,
 )
 from app.core.events.producer import producer
 from app.core.engine.compliance import ComplianceRuleChecker
@@ -85,301 +95,6 @@ def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def _legacy_posture_status(score: float) -> str:
-    if score >= 80:
-        return "evidence_supported"
-    if score >= 50:
-        return "at_risk"
-    return "high_risk"
-
-
-def _requirement_response(requirement) -> ControlRequirementResponse:
-    return ControlRequirementResponse(
-        id=requirement.id,
-        requirement_key=requirement.requirement_key,
-        summary=requirement.summary,
-        evidence_expectation=requirement.evidence_expectation,
-        sort_order=requirement.sort_order,
-    )
-
-
-def _control_response(control: ComplianceControl) -> ComplianceControlResponse:
-    return ComplianceControlResponse(
-        id=control.id,
-        framework_id=control.framework_id,
-        control_code=control.control_code,
-        title=control.title,
-        summary=control.summary,
-        domain=control.domain,
-        category=control.category,
-        severity_weight=control.severity_weight,
-        requires_review=control.requires_review,
-        sort_order=control.sort_order,
-        metadata=control.metadata_,
-        requirements=[_requirement_response(req) for req in control.requirements],
-        created_at=control.created_at,
-        updated_at=control.updated_at,
-    )
-
-
-def _framework_response(framework: ComplianceFramework) -> ComplianceFrameworkResponse:
-    return ComplianceFrameworkResponse(
-        id=framework.id,
-        key=framework.key,
-        version=framework.version,
-        name=framework.name,
-        description=framework.description,
-        source_url=framework.source_url,
-        license_note=framework.license_note,
-        status=framework.status,
-        metadata=framework.metadata_,
-        control_count=len(framework.controls),
-        created_at=framework.created_at,
-        updated_at=framework.updated_at,
-    )
-
-
-def _mapping_response(mapping: FindingControlMapping) -> FindingControlMappingResponse:
-    control = mapping.control
-    framework = control.framework if control is not None else None
-    return FindingControlMappingResponse(
-        id=mapping.id,
-        tenant_id=mapping.tenant_id,
-        finding_id=mapping.finding_id,
-        control_id=mapping.control_id,
-        rule_id=mapping.rule_id,
-        confidence=mapping.confidence,
-        mapping_source=mapping.mapping_source.value,
-        review_status=mapping.review_status.value,
-        override_reason=mapping.override_reason,
-        control_code=control.control_code if control is not None else None,
-        control_title=control.title if control is not None else None,
-        framework_key=framework.key if framework is not None else None,
-        created_at=mapping.created_at,
-        updated_at=mapping.updated_at,
-    )
-
-
-def _enum_value(value) -> str:
-    return value.value if hasattr(value, "value") else str(value)
-
-
-def _evidence_response(evidence: EvidenceItem) -> EvidenceItemResponse:
-    control = evidence.control
-    framework = control.framework if control is not None else None
-    return EvidenceItemResponse(
-        id=evidence.id,
-        tenant_id=evidence.tenant_id,
-        control_id=evidence.control_id,
-        finding_id=evidence.finding_id,
-        integration_id=evidence.integration_id,
-        audit_log_id=evidence.audit_log_id,
-        mapping_id=evidence.mapping_id,
-        source_type=_enum_value(evidence.source_type),
-        status=_enum_value(evidence.status),
-        safe_summary=evidence.safe_summary,
-        proof_hash=evidence.proof_hash,
-        freshness_expires_at=evidence.freshness_expires_at,
-        metadata=evidence.metadata_,
-        control_code=control.control_code if control is not None else None,
-        framework_key=framework.key if framework is not None else None,
-        created_at=evidence.created_at,
-        updated_at=evidence.updated_at,
-    )
-
-
-def _gap_response(gap: ComplianceGap) -> ComplianceGapResponse:
-    control = gap.control
-    framework = control.framework if control is not None else None
-    return ComplianceGapResponse(
-        id=gap.id,
-        tenant_id=gap.tenant_id,
-        assessment_id=gap.assessment_id,
-        control_id=gap.control_id,
-        evidence_id=gap.evidence_id,
-        mapping_id=gap.mapping_id,
-        finding_id=gap.finding_id,
-        gap_type=_enum_value(gap.gap_type),
-        severity=_enum_value(gap.severity),
-        reason=gap.reason,
-        evidence_status=gap.evidence_status,
-        metadata=gap.metadata_,
-        control_code=control.control_code if control is not None else None,
-        framework_key=framework.key if framework is not None else None,
-        created_at=gap.created_at,
-        updated_at=gap.updated_at,
-    )
-
-
-def _control_result_response(result: ControlAssessmentResult) -> ControlAssessmentResultResponse:
-    control = result.control
-    return ControlAssessmentResultResponse(
-        id=result.id,
-        tenant_id=result.tenant_id,
-        assessment_id=result.assessment_id,
-        control_id=result.control_id,
-        score=result.score,
-        score_band=_enum_value(result.score_band),
-        evidence_count=result.evidence_count,
-        gap_count=result.gap_count,
-        explanation=result.explanation,
-        metadata=result.metadata_,
-        control_code=control.control_code if control is not None else None,
-        control_title=control.title if control is not None else None,
-        created_at=result.created_at,
-        updated_at=result.updated_at,
-    )
-
-
-def _assessment_response(assessment: ComplianceAssessment, include_detail: bool = False) -> ComplianceAssessmentResponse:
-    framework = assessment.framework
-    return ComplianceAssessmentResponse(
-        id=assessment.id,
-        tenant_id=assessment.tenant_id,
-        framework_id=assessment.framework_id,
-        framework_key=framework.key if framework is not None else None,
-        status=_enum_value(assessment.status),
-        score=assessment.score,
-        score_band=_enum_value(assessment.score_band),
-        started_at=assessment.started_at,
-        completed_at=assessment.completed_at,
-        inputs_hash=assessment.inputs_hash,
-        explanation=assessment.explanation,
-        control_results=[
-            _control_result_response(item)
-            for item in (assessment.control_results if include_detail else [])
-        ],
-        gaps=[_gap_response(gap) for gap in (assessment.gaps if include_detail else [])],
-        created_at=assessment.created_at,
-        updated_at=assessment.updated_at,
-    )
-
-
-def _knowledge_chunk_response(chunk: KnowledgeChunk) -> KnowledgeChunkResponse:
-    return KnowledgeChunkResponse(
-        id=chunk.id,
-        document_id=chunk.document_id,
-        framework_id=chunk.framework_id,
-        tenant_id=chunk.tenant_id,
-        control_id=chunk.control_id,
-        chunk_index=chunk.chunk_index,
-        chunk_text=chunk.chunk_text,
-        summary=chunk.summary,
-        metadata=chunk.metadata_,
-        source_locator=chunk.source_locator,
-        created_at=chunk.created_at,
-        updated_at=chunk.updated_at,
-    )
-
-
-def _knowledge_document_response(
-    document: KnowledgeDocument,
-    include_chunks: bool = False,
-) -> KnowledgeDocumentResponse:
-    chunks = list(document.chunks or [])
-    return KnowledgeDocumentResponse(
-        id=document.id,
-        tenant_id=document.tenant_id,
-        framework_id=document.framework_id,
-        source_type=document.source_type,
-        title=document.title,
-        source_url=document.source_url,
-        license_status=document.license_status,
-        trust_level=document.trust_level,
-        checksum=document.checksum,
-        status=_enum_value(document.status),
-        ingested_by=document.ingested_by,
-        metadata=document.metadata_,
-        chunk_count=len(chunks),
-        chunks=[_knowledge_chunk_response(chunk) for chunk in chunks] if include_chunks else [],
-        created_at=document.created_at,
-        updated_at=document.updated_at,
-    )
-
-
-def _retrieval_response(result) -> RetrievalQueryResponse:
-    return RetrievalQueryResponse(
-        query_hash=result.query_hash,
-        trace_id=result.trace.id,
-        confidence=result.confidence,
-        strategy=result.strategy,
-        results=[
-            RetrievalChunkResultResponse(
-                chunk_id=item.chunk.id,
-                document_id=item.chunk.document_id,
-                chunk_text=item.chunk.chunk_text,
-                summary=item.chunk.summary,
-                score=item.score,
-                citation=RetrievalCitationResponse(**item.citation),
-                metadata=item.chunk.metadata_,
-            )
-            for item in result.results
-        ],
-        generated_answer=None,
-    )
-
-
-def _ask_response(result) -> ComplianceAskResponse:
-    return ComplianceAskResponse(
-        answer=result.answer,
-        confidence=result.confidence,
-        citations=result.citations,
-        related_controls=result.related_controls,
-        related_evidence=result.related_evidence,
-        related_gaps=result.related_gaps,
-        recommended_next_steps=result.recommended_next_steps,
-        refusal_reason=result.refusal_reason,
-        retrieval_trace_id=result.retrieval_trace_id,
-        session_id=result.session.id,
-    )
-
-
-def _ask_session_response(session: AgentComplianceSession) -> ComplianceAskSessionResponse:
-    metadata = dict(session.metadata_ or {})
-    safe_metadata = {
-        key: value
-        for key, value in metadata.items()
-        if key in {"mode", "refused", "related_controls", "related_evidence", "related_gaps", "recommended_next_steps"}
-    }
-    return ComplianceAskSessionResponse(
-        id=session.id,
-        tenant_id=session.tenant_id,
-        user_id=session.user_id,
-        question_hash=session.normalized_question_hash,
-        answer=session.answer,
-        citations=session.citations or [],
-        confidence=session.confidence,
-        refused=session.refusal_reason is not None,
-        refusal_reason=session.refusal_reason,
-        framework_id=session.framework_id,
-        control_id=session.control_id,
-        assessment_id=session.assessment_id,
-        retrieval_trace_id=session.retrieval_trace_id,
-        metadata=safe_metadata,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-    )
-
-
-def _recommendation_response(gap: ComplianceGap) -> ComplianceRecommendationResponse:
-    control = gap.control
-    framework = control.framework if control is not None else None
-    return ComplianceRecommendationResponse(
-        id=gap.id,
-        tenant_id=gap.tenant_id,
-        control_id=gap.control_id,
-        gap_id=gap.id,
-        finding_id=gap.finding_id,
-        severity=_enum_value(gap.severity),
-        status="review_recommended",
-        title=f"Review {_enum_value(gap.gap_type).replace('_', ' ')}",
-        summary=gap.reason,
-        control_code=control.control_code if control is not None else None,
-        framework_key=framework.key if framework is not None else None,
-        created_at=gap.created_at,
-    )
-
-
 async def _publish_mapping_review_event(mapping: FindingControlMapping, actor_id: uuid.UUID | None) -> None:
     event = ComplianceMappingReviewedEvent(
         tenant_id=str(mapping.tenant_id),
@@ -387,7 +102,7 @@ async def _publish_mapping_review_event(mapping: FindingControlMapping, actor_id
         control_id=str(mapping.control_id),
         rule_id=mapping.rule_id,
         confidence=mapping.confidence,
-        review_status=_enum_value(mapping.review_status),
+        review_status=enum_value(mapping.review_status),
         actor_id=str(actor_id) if actor_id else None,
     )
     try:
@@ -431,7 +146,7 @@ async def list_frameworks(
 
     result = await db.execute(query.order_by(ComplianceFramework.key, ComplianceFramework.version))
     frameworks = result.scalars().all()
-    return [_framework_response(item) for item in frameworks[skip : skip + limit]]
+    return [framework_response(item) for item in frameworks[skip : skip + limit]]
 
 
 @router.get("/frameworks/{framework_id}", response_model=ComplianceFrameworkResponse)
@@ -449,7 +164,7 @@ async def get_framework(
     framework = result.scalars().first()
     if framework is None:
         raise NotFoundException(detail="Compliance framework not found")
-    return _framework_response(framework)
+    return framework_response(framework)
 
 
 @router.get(
@@ -502,7 +217,7 @@ async def list_framework_controls(
     total = len(controls)
     paged = controls[skip : skip + limit]
     return ComplianceControlListResponse(
-        items=[_control_response(control) for control in paged],
+        items=[control_response(control) for control in paged],
         total=total,
         skip=skip,
         limit=limit,
@@ -524,7 +239,7 @@ async def get_control(
     control = result.scalars().first()
     if control is None:
         raise NotFoundException(detail="Compliance control not found")
-    return _control_response(control)
+    return control_response(control)
 
 
 @router.get("/mappings", response_model=FindingControlMappingListResponse)
@@ -579,7 +294,7 @@ async def list_mappings(
     mappings = result.scalars().all()
     total = len(mappings)
     return FindingControlMappingListResponse(
-        items=[_mapping_response(mapping) for mapping in mappings[skip : skip + limit]],
+        items=[mapping_response(mapping) for mapping in mappings[skip : skip + limit]],
         total=total,
         skip=skip,
         limit=limit,
@@ -676,7 +391,7 @@ async def review_mapping(
     await db.flush()
     await _publish_mapping_review_event(mapping, current_user.id)
     await db.commit()
-    return _mapping_response(mapping)
+    return mapping_response(mapping)
 
 
 @router.post("/assessments/run", response_model=ComplianceAssessmentResponse)
@@ -718,7 +433,7 @@ async def run_assessment(
             .selectinload(ComplianceControl.framework),
         )
     )
-    return _assessment_response(result.scalars().first(), include_detail=True)
+    return assessment_response(result.scalars().first(), include_detail=True)
 
 
 @router.get("/assessments", response_model=ComplianceAssessmentListResponse)
@@ -755,7 +470,7 @@ async def list_assessments(
         assessments = list(latest_by_framework.values())
     return ComplianceAssessmentListResponse(
         items=[
-            _assessment_response(assessment)
+            assessment_response(assessment)
             for assessment in assessments[skip : skip + limit]
         ],
         total=len(assessments),
@@ -788,7 +503,7 @@ async def get_assessment(
     assessment = result.scalars().first()
     if assessment is None:
         raise NotFoundException(detail="Compliance assessment not found")
-    return _assessment_response(assessment, include_detail=True)
+    return assessment_response(assessment, include_detail=True)
 
 
 @router.get(
@@ -823,7 +538,7 @@ async def list_assessment_controls(
         .order_by(ControlAssessmentResult.created_at.desc())
     )
     controls = result.scalars().all()
-    return [_control_result_response(item) for item in controls[skip : skip + limit]]
+    return [control_result_response(item) for item in controls[skip : skip + limit]]
 
 
 @router.get("/evidence", response_model=EvidenceItemListResponse)
@@ -887,7 +602,7 @@ async def list_evidence(
     result = await db.execute(query.order_by(EvidenceItem.updated_at.desc()))
     evidence = result.scalars().all()
     return EvidenceItemListResponse(
-        items=[_evidence_response(item) for item in evidence[skip : skip + limit]],
+        items=[evidence_response(item) for item in evidence[skip : skip + limit]],
         total=len(evidence),
         skip=skip,
         limit=limit,
@@ -910,7 +625,7 @@ async def get_evidence(
     evidence = result.scalars().first()
     if evidence is None:
         raise NotFoundException(detail="Evidence item not found")
-    return _evidence_response(evidence)
+    return evidence_response(evidence)
 
 
 @router.get("/gaps", response_model=ComplianceGapListResponse)
@@ -950,7 +665,7 @@ async def list_gaps(
     result = await db.execute(query.order_by(ComplianceGap.created_at.desc()))
     gaps = result.scalars().all()
     return ComplianceGapListResponse(
-        items=[_gap_response(gap) for gap in gaps[skip : skip + limit]],
+        items=[gap_response(gap) for gap in gaps[skip : skip + limit]],
         total=len(gaps),
         skip=skip,
         limit=limit,
@@ -973,7 +688,7 @@ async def get_gap(
     gap = result.scalars().first()
     if gap is None:
         raise NotFoundException(detail="Compliance gap not found")
-    return _gap_response(gap)
+    return gap_response(gap)
 
 
 @router.get("/recommendations", response_model=ComplianceRecommendationListResponse)
@@ -1008,7 +723,7 @@ async def list_recommendations(
     result = await db.execute(query.order_by(ComplianceGap.created_at.desc()))
     gaps = result.scalars().all()
     return ComplianceRecommendationListResponse(
-        items=[_recommendation_response(gap) for gap in gaps[skip : skip + limit]],
+        items=[recommendation_response(gap) for gap in gaps[skip : skip + limit]],
         total=len(gaps),
         skip=skip,
         limit=limit,
@@ -1049,7 +764,7 @@ async def list_knowledge_documents(
     documents = result.scalars().all()
     return KnowledgeDocumentListResponse(
         items=[
-            _knowledge_document_response(document)
+            knowledge_document_response(document)
             for document in documents[skip : skip + limit]
         ],
         total=len(documents),
@@ -1096,7 +811,7 @@ async def get_knowledge_document(
     document = result.scalars().first()
     if document is None:
         raise NotFoundException(detail="Knowledge document not found")
-    return _knowledge_document_response(document, include_chunks=True)
+    return knowledge_document_response(document, include_chunks=True)
 
 
 @router.post("/retrieval/query", response_model=RetrievalQueryResponse)
@@ -1115,7 +830,7 @@ async def query_compliance_knowledge(
         session_id=request.session_id,
     )
     await db.commit()
-    return _retrieval_response(result)
+    return retrieval_response(result)
 
 
 @router.post("/ask", response_model=ComplianceAskResponse)
@@ -1135,7 +850,7 @@ async def ask_compliance_question(
         assessment_id=request.assessment_id,
     )
     await db.commit()
-    return _ask_response(result)
+    return ask_response(result)
 
 
 @router.get("/ask/sessions", response_model=ComplianceAskSessionListResponse)
@@ -1166,7 +881,7 @@ async def list_ask_sessions(
     result = await db.execute(query.order_by(AgentComplianceSession.created_at.desc()))
     sessions = result.scalars().all()
     return ComplianceAskSessionListResponse(
-        items=[_ask_session_response(session) for session in sessions[skip : skip + limit]],
+        items=[ask_session_response(session) for session in sessions[skip : skip + limit]],
         total=len(sessions),
         skip=skip,
         limit=limit,
@@ -1190,7 +905,7 @@ async def get_ask_session(
     session = result.scalars().first()
     if session is None:
         raise NotFoundException(detail="Compliance ask session not found")
-    return _ask_session_response(session)
+    return ask_session_response(session)
 
 
 @router.get("/scores")
@@ -1355,7 +1070,7 @@ async def get_compliance_dashboard(
         if latest:
             dashboard[framework] = {
                 "score": latest.score,
-                "status": _legacy_posture_status(latest.score),
+                "status": legacy_posture_status(latest.score),
                 "critical_violations": latest.critical_violations,
                 "last_calculated": latest.calculated_at.isoformat(),
             }
@@ -1422,7 +1137,7 @@ async def export_compliance_report(
         score = result.scalars().first()
         if score:
             status = (
-                _legacy_posture_status(score.score)
+                legacy_posture_status(score.score)
             )
             writer.writerow([
                 fw,

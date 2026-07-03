@@ -66,6 +66,49 @@ class OpaRuntimeDecision:
         }
 
 
+@dataclass
+class OpaRuntimeMetrics:
+    cache_hits: int = 0
+    cache_misses: int = 0
+    runtime_failures: int = 0
+    allow_count: int = 0
+    deny_count: int = 0
+    redact_count: int = 0
+    evaluation_latencies_ms: list[int] = field(default_factory=list)
+
+    def record_cache_hit(self) -> None:
+        self.cache_hits += 1
+
+    def record_cache_miss(self) -> None:
+        self.cache_misses += 1
+
+    def record_decision(self, decision: OpaRuntimeDecision, latency_ms: int) -> None:
+        self.evaluation_latencies_ms.append(int(latency_ms))
+        if decision.runtime_status != OpaRuntimeStatus.OK:
+            self.runtime_failures += 1
+        if decision.allowed:
+            self.allow_count += 1
+        else:
+            self.deny_count += 1
+        if decision.redaction_required:
+            self.redact_count += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        latencies = sorted(self.evaluation_latencies_ms)
+        count = len(latencies)
+        p95 = latencies[min(count - 1, int(count * 0.95))] if count else 0
+        return {
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "runtime_failures": self.runtime_failures,
+            "allow_count": self.allow_count,
+            "deny_count": self.deny_count,
+            "redact_count": self.redact_count,
+            "evaluation_count": count,
+            "evaluation_latency_p95_ms": p95,
+        }
+
+
 class OpaRuntimeEvaluator:
     """HTTP OPA runtime client for sanitized AuthClaw policy input documents.
 

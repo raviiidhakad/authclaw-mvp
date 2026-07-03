@@ -8,10 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.engine.audit import AuditEngine
-from app.core.engine.sse_parser import SseParser, SseParserError
-from app.core.engine.streaming import StreamingEngine
+from app.core.engine.streaming import (
+    ParsedSseEvent,
+    SseParser,
+    SseParserError,
+    StreamingEngine,
+    Utf8DecoderError,
+    Utf8IncrementalDecoder,
+)
 from app.core.engine.streaming_state_machine import StreamingRedactionStateMachine, StreamingState
-from app.core.engine.utf8_decoder import Utf8DecoderError, Utf8IncrementalDecoder
 
 
 class FakeStreamContext:
@@ -178,7 +183,7 @@ def test_state_machine_memory_bounds_after_many_repeated_streams():
     for _ in range(100):
         machine = StreamingRedactionStateMachine(look_behind_chars=16, look_ahead_chars=16, max_window_chars=512)
         for _ in range(50):
-            machine.append(__import__("app.core.engine.sse_parser", fromlist=["ParsedSseEvent"]).ParsedSseEvent(data="word "))
+            machine.append(ParsedSseEvent(data="word "))
             machine.emit_safe()
             assert machine.snapshot().buffered_chars <= 512
         machine.end_of_stream()
@@ -199,7 +204,7 @@ def test_tracemalloc_no_unbounded_state_growth_in_isolated_pipeline():
             decoded = decoder.decode(text) + decoder.flush()
             for event in parser.feed(decoded):
                 if event.data and event.data != "[DONE]":
-                    machine.append(__import__("app.core.engine.sse_parser", fromlist=["ParsedSseEvent"]).ParsedSseEvent(data="memory safe "))
+                    machine.append(ParsedSseEvent(data="memory safe "))
                     machine.emit_safe()
             machine.end_of_stream()
             machine.flush()

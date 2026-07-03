@@ -16,36 +16,7 @@ from app.models.gateway_route import RedactionStrategy
 from app.models.provider import ProviderType
 from app.schemas.gateway import GatewayRequestDetail, GatewayRequestResponseBrief
 from app.schemas.provider import ProviderResponse
-
-
-class FakeScalarResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._all = all_items if all_items is not None else ([] if first is None else [first])
-
-    def first(self):
-        return self._first
-
-    def all(self):
-        return self._all
-
-
-class FakeResult:
-    def __init__(self, first=None, all_items=None):
-        self._scalars = FakeScalarResult(first, all_items)
-
-    def scalars(self):
-        return self._scalars
-
-
-class FakeDb:
-    def __init__(self, *results):
-        self.results = list(results)
-
-    async def execute(self, _stmt):
-        if not self.results:
-            raise AssertionError("Unexpected DB query in phase 2 test")
-        return self.results.pop(0)
+from tests.gateway_test_helpers import FakeDb, FakeResult
 
 
 def _provider():

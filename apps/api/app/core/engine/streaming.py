@@ -3,20 +3,480 @@ import time
 import json
 import hashlib
 import asyncio
+import codecs
 import logging
-from typing import Any, Dict, AsyncGenerator, Optional
+from dataclasses import dataclass, field
+from enum import Enum
+from threading import RLock
+from typing import Any, AsyncGenerator, AsyncIterable, AsyncIterator, Dict, Mapping, Optional, Protocol, Sequence
 import httpx
 from fastapi.responses import StreamingResponse
 
 from app.core.engine.audit import AuditEngine
-from app.core.engine.sse_parser import ParsedSseEvent, SseParser
-from app.core.engine.streaming_state_machine import StreamingRedactionStateMachine
-from app.core.engine.utf8_decoder import Utf8IncrementalDecoder
 from app.core.config import settings
 from app.core.rate_limit.tenant_limiter import tenant_plan_limiter
 from app.services.api_safety import sanitize_text
 
 logger = logging.getLogger(__name__)
+
+
+class StreamingDirection(str, Enum):
+    """Direction of text moving through the streaming security pipeline."""
+
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+class StreamingPolicyAction(str, Enum):
+    """Normalized policy action for future streaming decisions."""
+
+    ALLOW = "allow"
+    REDACT = "redact"
+    BLOCK = "block"
+
+
+class StreamingEmissionKind(str, Enum):
+    """OpenAI-compatible output event categories for future emitters."""
+
+    DELTA = "delta"
+    ERROR = "error"
+    DONE = "done"
+
+
+class StreamingFailureCategory(str, Enum):
+    """Sanitized failure categories for future fail-closed streaming handling."""
+
+    DECODER_ERROR = "decoder_error"
+    SSE_PARSE_ERROR = "sse_parse_error"
+    REDACTION_ERROR = "redaction_error"
+    POLICY_ERROR = "policy_error"
+    TOKENIZATION_ERROR = "tokenization_error"
+    PROVIDER_ERROR = "provider_error"
+    CLIENT_DISCONNECT = "client_disconnect"
+    BACK_PRESSURE_LIMIT = "back_pressure_limit"
+    AUDIT_ERROR = "audit_error"
+
+
+@dataclass(frozen=True)
+class StreamingSecurityInvariants:
+    """Architecture boundaries that E2.3 implementations must preserve."""
+
+    preserve_gateway_api: bool = True
+    preserve_provider_abstractions: bool = True
+    preserve_openai_compatible_sse: bool = True
+    preserve_reversible_tokenization: bool = True
+    preserve_yaml_opa_enforcement: bool = True
+    preserve_sanitized_audit_behavior: bool = True
+    preserve_fail_closed_posture: bool = True
+
+
+@dataclass(frozen=True)
+class StreamingContext:
+    """Tenant-scoped metadata available to future streaming components."""
+
+    tenant_id: str
+    stream_id: str
+    direction: StreamingDirection
+    route_id: str | None = None
+    provider_id: str | None = None
+    provider_name: str | None = None
+    model: str | None = None
+    redaction_mode: str | None = None
+    policy_id: str | None = None
+    policy_version: str | None = None
+    request_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SseEvent:
+    """Provider-agnostic SSE event representation."""
+
+    data: str | None = None
+    event: str | None = None
+    event_id: str | None = None
+    retry_ms: int | None = None
+    comment: str | None = None
+
+
+@dataclass(frozen=True)
+class StreamingTextWindow:
+    """A deterministic text window held until it is safe to emit."""
+
+    text: str
+    safe_prefix: str
+    retained_suffix: str
+    sequence: int
+    is_final: bool = False
+
+
+@dataclass(frozen=True)
+class StreamingPolicyDecision:
+    """Sanitized policy decision shape for future streaming enforcement."""
+
+    action: StreamingPolicyAction
+    allowed: bool
+    reason_code: str
+    matched_rules: Sequence[str] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StreamingTokenizationResult:
+    """Tokenization summary that excludes raw sensitive values."""
+
+    text: str
+    mode: str
+    token_count: int = 0
+    entity_types: Sequence[str] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StreamingEmission:
+    """SSE emission requested by a future output emitter."""
+
+    kind: StreamingEmissionKind
+    payload: Mapping[str, Any]
+    sequence: int
+
+
+class SseParserContract(Protocol):
+    """Parse byte chunks into normalized SSE events without policy decisions."""
+
+    async def parse(self, chunks: AsyncIterable[bytes]) -> AsyncIterator[SseEvent]:
+        ...
+
+
+class Utf8IncrementalDecoderContract(Protocol):
+    """Decode provider bytes incrementally without replacing partial codepoints."""
+
+    def decode(self, chunk: bytes, *, final: bool = False) -> str:
+        ...
+
+
+class StreamingRedactionStateMachineContract(Protocol):
+    """Hold unsafe suffixes and emit only scanned, policy-safe text windows."""
+
+    async def process_text(
+        self,
+        context: StreamingContext,
+        text: str,
+        *,
+        is_final: bool = False,
+    ) -> AsyncIterator[StreamingTextWindow]:
+        ...
+
+
+class StreamingPolicyEvaluationContract(Protocol):
+    """Evaluate sanitized streaming windows through the existing policy boundary."""
+
+    async def evaluate_window(
+        self,
+        context: StreamingContext,
+        window: StreamingTextWindow,
+    ) -> StreamingPolicyDecision:
+        ...
+
+
+class StreamingTokenizationContract(Protocol):
+    """Apply E2.1-compatible tokenization/redaction without exposing raw values."""
+
+    async def transform_window(
+        self,
+        context: StreamingContext,
+        window: StreamingTextWindow,
+        decision: StreamingPolicyDecision,
+    ) -> StreamingTokenizationResult:
+        ...
+
+
+class StreamingOutputEmitterContract(Protocol):
+    """Emit OpenAI-compatible SSE events from sanitized streaming payloads."""
+
+    async def emit(
+        self,
+        context: StreamingContext,
+        tokenized: StreamingTokenizationResult,
+        *,
+        sequence: int,
+        is_final: bool = False,
+    ) -> AsyncIterator[StreamingEmission]:
+        ...
+
+
+E2_3_SECURITY_INVARIANTS = StreamingSecurityInvariants()
+
+
+class Utf8DecoderError(UnicodeError):
+    """Controlled UTF-8 decoder failure without raw byte disclosure."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"utf8_decoder_error:{reason}")
+        self.reason = reason
+
+
+class Utf8IncrementalDecoder(Utf8IncrementalDecoderContract):
+    """
+    Strict incremental UTF-8 decoder for arbitrary byte chunks.
+
+    The decoder buffers incomplete UTF-8 sequences internally and emits only
+    complete Unicode text. Malformed UTF-8 raises Utf8DecoderError instead of
+    silently replacing bytes with U+FFFD.
+    """
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        self._lock = RLock()
+
+    def decode(self, chunk: bytes, *, final: bool = False) -> str:
+        """Decode a bytes chunk, buffering incomplete sequences until complete."""
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise TypeError("chunk must be bytes-like")
+
+        try:
+            with self._lock:
+                return self._decoder.decode(chunk, final=final)
+        except UnicodeDecodeError as exc:
+            raise Utf8DecoderError(self._classify_error(exc)) from exc
+
+    def flush(self) -> str:
+        """Flush buffered bytes at stream end, failing on truncated sequences."""
+        return self.decode(b"", final=True)
+
+    def reset(self) -> None:
+        """Reset decoder state so the instance can be reused for a new stream."""
+        with self._lock:
+            self._decoder.reset()
+
+    @staticmethod
+    def _classify_error(exc: UnicodeDecodeError) -> str:
+        reason = (exc.reason or "").lower()
+        if "unexpected end of data" in reason:
+            return "unexpected_eof"
+        if "invalid continuation byte" in reason:
+            return "invalid_continuation_byte"
+        if "invalid start byte" in reason:
+            return "invalid_start_byte"
+        if "surrogates not allowed" in reason:
+            return "illegal_utf8"
+        return "malformed_utf8"
+
+
+class SseParserError(ValueError):
+    """Controlled SSE parser failure without partial event disclosure."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"sse_parser_error:{reason}")
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class SseField:
+    """Ordered SSE field as received after line parsing."""
+
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ParsedSseEvent(SseEvent):
+    """Immutable parsed SSE event with ordered field preservation."""
+
+    fields: tuple[SseField, ...] = field(default_factory=tuple)
+    unknown_fields: tuple[SseField, ...] = field(default_factory=tuple)
+
+
+class SseParser(SseParserContract):
+    """
+    Incremental SSE parser for decoded Unicode text chunks.
+
+    The parser implements field framing only. It does not parse JSON, interpret
+    OpenAI payloads, apply policy, redact, tokenize, or detokenize.
+    """
+
+    _KNOWN_FIELDS = {"data", "event", "id", "retry"}
+
+    def __init__(self, *, max_event_chars: int = 1_048_576) -> None:
+        if max_event_chars <= 0:
+            raise ValueError("max_event_chars must be positive")
+        self._max_event_chars = max_event_chars
+        self._line_buffer = ""
+        self._line_buffer_counted_chars = 0
+        self._data_lines: list[str] = []
+        self._event: str | None = None
+        self._event_id: str | None = None
+        self._retry_ms: int | None = None
+        self._comment_lines: list[str] = []
+        self._fields: list[SseField] = []
+        self._unknown_fields: list[SseField] = []
+        self._event_chars = 0
+
+    async def parse(self, chunks: AsyncIterable[str]) -> AsyncIterator[ParsedSseEvent]:
+        """Parse decoded text chunks into immutable SSE events."""
+        async for chunk in chunks:
+            for event in self.feed(chunk):
+                yield event
+
+    def feed(self, text: str) -> tuple[ParsedSseEvent, ...]:
+        """Feed decoded Unicode text and return complete events."""
+        if not isinstance(text, str):
+            raise TypeError("SseParser.feed expects decoded Unicode text")
+        if text == "":
+            return ()
+
+        self._line_buffer += text
+        events: list[ParsedSseEvent] = []
+
+        try:
+            while True:
+                newline_index = self._next_newline_index(self._line_buffer)
+                if newline_index is None:
+                    uncounted_chars = len(self._line_buffer) - self._line_buffer_counted_chars
+                    if uncounted_chars > 0:
+                        self._check_size(uncounted_chars)
+                        self._line_buffer_counted_chars = len(self._line_buffer)
+                    break
+
+                raw_line = self._line_buffer[:newline_index]
+                newline_len = 2 if self._line_buffer[newline_index:newline_index + 2] == "\r\n" else 1
+                self._line_buffer = self._line_buffer[newline_index + newline_len:]
+                self._line_buffer_counted_chars = 0
+
+                line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
+                event = self._parse_line(line)
+                if event is not None:
+                    events.append(event)
+        except Exception:
+            self.reset()
+            raise
+
+        return tuple(events)
+
+    def flush(self) -> tuple[ParsedSseEvent, ...]:
+        """
+        Finish parsing at stream end.
+
+        A buffered partial line or pending event without a terminating blank line
+        is treated as a truncated final event and fails closed.
+        """
+        if self._line_buffer:
+            self.reset()
+            raise SseParserError("truncated_final_event")
+        if self._has_pending_event():
+            self.reset()
+            raise SseParserError("truncated_final_event")
+        return ()
+
+    def reset(self) -> None:
+        """Clear parser state for reuse on a new stream."""
+        self._line_buffer = ""
+        self._line_buffer_counted_chars = 0
+        self._data_lines = []
+        self._event = None
+        self._event_id = None
+        self._retry_ms = None
+        self._comment_lines = []
+        self._fields = []
+        self._unknown_fields = []
+        self._event_chars = 0
+
+    def _parse_line(self, line: str) -> ParsedSseEvent | None:
+        if line == "":
+            return self._dispatch_event()
+
+        self._check_size(len(line))
+        if line.startswith(":"):
+            value = line[1:]
+            if value.startswith(" "):
+                value = value[1:]
+            self._comment_lines.append(value)
+            self._fields.append(SseField("comment", value))
+            return None
+
+        name, value = self._split_field(line)
+        field_item = SseField(name, value)
+        self._fields.append(field_item)
+
+        if name == "data":
+            self._data_lines.append(value)
+        elif name == "event":
+            self._event = value
+        elif name == "id":
+            self._event_id = value
+        elif name == "retry":
+            self._retry_ms = self._parse_retry(value)
+        else:
+            self._unknown_fields.append(field_item)
+
+        return None
+
+    def _dispatch_event(self) -> ParsedSseEvent | None:
+        if not self._has_pending_event():
+            return None
+
+        event = ParsedSseEvent(
+            data="\n".join(self._data_lines) if self._data_lines else None,
+            event=self._event,
+            event_id=self._event_id,
+            retry_ms=self._retry_ms,
+            comment="\n".join(self._comment_lines) if self._comment_lines else None,
+            fields=tuple(self._fields),
+            unknown_fields=tuple(self._unknown_fields),
+        )
+        self._clear_event_state()
+        return event
+
+    def _split_field(self, line: str) -> tuple[str, str]:
+        if "\x00" in line:
+            raise SseParserError("malformed_field")
+
+        if ":" in line:
+            name, value = line.split(":", 1)
+            if value.startswith(" "):
+                value = value[1:]
+        else:
+            name, value = line, ""
+
+        if not name or any(char.isspace() for char in name):
+            raise SseParserError("malformed_field")
+        return name, value
+
+    @staticmethod
+    def _parse_retry(value: str) -> int:
+        if not value.isdigit():
+            raise SseParserError("invalid_retry")
+        return int(value)
+
+    @staticmethod
+    def _next_newline_index(text: str) -> int | None:
+        indexes = [idx for idx in (text.find("\n"), text.find("\r")) if idx != -1]
+        return min(indexes) if indexes else None
+
+    def _check_size(self, incoming_chars: int) -> None:
+        self._event_chars += incoming_chars
+        if self._event_chars > self._max_event_chars:
+            raise SseParserError("event_too_large")
+
+    def _has_pending_event(self) -> bool:
+        return bool(
+            self._data_lines
+            or self._event is not None
+            or self._event_id is not None
+            or self._retry_ms is not None
+            or self._comment_lines
+            or self._fields
+            or self._unknown_fields
+        )
+
+    def _clear_event_state(self) -> None:
+        self._data_lines.clear()
+        self._event = None
+        self._event_id = None
+        self._retry_ms = None
+        self._comment_lines.clear()
+        self._fields.clear()
+        self._unknown_fields.clear()
+        self._event_chars = 0
 
 
 class StreamingMode:
@@ -31,6 +491,30 @@ class StreamingSecurityBlocked(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__("streaming_security_blocked")
         self.reason = sanitize_text(reason)
+
+
+async def detokenize_sse_chunks(tenant_id: str | uuid.UUID, original_iterator):
+    from app.core.engine.token_vault import TokenVaultService
+
+    async for chunk in original_iterator:
+        chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+
+        if not chunk_str.startswith("data: "):
+            yield chunk_str
+            continue
+
+        data_str = chunk_str[len("data: "):].strip()
+        if data_str == "[DONE]":
+            yield chunk_str
+            continue
+
+        try:
+            data_json = json.loads(data_str)
+            data_json = await TokenVaultService.detokenize_payload(tenant_id, data_json)
+            yield f"data: {json.dumps(data_json, separators=(',', ':'))}\n\n"
+        except Exception as exc:
+            logger.error("Outbound streaming detokenization failed: %s", exc)
+            yield chunk_str
 
 
 class StreamingEngine:
@@ -228,9 +712,9 @@ class StreamingEngine:
                 raise StreamingSecurityBlocked(decision.block_reason or "Completion blocked by tenant policy.")
 
             if decision.should_redact and scan_result.detections:
-                from app.core.engine.gateway import GatewayService
+                from app.core.engine.token_vault import TokenVaultService
 
-                transformed, redaction_mode = await GatewayService._apply_redaction(
+                transformed, redaction_mode = await TokenVaultService.apply_redaction(
                     text,
                     scan_result.detections,
                     scan_result.sanitized_text,
@@ -394,6 +878,8 @@ class StreamingEngine:
                                 security_mode=streaming_mode,
                                 prompt_hash=prompt_hash,
                             )
+
+                            from app.core.engine.streaming_state_machine import StreamingRedactionStateMachine
 
                             decoder = Utf8IncrementalDecoder()
                             parser = SseParser()

@@ -12,6 +12,103 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: LOC profiles and runtime gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNTIME_LIMIT=60000
+          PRODUCT_SOURCE_LIMIT=60000
+
+          common_excludes=(
+            --exclude node_modules
+            --exclude .venv
+            --exclude .next
+            --exclude dist
+            --exclude build
+            --exclude __pycache__
+            --exclude .pytest_cache
+            --exclude coverage
+            --exclude playwright-report
+            --exclude test-results
+            --exclude .env
+            --exclude ".env.*"
+            --exclude "*.pyc"
+            --exclude "*.tsbuildinfo"
+          )
+
+          if ! command -v tokei >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+            cargo install tokei --locked >/dev/null 2>&1 || true
+          fi
+
+          if ! command -v tokei >/dev/null 2>&1; then
+            echo "::error::tokei unavailable; cannot enforce production runtime LOC budget"
+            exit 1
+          fi
+
+          code_loc() {
+            tokei "$@" "${common_excludes[@]}" --output json \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["Total"]["code"])'
+          }
+
+          report_profile() {
+            local label="$1"
+            shift
+            echo "::group::$label"
+            tokei "$@" "${common_excludes[@]}"
+            profile_code="$(code_loc "$@")"
+            echo "$label code LOC: $profile_code"
+            echo "::endgroup::"
+          }
+
+          runtime_paths=(apps/api/app apps/web/src)
+          product_source_paths=(
+            apps/api/app
+            apps/web/src
+            apps/api/alembic
+            apps/api/scripts
+            apps/api/requirements.txt
+            apps/api/pyproject.toml
+            apps/api/alembic.ini
+            apps/api/Dockerfile
+            apps/api/.dockerignore
+            apps/web/Dockerfile
+            apps/web/.dockerignore
+            apps/web/package.json
+            apps/web/next.config.ts
+            apps/web/postcss.config.mjs
+            apps/web/tsconfig.json
+            apps/web/eslint.config.mjs
+            docker-compose.yml
+            .github/workflows
+            README.md
+            AGENTS.md
+            .env.example
+            apps/api/.env.example
+            apps/web/.env.example
+          )
+          lockfile_paths=(
+            apps/web/package-lock.json
+            apps/api/uv.lock
+          )
+
+          report_profile "production-runtime" "${runtime_paths[@]}"
+          runtime_code="$profile_code"
+          report_profile "product-source-excluding-lockfiles" "${product_source_paths[@]}"
+          product_source_code="$profile_code"
+          report_profile "lockfiles-report-only" "${lockfile_paths[@]}"
+          report_profile "full-development-repo" .
+
+          if (( runtime_code > RUNTIME_LIMIT )); then
+            echo "::error::production runtime LOC $runtime_code exceeds budget $RUNTIME_LIMIT"
+            exit 1
+          fi
+          echo "production runtime LOC $runtime_code is within budget $RUNTIME_LIMIT"
+
+          if (( product_source_code > PRODUCT_SOURCE_LIMIT )); then
+            echo "::error::product source LOC $product_source_code exceeds budget $PRODUCT_SOURCE_LIMIT"
+            exit 1
+          fi
+          echo "product source LOC $product_source_code is within budget $PRODUCT_SOURCE_LIMIT"
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
         with:

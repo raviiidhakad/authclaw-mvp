@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from app.core.engine.token_vault import TokenVaultService
 from app.core.redis import RedisClient
 from app.core.config import settings
-from app.core.engine.gateway import GatewayService
 from app.core.engine.pii import PIIRedactor
 
 pytestmark = pytest.mark.asyncio
@@ -71,7 +70,7 @@ class TestReversibleTokenization:
         }
         reversible_entities = ["PHONE_NUMBER"] # Phone is reversible, Email is NOT
 
-        result, mode = await GatewayService._apply_redaction(
+        result, mode = await TokenVaultService.apply_redaction(
             text=text,
             detections=detections,
             sanitized_text="Call [PHONE_NUMBER] or email [EMAIL_ADDRESS]",
@@ -191,7 +190,7 @@ class TestReversibleTokenization:
             "metadata": [tok1]
         }
         
-        detokenized_payload = await GatewayService._detokenize_payload(tenant_id, payload)
+        detokenized_payload = await TokenVaultService.detokenize_payload(tenant_id, payload)
         
         content = detokenized_payload["choices"][0]["message"]["content"]
         assert "Found Value1 and Value2" == content

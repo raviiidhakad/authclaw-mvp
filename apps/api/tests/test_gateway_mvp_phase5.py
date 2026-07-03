@@ -1,4 +1,3 @@
-import json
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
@@ -14,80 +13,7 @@ from app.models.gateway import GatewayRequest, GatewayResponse
 from app.models.gateway_route import RedactionStrategy
 from app.models.policy import PolicyAction, RuleType
 from app.models.provider import ProviderType
-
-
-class FakeScalarResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._all_items = all_items if all_items is not None else ([] if first is None else [first])
-
-    def first(self):
-        return self._first
-
-    def all(self):
-        return self._all_items
-
-
-class FakeResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._scalars = FakeScalarResult(first=first, all_items=all_items)
-
-    def scalars(self):
-        return self._scalars
-
-    def fetchone(self):
-        return self._first
-
-    def scalar(self):
-        return self._first
-
-
-class FakeDb:
-    def __init__(self, *results, allow_empty_execute=False):
-        self.results = list(results)
-        self.added = []
-        self.allow_empty_execute = allow_empty_execute
-
-    async def execute(self, _stmt, *_args, **_kwargs):
-        if self.allow_empty_execute:
-            params = getattr(_stmt.compile(), "params", {})
-            if {"id", "tenant_id", "previous_hash", "hash", "metadata"}.issubset(params):
-                self.added.append(
-                    AuditLog(
-                        id=params["id"],
-                        tenant_id=params["tenant_id"],
-                        user_id=params.get("user_id"),
-                        event_type=params.get("event_type"),
-                        action=params.get("action"),
-                        resource=params.get("resource"),
-                        resource_id=params.get("resource_id"),
-                        metadata_=params.get("metadata"),
-                        ip_address=params.get("ip_address"),
-                        user_agent=params.get("user_agent"),
-                        created_at=params.get("created_at"),
-                        previous_hash=params.get("previous_hash"),
-                        hash=params.get("hash"),
-                    )
-                )
-                return FakeResult()
-        if not self.results:
-            if self.allow_empty_execute:
-                return FakeResult()
-            raise AssertionError("Unexpected DB query in gateway phase 5 test")
-        return self.results.pop(0)
-
-    def add(self, item):
-        self.added.append(item)
-
-    async def commit(self):
-        return None
-
-    async def rollback(self):
-        return None
-
-    async def flush(self):
-        return None
+from tests.gateway_test_helpers import FakeDb, FakeResult
 
 
 class FakeStreamContext:

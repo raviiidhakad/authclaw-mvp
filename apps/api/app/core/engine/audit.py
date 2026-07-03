@@ -42,6 +42,48 @@ class AuditEngine:
             return None
         return sanitize_text(value)
 
+    @staticmethod
+    def gateway_error_body(message: str, error_type: str, code: str) -> Dict[str, Any]:
+        return {"error": {"message": message, "type": error_type, "code": code}}
+
+    async def log_safe_gateway_error(
+        self,
+        *,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        api_key_id: uuid.UUID,
+        provider_id: Optional[uuid.UUID],
+        model: str,
+        payload: Dict[str, Any],
+        modified_payload: Optional[Dict[str, Any]],
+        status_code: int,
+        message: str,
+        error_type: str,
+        error_code: str,
+        evaluation_result: Any = None,
+    ) -> None:
+        try:
+            await self.log_request(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                provider_id=provider_id,
+                api_key_id=api_key_id,
+                model=model,
+                original_payload=payload,
+                modified_payload=modified_payload or payload,
+                response_payload=self.gateway_error_body(message, error_type, error_code),
+                tokens_prompt=0,
+                tokens_completion=0,
+                latency_ms=0,
+                status_code=status_code,
+                error_message=message,
+                error_type=error_type,
+                error_code=error_code,
+                evaluation_result=evaluation_result,
+            )
+        except Exception as exc:
+            logger.warning("Failed to write safe gateway error audit record: %s", exc)
+
     async def _append_canonical_audit_log(
         self,
         *,

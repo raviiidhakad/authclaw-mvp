@@ -1,17 +1,3 @@
-"""
-AuthClaw Sprint 2 — AWS Connector Tests
-----------------------------------------
-Split into two suites:
-
-  TestAWSConnectorMock        — All tests using unittest.mock.
-                                Covers validate_credentials, _fetch_from_security_hub,
-                                fetch_findings fallback trigger, and MAX_FINDINGS_PER_SYNC.
-                                Security Hub moto support is absent in 5.0.0.
-
-  TestAWSConnectorMoto        — Fallback scanner tests using @moto.mock_aws.
-                                Covers _scan_iam, _scan_s3, _scan_kms, _scan_cloudtrail
-                                against real moto-emulated AWS resources.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -30,8 +16,6 @@ from app.services.connectors.aws import AWSConnector
 from app.services.connectors.base import RawFindingData
 from app.services.connectors.registry import ConnectorRegistry
 
-
-# ── Shared fixtures ────────────────────────────────────────────────────────────
 
 AWS_ACCOUNT_ID = "123456789012"
 AWS_REGION     = "us-east-1"
@@ -65,7 +49,6 @@ def _client_error(code: str, message: str = "") -> ClientError:
 @pytest.fixture(autouse=True)
 def clear_registry():
     ConnectorRegistry._reset_for_testing()
-    # Re-import registers AWSConnector via the decorator
     import importlib
     import app.services.connectors.aws
     importlib.reload(app.services.connectors.aws)
@@ -88,23 +71,11 @@ def connector(integration, credentials):
     return AWSConnector(integration=integration, credentials=credentials)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Suite 1: unittest.mock — validate_credentials + Security Hub
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestAWSConnectorMock:
-    """Tests using mocked boto3 clients (no AWS calls)."""
-
     def _make_mock_clients(self, connector: AWSConnector, service_map: dict):
-        """
-        Patch _get_client to return service-specific MagicMocks.
-        service_map: {"sts": mock_sts, "iam": mock_iam, ...}
-        """
         def side_effect(service):
             return service_map[service]
         return patch.object(connector, "_get_client", side_effect=side_effect)
-
-    # ── validate_credentials ────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_validate_credentials_success(self, connector):
@@ -121,12 +92,11 @@ class TestAWSConnectorMock:
             ]
         }
         with self._make_mock_clients(connector, {"sts": mock_sts, "iam": mock_iam}):
-            # Should not raise
             await connector.validate_credentials()
 
     @pytest.mark.asyncio
     async def test_validate_credentials_missing_keys_raises(self, integration):
-        bad_creds = {"aws_region": "us-east-1"}  # Missing access key and secret
+        bad_creds = {"aws_region": "us-east-1"}
         conn = AWSConnector(integration, bad_creds)
         with pytest.raises(ValueError, match="missing required keys"):
             await conn.validate_credentials()
@@ -172,7 +142,6 @@ class TestAWSConnectorMock:
 
     @pytest.mark.asyncio
     async def test_validate_credentials_simulate_access_denied_is_warning(self, connector):
-        """If SimulatePrincipalPolicy itself is denied, validation should still pass."""
         mock_sts = MagicMock()
         mock_sts.get_caller_identity.return_value = {
             "Arn": f"arn:aws:iam::{AWS_ACCOUNT_ID}:user/scanner",
@@ -181,10 +150,7 @@ class TestAWSConnectorMock:
         mock_iam = MagicMock()
         mock_iam.simulate_principal_policy.side_effect = _client_error("AccessDenied")
         with self._make_mock_clients(connector, {"sts": mock_sts, "iam": mock_iam}):
-            # Should NOT raise — this is a warning scenario
             await connector.validate_credentials()
-
-    # ── Security Hub primary path ───────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_fetch_findings_returns_security_hub_results(self, connector):
@@ -213,11 +179,9 @@ class TestAWSConnectorMock:
 
     @pytest.mark.asyncio
     async def test_fetch_findings_triggers_fallback_on_access_denied(self, connector):
-        """AccessDeniedException from Security Hub → fallback scanners run."""
         mock_hub = MagicMock()
         mock_hub.get_paginator.side_effect = _client_error("AccessDeniedException")
 
-        # Fallback scanners return empty for simplicity
         with patch.object(connector, "_get_client", return_value=mock_hub):
             with patch.object(connector, "_run_fallback_scanners", return_value=[]) as mock_fallback:
                 findings = await connector.fetch_findings()
@@ -225,7 +189,6 @@ class TestAWSConnectorMock:
 
     @pytest.mark.asyncio
     async def test_fetch_findings_triggers_fallback_on_invalid_access(self, connector):
-        """InvalidAccessException also triggers fallback."""
         mock_hub = MagicMock()
         mock_hub.get_paginator.side_effect = _client_error("InvalidAccessException")
 
@@ -236,7 +199,6 @@ class TestAWSConnectorMock:
 
     @pytest.mark.asyncio
     async def test_fetch_findings_non_access_error_propagates(self, connector):
-        """Non-access ClientErrors propagate (hit the circuit breaker)."""
         mock_hub = MagicMock()
         mock_hub.get_paginator.side_effect = _client_error("InternalFailure")
 
@@ -246,7 +208,6 @@ class TestAWSConnectorMock:
 
     @pytest.mark.asyncio
     async def test_fetch_findings_respects_max_findings_limit(self, connector):
-        """Findings are truncated at MAX_FINDINGS_PER_SYNC."""
         findings_pool = [
             {
                 "Id": f"arn:aws:securityhub:::finding/{i:04d}",
@@ -267,8 +228,6 @@ class TestAWSConnectorMock:
 
         assert len(findings) <= 5
 
-    # ── Severity mapping ────────────────────────────────────────────────────
-
     @pytest.mark.parametrize("label,expected", [
         ("CRITICAL",     FindingSeverity.critical),
         ("HIGH",         FindingSeverity.high),
@@ -288,7 +247,6 @@ class TestAWSConnectorMock:
         assert finding.severity == expected
 
     def test_map_security_hub_no_resources(self, connector):
-        """Finding with empty Resources list uses the finding Id as resource_id."""
         raw = {
             "Id": "arn:aws:securityhub:::finding/x",
             "Title": "T",
@@ -298,15 +256,11 @@ class TestAWSConnectorMock:
         finding = connector._map_security_hub_finding(raw)
         assert finding.resource_id == "arn:aws:securityhub:::finding/x"
 
-    # ── dedup_hash consistency ──────────────────────────────────────────────
-
     def test_dedup_hash_consistent_for_same_finding(self, connector):
         h1 = connector.make_dedup_hash("finding-001", "arn:aws:s3:::bucket")
         h2 = connector.make_dedup_hash("finding-001", "arn:aws:s3:::bucket")
         assert h1 == h2
         assert len(h1) == 64
-
-    # ── S3 fallback (mock-based: moto 5.0.0 lacks get_bucket_public_access_block) ──
 
     @pytest.mark.asyncio
     async def test_scan_s3_detects_no_public_block_config(self, connector):
@@ -351,27 +305,11 @@ class TestAWSConnectorMock:
         assert all(f.severity == FindingSeverity.high for f in findings)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Suite 2: moto — Fallback scanners against real AWS-emulated services
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestAWSConnectorMoto:
-    """
-    Fallback scanner tests against moto-emulated AWS services.
-    moto 5.0.0 supports IAM, S3, KMS, CloudTrail fully.
-
-    NOTE: @mock_aws does not compose with async def.
-    We use asyncio.run() inside sync test wrappers.
-    The connector's asyncio.to_thread() calls work correctly because
-    asyncio.run() creates a fresh event loop for each test.
-    """
-
     def _make_connector(self) -> AWSConnector:
-        """Create a connector whose _get_client uses real boto3 (intercepted by moto)."""
         intg = _make_integration()
         creds = _make_credentials()
         conn = AWSConnector(integration=intg, credentials=creds)
-        # Override _get_client to use real boto3 (moto intercepts at the network level)
         def real_get_client(service: str):
             return boto3.client(
                 service,
@@ -381,8 +319,6 @@ class TestAWSConnectorMoto:
             )
         conn._get_client = real_get_client
         return conn
-
-    # ── _scan_iam ───────────────────────────────────────────────────────────
 
     @mock_aws
     def test_scan_iam_detects_user_without_mfa(self):
@@ -414,11 +350,6 @@ class TestAWSConnectorMoto:
             hash_val = conn.make_dedup_hash(f.external_id, f.resource_id)
             assert len(hash_val) == 64
 
-    # ── _scan_s3 ── skipped: moto 5.0.0 does not implement get_bucket_public_access_block
-    # S3 fallback is tested via mock in TestAWSConnectorMock above.
-
-    # ── _scan_kms ───────────────────────────────────────────────────────────
-
     @mock_aws
     def test_scan_kms_detects_rotation_disabled(self):
         kms = boto3.client("kms", region_name=AWS_REGION,
@@ -441,8 +372,6 @@ class TestAWSConnectorMoto:
         conn = self._make_connector()
         findings = asyncio.run(conn._scan_kms())
         assert findings == []
-
-    # ── _scan_cloudtrail ─────────────────────────────────────────────────────
 
     @mock_aws
     def test_scan_cloudtrail_critical_when_no_trails(self):
@@ -489,11 +418,8 @@ class TestAWSConnectorMoto:
         findings = asyncio.run(conn._scan_cloudtrail())
         assert findings == []
 
-    # ── Fallback orchestration ───────────────────────────────────────────────
-
     @mock_aws
     def test_run_fallback_scanners_collects_all_results(self):
-        """All four fallback scanners contribute to the results."""
         iam = boto3.client("iam", region_name=AWS_REGION,
                            aws_access_key_id="testing",
                            aws_secret_access_key="testing")
@@ -505,7 +431,6 @@ class TestAWSConnectorMoto:
 
     @mock_aws
     def test_run_fallback_scanners_respects_limit(self):
-        """Fallback results are capped at MAX_FINDINGS_PER_SYNC."""
         iam = boto3.client("iam", region_name=AWS_REGION,
                            aws_access_key_id="testing",
                            aws_secret_access_key="testing")

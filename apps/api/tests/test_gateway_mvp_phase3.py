@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 import uuid
 from datetime import datetime
@@ -20,106 +19,13 @@ from app.models.provider import Provider, ProviderType
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.provider_credentials import store_provider_api_key
-
-
-class FakeScalarResult:
-    def __init__(self, first=None, all_items=None):
-        self._first = first
-        self._all_items = all_items if all_items is not None else ([] if first is None else [first])
-
-    def first(self):
-        return self._first
-
-    def all(self):
-        return self._all_items
-
-
-class FakeResult:
-    def __init__(self, first=None, all_items=None):
-        self._scalars = FakeScalarResult(first=first, all_items=all_items)
-
-    def scalars(self):
-        return self._scalars
-
-
-class FakeDb:
-    def __init__(self, *results):
-        self.results = list(results)
-
-    async def execute(self, _stmt):
-        if not self.results:
-            raise AssertionError("Unexpected DB query in gateway phase 3 test")
-        return self.results.pop(0)
-
-    async def commit(self):
-        return None
-
-    async def rollback(self):
-        return None
-
-    async def flush(self):
-        return None
-
-
-class FakeScanResult:
-    def __init__(self, text, detected=True):
-        needle = "person@example.test"
-        start = text.find(needle)
-        self.detections = []
-        self.sanitized_text = text
-        self.latency_ms = 1
-        if detected and start >= 0:
-            self.detections = [
-                {
-                    "entity_type": "EMAIL_ADDRESS",
-                    "start": start,
-                    "end": start + len(needle),
-                    "score": 0.99,
-                }
-            ]
-            self.sanitized_text = text.replace(needle, "<EMAIL_ADDRESS>")
-
-    @property
-    def has_detections(self):
-        return bool(self.detections)
-
-    @property
-    def entity_types(self):
-        return [detection["entity_type"] for detection in self.detections]
-
-
-class FakeHttpResponse:
-    def __init__(self, status_code=200, body=None, text=None):
-        self.status_code = status_code
-        self._body = body or {}
-        self._text = text
-
-    def json(self):
-        return self._body
-
-    @property
-    def text(self):
-        return self._text if self._text is not None else json.dumps(self._body)
-
-
-def _fake_async_client_factory(response):
-    class FakeAsyncClient:
-        calls = []
-
-        def __init__(self, timeout):
-            self.timeout = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, url, json, headers):
-            self.__class__.calls.append({"url": url, "json": json, "headers": headers})
-            return response
-
-    return FakeAsyncClient
+from tests.gateway_test_helpers import (
+    FakeDb,
+    FakeHttpResponse,
+    FakeResult,
+    FakeScanResult,
+    fake_async_client_factory,
+)
 
 
 def _provider(provider_type=ProviderType.groq):
@@ -178,7 +84,7 @@ def _enable_inbound_security(monkeypatch, action="MASK"):
 
 
 def _stub_upstream(monkeypatch, response):
-    fake_client = _fake_async_client_factory(response)
+    fake_client = fake_async_client_factory(response)
     monkeypatch.setattr("httpx.AsyncClient", fake_client)
     monkeypatch.setattr(
         "app.core.providers.adapters.openai.retrieve_provider_api_key",

@@ -7,16 +7,12 @@ AI chat-completion requests proxied through the AuthClaw gateway.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import time
 import uuid
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,56 +20,14 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.engine.audit import AuditEngine
 from app.core.engine.evaluator import PolicyEngine
+from app.core.engine.token_vault import TokenVaultService
 from app.core.policy.opa_integration import OpaRuntimeIntegration
+from app.core.providers.client import AIProviderClient, ProviderResponse
 from app.models.gateway_route import GatewayRoute
 from app.models.policy import Policy
-from app.models.provider import Provider, ProviderType
+from app.models.provider import Provider
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Typed response container — eliminates magic dict bugs
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ProviderResponse:
-    """Typed result returned by AIProviderClient."""
-    status_code: int          # Always an integer HTTP status
-    body: Dict[str, Any]      # Parsed JSON body from provider
-    provider_name: str        # Human-readable provider name
-    provider_type: str        # ProviderType enum value
-    latency_ms: int           # Wall-clock ms for the provider call
-
-    @property
-    def is_success(self) -> bool:
-        return 200 <= self.status_code < 300
-
-    @property
-    def error_message(self) -> Optional[str]:
-        err = self.body.get("error")
-        if not err:
-            return None
-        if isinstance(err, dict):
-            return err.get("message")
-        return str(err)
-
-    @property
-    def error_type(self) -> Optional[str]:
-        err = self.body.get("error")
-        if isinstance(err, dict):
-            return err.get("type")
-        return None
-
-    @property
-    def error_code(self) -> Optional[str]:
-        """Always returns a string or None — never an integer."""
-        err = self.body.get("error")
-        if isinstance(err, dict):
-            code = err.get("code")
-            if code is not None:
-                return str(code)
-        return None
 
 
 @dataclass
@@ -83,166 +37,6 @@ class GatewayRouteResolution:
     route: GatewayRoute
     model: str
     redaction_mode: str
-
-
-# ---------------------------------------------------------------------------
-# Provider URL / payload routing
-# ---------------------------------------------------------------------------
-
-def _get_provider_url(provider: Provider) -> str:
-    """Return the correct chat-completions URL for a given provider type."""
-    custom_base = (provider.config or {}).get("base_url")
-    if custom_base:
-        return custom_base.rstrip("/") + "/chat/completions"
-
-    routes: Dict[ProviderType, str] = {
-        ProviderType.openai:      "https://api.openai.com/v1/chat/completions",
-        ProviderType.anthropic:   "https://api.anthropic.com/v1/messages",
-        ProviderType.gemini:      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        ProviderType.cohere:      "https://api.cohere.ai/v1/chat",
-        ProviderType.azure_openai: "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/chat/completions?api-version=2024-02-01",
-        ProviderType.groq:        "https://api.groq.com/openai/v1/chat/completions",
-    }
-    return routes.get(provider.type, "https://api.openai.com/v1/chat/completions")
-
-
-def _build_headers(provider: Provider, api_key: str) -> Dict[str, str]:
-    """Return provider-specific request headers."""
-    if provider.type == ProviderType.anthropic:
-        return {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-    # OpenAI-compatible (openai, gemini, cohere, azure_openai)
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-
-def _normalize_anthropic_response(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert Anthropic Messages API response to OpenAI-compatible format."""
-    if "content" not in body:
-        return body  # already an error or unknown format
-    text_blocks = [b.get("text", "") for b in body.get("content", []) if b.get("type") == "text"]
-    return {
-        "id": body.get("id", ""),
-        "object": "chat.completion",
-        "model": body.get("model", ""),
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": "\n".join(text_blocks)},
-                "finish_reason": body.get("stop_reason", "stop"),
-            }
-        ],
-        "usage": {
-            "prompt_tokens": body.get("usage", {}).get("input_tokens", 0),
-            "completion_tokens": body.get("usage", {}).get("output_tokens", 0),
-            "total_tokens": (
-                body.get("usage", {}).get("input_tokens", 0)
-                + body.get("usage", {}).get("output_tokens", 0)
-            ),
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
-# AI Provider Client
-# ---------------------------------------------------------------------------
-
-class AIProviderClient:
-    """Handles HTTP communication with upstream AI providers via Adapters."""
-
-    async def get_provider_connection_details(self, provider: Provider) -> tuple[str, Dict[str, str]]:
-        from app.core.providers.factory import ProviderAdapterFactory
-        adapter = ProviderAdapterFactory.get_adapter(provider.type)
-        return await adapter.get_connection_details(provider)
-
-    async def chat_completion(
-        self,
-        provider: Provider,
-        payload: Dict[str, Any],
-    ) -> ProviderResponse:
-        from app.core.providers.factory import ProviderAdapterFactory
-        import time
-        import httpx
-        from fastapi import HTTPException
-        import json
-
-        adapter = ProviderAdapterFactory.get_adapter(provider.type)
-        
-        try:
-            url, headers = await adapter.get_connection_details(provider)
-        except Exception as exc:
-            if isinstance(exc, HTTPException) and exc.status_code == 502:
-                return ProviderResponse(
-                    status_code=502,
-                    body={"error": {"message": str(exc.detail), "type": "auth_error", "code": "azure_ad_unavailable"}},
-                    provider_name=provider.name,
-                    provider_type=provider.type.value,
-                    latency_ms=0,
-                )
-            logger.error(
-                "Failed to decrypt API key or fetch provider token.",
-                extra={"provider_id": str(provider.id)},
-            )
-            return ProviderResponse(
-                status_code=500,
-                body={"error": {"message": "Gateway configuration error: cannot authenticate provider.", "type": "gateway_error", "code": "auth_failed"}},
-                provider_name=provider.name,
-                provider_type=provider.type.value,
-                latency_ms=0,
-            )
-
-        request_payload = adapter.transform_request(payload)
-
-        start_time = time.monotonic()
-        status_code = 500
-        body: Dict[str, Any] = {}
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=request_payload, headers=headers)
-                status_code = int(response.status_code)
-                try:
-                    raw_body = response.json()
-                    if 200 <= status_code < 300:
-                        body = adapter.transform_response(raw_body)
-                    else:
-                        body = adapter.normalize_error(status_code, response.text)
-                except (ValueError, json.JSONDecodeError):
-                    if 200 <= status_code < 300:
-                        body = {"error": {"message": f"Provider returned non-JSON response (HTTP {status_code})", "type": "parse_error", "code": "invalid_json"}}
-                    else:
-                        body = adapter.normalize_error(status_code, response.text)
-
-        except httpx.ConnectError as exc:
-            status_code = 502
-            body = {"error": {"message": f"Cannot connect to provider: {exc}", "type": "connection_error", "code": "bad_gateway"}}
-        except httpx.ReadTimeout:
-            status_code = 504
-            body = {"error": {"message": "Provider read timeout.", "type": "timeout_error", "code": "read_timeout"}}
-        except httpx.WriteTimeout:
-            status_code = 504
-            body = {"error": {"message": "Provider write timeout.", "type": "timeout_error", "code": "write_timeout"}}
-        except httpx.TimeoutException:
-            status_code = 504
-            body = {"error": {"message": "Provider request timed out.", "type": "timeout_error", "code": "timeout"}}
-        except Exception as exc:
-            logger.exception("Unexpected error calling provider %s", provider.id)
-            status_code = 500
-            body = {"error": {"message": "Internal gateway error while calling provider.", "type": "gateway_error", "code": "internal_error"}}
-
-        latency_ms = int((time.monotonic() - start_time) * 1000)
-        return ProviderResponse(
-            status_code=status_code,
-            body=body,
-            provider_name=provider.name,
-            provider_type=provider.type.value,
-            latency_ms=latency_ms,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -270,102 +64,6 @@ class GatewayService:
         value = getattr(getattr(route, "redaction", None), "value", None) or str(getattr(route, "redaction", "none"))
         mode = value.upper()
         return mode if mode in GatewayService._SUPPORTED_ROUTE_REDACTION_MODES else "UNSUPPORTED"
-
-    @staticmethod
-    def _hash_detections(text: str, detections: List[Dict[str, Any]]) -> str:
-        result = text
-        for detection in sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True):
-            start = int(detection.get("start", 0))
-            end = int(detection.get("end", 0))
-            if start < 0 or end < start or end > len(text):
-                continue
-            entity_type = str(detection.get("entity_type", "PII")).upper()
-            digest = hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()[:16]
-            result = result[:start] + f"<HASHED_{entity_type}_{digest}>" + result[end:]
-        return result
-
-    @classmethod
-    async def _apply_redaction(
-        cls,
-        text: str,
-        detections: List[Dict[str, Any]],
-        sanitized_text: str,
-        route_mode: str,
-        entity_actions: Dict[str, str],
-        reversible_entities: List[str],
-        tenant_id: str | uuid.UUID,
-    ) -> tuple[str, str]:
-        import hashlib
-        import uuid
-        from app.core.engine.pii import PIIRedactor
-        from app.core.engine.token_vault import TokenVaultService
-
-        requested_modes = {
-            entity_actions.get(str(detection.get("entity_type", "")).upper(), "").upper()
-            for detection in detections
-        }
-        mode = route_mode if route_mode in {"MASK", "HASH", "SYNTHETIC"} else ""
-        if not mode:
-            if "SYNTHETIC" in requested_modes:
-                mode = "SYNTHETIC"
-            elif "HASH" in requested_modes:
-                mode = "HASH"
-            else:
-                mode = "MASK"
-
-        has_reversible = any(str(d.get("entity_type", "")).upper() in reversible_entities for d in detections)
-        if not has_reversible:
-            if mode == "SYNTHETIC":
-                return PIIRedactor.synthesize_detections(text, detections), mode
-            if mode == "HASH":
-                return cls._hash_detections(text, detections), mode
-            return sanitized_text, "MASK"
-
-        # Mixed pass: combine TokenVault and standard
-        sorted_detections = sorted(detections, key=lambda item: int(item.get("start", 0)), reverse=True)
-        result = text
-        mappings = {}
-
-        for idx, detection in enumerate(sorted_detections, start=1):
-            start = int(detection.get("start", 0))
-            end = int(detection.get("end", 0))
-            if start < 0 or end < start or end > len(text):
-                continue
-
-            entity_type = str(detection.get("entity_type", "PII")).upper()
-            original_value = text[start:end]
-
-            if entity_type in reversible_entities:
-                token_uuid = str(uuid.uuid4())
-                placeholder = TokenVaultService.TOKEN_FORMAT.format(token_uuid=token_uuid)
-                mappings[token_uuid] = original_value
-                result = result[:start] + placeholder + result[end:]
-            else:
-                action = entity_actions.get(entity_type, mode)
-                if action == "SYNTHETIC":
-                    replacement = PIIRedactor.synthetic_value(entity_type, idx)
-                elif action == "HASH":
-                    digest = hashlib.sha256(original_value.encode("utf-8")).hexdigest()[:16]
-                    replacement = f"<HASHED_{entity_type}_{digest}>"
-                else:
-                    replacement = f"[{entity_type}]"
-                result = result[:start] + replacement + result[end:]
-
-        if mappings:
-            await TokenVaultService.store_batch(tenant_id, mappings)
-
-        return result, mode
-
-    @classmethod
-    async def _detokenize_payload(cls, tenant_id: str | uuid.UUID, obj: Any) -> Any:
-        from app.core.engine.token_vault import TokenVaultService
-        if isinstance(obj, str):
-            return await TokenVaultService.detokenize(tenant_id, obj)
-        elif isinstance(obj, list):
-            return [await cls._detokenize_payload(tenant_id, v) for v in obj]
-        elif isinstance(obj, dict):
-            return {k: await cls._detokenize_payload(tenant_id, v) for k, v in obj.items()}
-        return obj
 
     async def _resolve_gateway_route(
         self,
@@ -423,44 +121,6 @@ class GatewayService:
         model = str(route_config.get("model") or route_config.get("default_model") or requested_model)
         return GatewayRouteResolution(provider=provider, route=route, model=model, redaction_mode=redaction_mode), None, 200, ""
 
-    async def _log_safe_error(
-        self,
-        *,
-        tenant_id: uuid.UUID,
-        user_id: uuid.UUID,
-        api_key_id: uuid.UUID,
-        provider_id: Optional[uuid.UUID],
-        model: str,
-        payload: Dict[str, Any],
-        modified_payload: Optional[Dict[str, Any]],
-        status_code: int,
-        message: str,
-        error_type: str,
-        error_code: str,
-        evaluation_result: Any = None,
-    ) -> None:
-        try:
-            await self.audit_engine.log_request(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                provider_id=provider_id,
-                api_key_id=api_key_id,
-                model=model,
-                original_payload=payload,
-                modified_payload=modified_payload or payload,
-                response_payload=self._error_body(message, error_type, error_code),
-                tokens_prompt=0,
-                tokens_completion=0,
-                latency_ms=0,
-                status_code=status_code,
-                error_message=message,
-                error_type=error_type,
-                error_code=error_code,
-                evaluation_result=evaluation_result,
-            )
-        except Exception as exc:
-            logger.warning("Failed to write safe gateway error audit record: %s", exc)
-
     # ── Main entrypoint ─────────────────────────────────────────────────────
 
     async def process_chat_request(
@@ -489,7 +149,7 @@ class GatewayService:
                 route_id = uuid.UUID(str(payload.get("route_id")))
             except ValueError:
                 message = "Gateway route_id must be a valid UUID."
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -515,7 +175,7 @@ class GatewayService:
             route_name=route_name,
         )
         if route_error or resolution is None:
-            await self._log_safe_error(
+            await self.audit_engine.log_safe_gateway_error(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 api_key_id=api_key_id,
@@ -562,7 +222,7 @@ class GatewayService:
                 route_attached_policies = [route_policy]
             except Exception:
                 message = "Gateway route policy is unavailable or disabled."
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -714,7 +374,7 @@ class GatewayService:
                     if decision.should_redact and scan_result.detections:
                         entity_actions = compiled_policy.get("entity_actions", {})
                         reversible_entities = compiled_policy.get("reversible_entities", [])
-                        transformed_prompt, redaction_mode = await self._apply_redaction(
+                        transformed_prompt, redaction_mode = await TokenVaultService.apply_redaction(
                             full_prompt,
                             scan_result.detections,
                             scan_result.sanitized_text,
@@ -746,7 +406,7 @@ class GatewayService:
             except Exception as security_exc:
                 logger.error("Inbound security pipeline error (failing closed): %s", security_exc, exc_info=True)
                 message = "Gateway security scan failed before provider egress."
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -794,7 +454,7 @@ class GatewayService:
         except Exception as policy_exc:
             logger.error("Gateway policy evaluation failed closed: %s", policy_exc)
             message = "Gateway policy evaluation failed before provider egress."
-            await self._log_safe_error(
+            await self.audit_engine.log_safe_gateway_error(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 api_key_id=api_key_id,
@@ -940,7 +600,7 @@ class GatewayService:
             from fastapi import HTTPException
 
             if isinstance(rate_limit_exc, HTTPException) and rate_limit_exc.status_code == 429:
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -975,7 +635,7 @@ class GatewayService:
         if is_stream:
             if streaming_mode == "passthrough":
                 message = "Gateway passthrough streaming is disabled because it bypasses security filtering."
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -995,7 +655,7 @@ class GatewayService:
                 }
             if streaming_mode not in {"buffered", "strict", "safe"}:
                 message = "Gateway streaming mode is unsupported. Use strict safe streaming or non-streaming requests."
-                await self._log_safe_error(
+                await self.audit_engine.log_safe_gateway_error(
                     tenant_id=tenant_id,
                     user_id=user_id,
                     api_key_id=api_key_id,
@@ -1021,7 +681,7 @@ class GatewayService:
                 adapter = ProviderAdapterFactory.get_adapter(provider.type)
                 if not callable(getattr(adapter, "stream_response", None)):
                     message = "Selected provider adapter does not support safe streaming."
-                    await self._log_safe_error(
+                    await self.audit_engine.log_safe_gateway_error(
                         tenant_id=tenant_id,
                         user_id=user_id,
                         api_key_id=api_key_id,
@@ -1053,8 +713,7 @@ class GatewayService:
                         "data": {"error": {"message": "Gateway configuration error: cannot authenticate provider.", "code": "auth_failed"}}
                     }
                     
-                from app.core.engine.streaming import StreamingEngine
-                import json
+                from app.core.engine.streaming import StreamingEngine, detokenize_sse_chunks
                 from fastapi.responses import StreamingResponse
 
                 streaming_engine = StreamingEngine(self.audit_engine, db=self.db)
@@ -1070,32 +729,10 @@ class GatewayService:
                     adapter=adapter
                 )
 
-                async def detokenize_generator(original_iterator):
-                    async for chunk in original_iterator:
-                        chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-                        
-                        if not chunk_str.startswith("data: "):
-                            yield chunk_str
-                            continue
-                            
-                        data_str = chunk_str[len("data: "):].strip()
-                        if data_str == "[DONE]":
-                            yield chunk_str
-                            continue
-                            
-                        try:
-                            data_json = json.loads(data_str)
-                            data_json = await self._detokenize_payload(tenant_id, data_json)
-                            yield f"data: {json.dumps(data_json, separators=(',', ':'))}\n\n"
-                        except Exception as e:
-                            logger.error("Outbound streaming detokenization failed: %s", e)
-                            # Fail closed: yield original chunk to keep token encrypted
-                            yield chunk_str
-
                 return {
                     "status_code": 200,
                     "response": StreamingResponse(
-                        detokenize_generator(streaming_response.body_iterator),
+                        detokenize_sse_chunks(tenant_id, streaming_response.body_iterator),
                         status_code=streaming_response.status_code,
                         headers=dict(streaming_response.headers),
                         media_type=streaming_response.media_type
@@ -1314,7 +951,7 @@ class GatewayService:
 
         # ── 8. Detokenize outbound response ──────────────────────────────────
         try:
-            final_response_body = await self._detokenize_payload(tenant_id, outbound_response_body)
+            final_response_body = await TokenVaultService.detokenize_payload(tenant_id, outbound_response_body)
         except Exception as detok_exc:
             import logging
             logging.getLogger(__name__).error("Synchronous detokenization failed closed: %s", detok_exc)

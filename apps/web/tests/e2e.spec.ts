@@ -15,6 +15,25 @@ async function fulfillJson(route: Route, json: unknown, status = 200) {
   });
 }
 
+async function gotoPage(page: Page, path: string) {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+}
+
+async function expectVisibleTexts(page: Page, texts: Array<string | RegExp>) {
+  for (const text of texts) {
+    await expect(page.getByText(text).first()).toBeVisible();
+  }
+}
+
+async function gotoAndExpect(page: Page, path: string, texts: Array<string | RegExp>) {
+  await gotoPage(page, path);
+  await expectVisibleTexts(page, texts);
+}
+
+async function expectNoUnsafeTrustText(page: Page) {
+  await expect(page.getByText(/legally compliant|certified|guaranteed|audit-ready guaranteed|AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+}
+
 test('has title', async ({ page }) => {
   await page.goto('/');
 
@@ -1538,19 +1557,14 @@ test('trust center pages render posture summaries without legal overclaim copy o
   await mockAuthenticatedUser(page, 'viewer');
   await mockTrustReportApi(page);
 
-  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await gotoAndExpect(page, '/trust', ['evidence-supported posture', 'Mapped controls', 'needs review']);
   await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
-  await expect(page.getByText('evidence-supported posture').first()).toBeVisible();
-  await expect(page.getByText('Mapped controls', { exact: true })).toBeVisible();
-  await expect(page.getByText('needs review').first()).toBeVisible();
 
   for (const path of ['/trust/security', '/trust/compliance', '/trust/remediation', '/trust/integrations']) {
-    await page.goto(path, { waitUntil: 'domcontentloaded' });
-    await expect(page.getByText(/last updated/i).first()).toBeVisible();
-    await expect(page.getByText(/Status counts|Evidence freshness|Severity counts/).first()).toBeVisible();
+    await gotoAndExpect(page, path, [/last updated/i, /Status counts|Evidence freshness|Severity counts/]);
   }
 
-  await expect(page.getByText(/legally compliant|certified|guaranteed|audit-ready guaranteed|AKIA|ghp_|super-secret|raw_provider_payload/i)).toHaveCount(0);
+  await expectNoUnsafeTrustText(page);
 });
 
 test('trust activity timeline renders sanitized enterprise events and filters', async ({ page }) => {
@@ -1617,7 +1631,7 @@ test('report run creation and detail show metadata, artifact hashes, and no raw 
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
-  await page.goto('/reports/runs', { waitUntil: 'domcontentloaded' });
+  await gotoPage(page, '/reports/runs');
   await page.getByRole('button', { name: /create run/i }).click();
   await page.getByLabel(/template/i).selectOption(reportTemplate.id);
   await page.getByLabel(/scope/i).fill('executive');
@@ -1632,30 +1646,25 @@ test('artifact manifest download and share flow display safe metadata', async ({
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
-  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('sha256-content-hash-abcdef1234567890')).toBeVisible();
+  await gotoAndExpect(page, '/reports/artifacts', ['sha256-content-hash-abcdef1234567890']);
   await page.getByRole('button', { name: /manifest/i }).click();
-  await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
-  await expect(page.getByText('export-sanitizer-v1').first()).toBeVisible();
+  await expectVisibleTexts(page, ['sha256-manifest-hash-abcdef1234567890', 'export-sanitizer-v1']);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: /^download$/i }).click();
-  await expect(page.getByText('Sanitized download metadata')).toBeVisible();
-  await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
-  await expect(page.getByText('Raw report body preview remains hidden', { exact: false })).toBeVisible();
+  await expectVisibleTexts(page, ['Sanitized download metadata', 'evidence-supported posture; needs review', 'Raw report body preview remains hidden']);
   await page.keyboard.press('Escape');
-  await expect(page.getByText(/Shareable Trust Center links/i)).toBeVisible();
+  await expectVisibleTexts(page, [/Shareable Trust Center links/i]);
   await page.getByRole('button', { name: /^share$/i }).click();
   await expect(page.getByRole('heading', { name: /Trust Center share link created/i })).toBeVisible();
-  await expect(page.getByText(/trust-share-token-once/i)).toBeVisible();
-  await expect(page.getByText(/super-secret|raw_provider_payload|AKIA|ghp_/i)).toHaveCount(0);
+  await expectVisibleTexts(page, [/trust-share-token-once/i]);
+  await expectNoUnsafeTrustText(page);
 });
 
 test('evidence package builder creates JSON package metadata only', async ({ page }) => {
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
-  await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Evidence package builder')).toBeVisible();
+  await gotoAndExpect(page, '/reports/evidence-packages', ['Evidence package builder']);
   await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
   await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
   await page.getByLabel(/include findings/i).check();
@@ -1670,22 +1679,18 @@ test('access logs display hashed network metadata and RBAC gates viewer report a
   await mockAuthenticatedUser(page, 'auditor');
   await mockTrustReportApi(page);
 
-  await page.goto('/reports/access-logs', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('ip_hash_abc123')).toBeVisible();
-  await expect(page.getByText('ua_hash_def456')).toBeVisible();
+  await gotoAndExpect(page, '/reports/access-logs', ['ip_hash_abc123', 'ua_hash_def456']);
   await expect(page.getByText(/192\.168\.|Mozilla\/5\.0/)).toHaveCount(0);
 
   await mockAuthenticatedUser(page, 'viewer');
   await mockTrustReportApi(page);
-  await page.goto('/reports', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Report Center access requires analyst, auditor, admin, or owner role.')).toBeVisible();
-  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await gotoAndExpect(page, '/reports', ['Report Center access requires analyst, auditor, admin, or owner role.']);
+  await gotoPage(page, '/trust');
   await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
 
   await mockAuthenticatedUser(page, 'analyst');
   await mockTrustReportApi(page);
-  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Artifact download controls are hidden for this role.')).toBeVisible();
+  await gotoAndExpect(page, '/reports/artifacts', ['Artifact download controls are hidden for this role.']);
   await expect(page.getByRole('button', { name: /^download$/i })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
 });
@@ -1712,7 +1717,7 @@ test('sprint 5 demo acceptance walks trust reporting UX with demo login safely',
     roles: ['owner'],
   }));
 
-  await page.goto('/login', { waitUntil: 'domcontentloaded' });
+  await gotoPage(page, '/login');
   await page.waitForTimeout(250);
   await page.locator('input[type="email"]').fill('demo.admin@authclaw-demo.com');
   await page.locator('input[type="password"]').fill('demo-only-password');
@@ -1723,17 +1728,14 @@ test('sprint 5 demo acceptance walks trust reporting UX with demo login safely',
     .poll(() => page.evaluate(() => window.localStorage.getItem('authclaw_tokens')))
     .toContain('sprint5-demo-token');
 
-  await page.goto('/trust', { waitUntil: 'domcontentloaded' });
+  await gotoAndExpect(page, '/trust', ['evidence-supported posture', 'Mapped controls']);
   await expect(page.getByRole('heading', { name: 'Trust Center' })).toBeVisible();
-  await expect(page.getByText('evidence-supported posture').first()).toBeVisible();
-  await expect(page.getByText('Mapped controls', { exact: true })).toBeVisible();
 
   for (const path of ['/trust/security', '/trust/compliance', '/trust/remediation', '/trust/integrations']) {
-    await page.goto(path, { waitUntil: 'domcontentloaded' });
-    await expect(page.getByText(/last updated/i).first()).toBeVisible();
+    await gotoAndExpect(page, path, [/last updated/i]);
   }
 
-  await page.goto('/reports/runs', { waitUntil: 'domcontentloaded' });
+  await gotoPage(page, '/reports/runs');
   await page.getByRole('button', { name: /create run/i }).click();
   await page.getByLabel(/template/i).selectOption(reportTemplate.id);
   await page.getByLabel(/scope/i).fill('sprint5-demo');
@@ -1741,15 +1743,14 @@ test('sprint 5 demo acceptance walks trust reporting UX with demo login safely',
   await expect(page.getByText('Report run created')).toBeVisible();
   await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
 
-  await page.goto('/reports/artifacts', { waitUntil: 'domcontentloaded' });
+  await gotoPage(page, '/reports/artifacts');
   await page.getByRole('button', { name: /manifest/i }).click();
   await expect(page.getByText('sha256-manifest-hash-abcdef1234567890').first()).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: /^download$/i }).click();
-  await expect(page.getByText('Sanitized download metadata')).toBeVisible();
-  await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
+  await expectVisibleTexts(page, ['Sanitized download metadata', 'evidence-supported posture; needs review']);
 
-  await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
+  await gotoPage(page, '/reports/evidence-packages');
   await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
   await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
   await page.getByLabel(/include findings/i).check();
@@ -1758,21 +1759,15 @@ test('sprint 5 demo acceptance walks trust reporting UX with demo login safely',
   await expect(page.getByText('Evidence package created')).toBeVisible();
   await expect(page.getByText('metadata only', { exact: true })).toBeVisible();
 
-  await page.goto('/reports/access-logs', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('ip_hash_abc123')).toBeVisible();
-  await expect(page.getByText('ua_hash_def456')).toBeVisible();
+  await gotoAndExpect(page, '/reports/access-logs', ['ip_hash_abc123', 'ua_hash_def456']);
 
-  await page.goto('/notifications', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Evidence-supported posture package needs review.')).toBeVisible();
+  await gotoAndExpect(page, '/notifications', ['Evidence-supported posture package needs review.']);
   await page.getByRole('button', { name: /^mark read$/i }).click();
   await expect(page.getByText('Notification marked read')).toBeVisible();
   await page.getByRole('button', { name: /mark all read/i }).click();
   await expect(page.getByText('Notifications marked read')).toBeVisible();
 
-  await page.goto('/trust/activity', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Activity timeline')).toBeVisible();
-  await expect(page.getByText('Report artifact downloaded')).toBeVisible();
-  await expect(page.getByText('Mapped control evidence needs review.')).toBeVisible();
+  await gotoAndExpect(page, '/trust/activity', ['Activity timeline', 'Report artifact downloaded', 'Mapped control evidence needs review.']);
 
   await expect(page.getByRole('button', { name: /share|public/i })).toHaveCount(0);
   await expect(page.getByText(/legally compliant|fully compliant|certified|guaranteed|audit-ready|AKIA|ghp_|super-secret|raw_provider_payload|vault:\/\//i)).toHaveCount(0);

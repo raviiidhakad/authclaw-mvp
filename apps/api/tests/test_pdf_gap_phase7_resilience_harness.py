@@ -4,11 +4,20 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 
-SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "local_resilience_check.py"
+SCRIPT_PATH = next((
+    candidate
+    for candidate in [
+        *(path / "scripts" / "local_resilience_check.py" for path in Path(__file__).resolve().parents),
+    ]
+    if candidate.exists()
+), None)
 
 
 def _load_harness():
+    if SCRIPT_PATH is None:
+        pytest.skip("local_resilience_check.py is not available in this test environment")
     spec = importlib.util.spec_from_file_location("local_resilience_check", SCRIPT_PATH)
     assert spec is not None
     assert spec.loader is not None

@@ -1,24 +1,3 @@
-"""
-AuthClaw Sprint 2 — GCP Connector Tests
------------------------------------------
-All tests use unittest.mock — no live GCP API calls.
-JWT signing is patched via PyJWT mock.
-
-Coverage:
-  - validate_credentials: SA key structure check, project_id mismatch,
-    token exchange failure, project access 403
-  - fetch_findings SCC primary path: findings mapped correctly
-  - fetch_findings fallback trigger on 403/404/501
-  - _map_scc_finding: severity mapping (all GCP labels + fail-safe)
-  - _scan_iam_bindings: allUsers binding → CRITICAL; owner/editor to user → HIGH;
-    service account gets no finding
-  - _scan_gcs_public_access: allUsers on bucket → CRITICAL; private → no finding
-  - _scan_kms_rotation: key without rotationPeriod → MEDIUM finding
-  - _scan_audit_logs: no auditConfigs → HIGH finding; configs present → no finding
-  - _run_fallback_scanners: orchestrates all four; scanner failure doesn't abort
-  - MAX_FINDINGS_PER_SYNC: results truncated at limit
-  - dedup_hash: format and consistency
-"""
 from __future__ import annotations
 
 import time
@@ -35,8 +14,6 @@ from app.services.connectors.base import RawFindingData
 from app.services.connectors.gcp import GCPConnector, _GCP_SEVERITY_MAP
 from app.services.connectors.registry import ConnectorRegistry
 
-
-# ── Fixtures ───────────────────────────────────────────────────────────────────
 
 GCP_PROJECT = "my-gcp-project-123"
 
@@ -94,17 +71,10 @@ def connector():
     return _make_connector()
 
 
-# ── Token helper ───────────────────────────────────────────────────────────────
-
 def _inject_valid_token(connector: GCPConnector) -> None:
-    """Pre-load a valid cached token so _get_access_token doesn't make HTTP calls."""
     connector._access_token = "ya29.fake_token"
     connector._token_expiry = time.monotonic() + 3600
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# validate_credentials
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGCPValidateCredentials:
 
@@ -167,10 +137,6 @@ class TestGCPValidateCredentials:
                     with pytest.raises(ValueError, match="project access check failed"):
                         await connector.validate_credentials()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# fetch_findings — SCC primary path
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGCPFetchFindingsSCC:
 
@@ -247,10 +213,6 @@ class TestGCPFetchFindingsSCC:
                         await connector.fetch_findings()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# _map_scc_finding — severity mapping
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestGCPSCCSeverityMapping:
 
     @pytest.mark.parametrize("gcp_sev,expected", [
@@ -285,13 +247,7 @@ class TestGCPSCCSeverityMapping:
         assert "OPEN_FIREWALL" in finding.title
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Fallback scanners
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestGCPFallbackScanners:
-
-    # ── IAM bindings ─────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_iam_allUsers_binding_is_critical(self, connector):
@@ -322,7 +278,6 @@ class TestGCPFallbackScanners:
 
     @pytest.mark.asyncio
     async def test_iam_owner_to_service_account_no_finding(self, connector):
-        """Service accounts with owner are expected — should not flag."""
         policy = {
             "bindings": [
                 {
@@ -342,8 +297,6 @@ class TestGCPFallbackScanners:
                            side_effect=_http_error(403)):
             findings = await connector._scan_iam_bindings(AsyncMock())
         assert findings == []
-
-    # ── GCS public access ─────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_gcs_public_bucket_is_critical(self, connector):
@@ -380,8 +333,6 @@ class TestGCPFallbackScanners:
             findings = await connector._scan_gcs_public_access(AsyncMock())
         assert findings == []
 
-    # ── KMS rotation ──────────────────────────────────────────────────────────
-
     @pytest.mark.asyncio
     async def test_kms_key_without_rotation_is_medium(self, connector):
         locations_resp = {"locations": [{"locationId": "us-central1"}]}
@@ -391,7 +342,6 @@ class TestGCPFallbackScanners:
                 {
                     "name":    f"projects/{GCP_PROJECT}/locations/us-central1/keyRings/ring1/cryptoKeys/key1",
                     "purpose": "ENCRYPT_DECRYPT",
-                    # No rotationPeriod key → triggers finding
                 }
             ]
         }
@@ -421,8 +371,6 @@ class TestGCPFallbackScanners:
             findings = await connector._scan_kms_rotation(AsyncMock())
         assert findings == []
 
-    # ── Audit Logs ────────────────────────────────────────────────────────────
-
     @pytest.mark.asyncio
     async def test_audit_logs_not_configured_is_high(self, connector):
         project_data = {"projectId": GCP_PROJECT}  # no auditConfigs key
@@ -449,15 +397,10 @@ class TestGCPFallbackScanners:
         assert findings == []
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# _run_fallback_scanners orchestration
-# ══════════════════════════════════════════════════════════════════════════════
-
 class TestGCPFallbackOrchestration:
 
     @pytest.mark.asyncio
     async def test_failed_scanner_does_not_abort_others(self, connector):
-        """If one scanner raises, remaining scanners still run."""
         mock_client = AsyncMock()
 
         async def failing_scanner(_client):
@@ -504,10 +447,6 @@ class TestGCPFallbackOrchestration:
 
         assert len(results) <= 5
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# dedup hash
-# ══════════════════════════════════════════════════════════════════════════════
 
 class TestGCPDedupHash:
 

@@ -2,7 +2,7 @@ import concurrent.futures
 
 import pytest
 
-from app.core.engine.utf8_decoder import Utf8DecoderError, Utf8IncrementalDecoder
+from app.core.engine.streaming import Utf8DecoderError, Utf8IncrementalDecoder
 
 
 def _feed(chunks):

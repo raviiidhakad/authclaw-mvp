@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 import uuid
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.models.policy import Policy
 from app.services.api_safety import SECRET_FIELD_NAMES, collect_secret_values, sanitize_text
 
 
@@ -48,6 +51,49 @@ _RESERVED_METADATA_KEYS = {
     "provider_id",
     "policy_id",
 }
+
+
+@dataclass(frozen=True)
+class OpaPolicyVersion:
+    policy_version: str
+    policy_hash: str
+    policy_ids: list[str]
+
+
+class OpaPolicyVersionTracker:
+    """Derive deterministic policy hashes from existing ORM metadata only."""
+
+    @classmethod
+    def from_policies(cls, policies: list[Policy]) -> OpaPolicyVersion:
+        policy_payloads: list[dict[str, Any]] = []
+        for policy in sorted(policies, key=lambda item: str(item.id)):
+            rules = []
+            for rule in sorted(getattr(policy, "rules", []), key=lambda item: str(item.id)):
+                rules.append(
+                    {
+                        "id": str(rule.id),
+                        "type": getattr(rule.rule_type, "value", str(rule.rule_type)),
+                        "action": getattr(rule.action, "value", str(rule.action)),
+                        "conditions": rule.conditions or {},
+                        "is_active": bool(rule.is_active),
+                    }
+                )
+            policy_payloads.append(
+                {
+                    "id": str(policy.id),
+                    "name": sanitize_text(policy.name),
+                    "is_active": bool(policy.is_active),
+                    "priority": int(policy.priority or 0),
+                    "rules": rules,
+                }
+            )
+        encoded = json.dumps(policy_payloads, sort_keys=True, separators=(",", ":"), default=str)
+        policy_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return OpaPolicyVersion(
+            policy_version=f"sha256:{policy_hash[:16]}",
+            policy_hash=policy_hash,
+            policy_ids=[item["id"] for item in policy_payloads],
+        )
 
 
 class _OmitValue:
@@ -285,3 +331,37 @@ class OpaInputBuilder:
 
     def _stable_mapping(self, value: dict[str, Any]) -> dict[str, Any]:
         return {key: value[key] for key in sorted(value)}
+
+
+def safe_policy_matches(prompt: str, policies: list[Policy]) -> tuple[list[str], list[str]]:
+    keyword_matches: list[str] = []
+    regex_matches: list[str] = []
+    lower_prompt = prompt.lower()
+    for policy in sorted(policies, key=lambda item: str(getattr(item, "id", ""))):
+        for rule in sorted(getattr(policy, "rules", []) or [], key=lambda item: str(getattr(item, "id", ""))):
+            if not getattr(rule, "is_active", False):
+                continue
+            conditions = getattr(rule, "conditions", {}) or {}
+            keywords = conditions.get("keywords", conditions.get("blocked_terms", [])) or []
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            for keyword in keywords:
+                keyword_text = str(keyword)
+                if keyword_text and keyword_text.lower() in lower_prompt:
+                    keyword_hash = hashlib.sha256(keyword_text.encode("utf-8")).hexdigest()[:12]
+                    keyword_matches.append(
+                        f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:keyword:{keyword_hash}"
+                    )
+            patterns = conditions.get("regex_patterns", conditions.get("patterns", [])) or []
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            for pattern in patterns:
+                try:
+                    if re.search(str(pattern), prompt):
+                        pattern_hash = hashlib.sha256(str(pattern).encode("utf-8")).hexdigest()[:12]
+                        regex_matches.append(
+                            f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:regex:{pattern_hash}"
+                        )
+                except re.error:
+                    continue
+    return sorted(set(keyword_matches)), sorted(set(regex_matches))

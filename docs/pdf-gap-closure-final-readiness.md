@@ -28,7 +28,7 @@ Percentages are evidence-supported planning estimates, not certification claims.
 
 | Area | Status | Evidence | Remaining gap |
 | --- | --- | --- | --- |
-| Gateway/proxy | mostly complete | Gateway MVP accepted; local production-like benchmark passed the PDF <=50 ms p95 overhead target in `docs/pdf-gap-phase-1-gateway-performance-decision.md`; Groq/OpenAI-compatible validation documented in `docs/gateway-mvp-closeout.md`. | Native reverse proxy breadth and Go/Rust hot path are deferred until staging evidence requires them. |
+| Gateway/proxy | mostly complete | Gateway MVP accepted; local production-like benchmark passed the PDF <=50 ms p95 overhead target in `docs/pdf-gap-phase-1-gateway-performance-decision.md`; OpenAI-compatible/Groq support is covered by gateway/provider contract tests and the Phase 1 provider compatibility matrix. | Native reverse proxy breadth and Go/Rust hot path are deferred until staging evidence requires them. |
 | Redaction/tokenization | complete | E2.1 reversible tokenization suite, streaming tokenization integration, and regression slices pass locally. | Production secrets/KMS configuration must be validated in staging. |
 | YAML/OPA policy | mostly complete | Python/YAML mode, OPA mode, hybrid mode, fail-closed behavior, Rego examples, and real local OPA sidecar tests are present. | OPA HA topology and production deployment proof remain staging items. |
 | Streaming filtering | complete | E2.3 UTF-8 decoder, SSE parser, state machine, StreamingEngine integration, security integration, and closeout tests exist. | Production streaming soak and live provider breadth remain staging items. |
@@ -60,7 +60,7 @@ Percentages are evidence-supported planning estimates, not certification claims.
 | Playwright discovery | PASS | `npx.cmd playwright test --list` listed 33 tests. Local browser execution remains subject to the known Windows Chromium EPERM issue. |
 | Docker Compose config | PASS with environment warning | `docker compose config --quiet` exited 0, with Docker config access warnings for the local user profile. |
 | Local resilience harness | PASS | API health, security pipeline health, Postgres, Redis, Redpanda, Vault, and ClickHouse checks all passed. |
-| Gateway Groq validation | Prior evidence | Documented in `docs/gateway-mvp-closeout.md`; live provider probing remains disabled by default. |
+| Gateway Groq validation | Prior evidence | Covered by OpenAI-compatible gateway/provider contract tests and summarized in `docs/pdf-gap-phase-1-gateway-performance-decision.md`; live provider probing remains disabled by default. |
 | Gateway benchmark | Prior evidence | Documented in `docs/pdf-gap-phase-1-gateway-performance-decision.md`; all local scenarios passed the <=50 ms p95 overhead target. |
 | Safety scan | PASS | Changed-file scan for provider keys, Vault refs, raw payload/token leakage, and legal overclaim phrases returned no matches. |
 

@@ -1,10 +1,27 @@
 import inspect
 
-from app.core.engine import streaming_contracts as contracts
+from app.core.engine import streaming as contracts
 
 
 def test_e2_3_contracts_are_non_executing_scaffolding():
-    source = inspect.getsource(contracts)
+    source = "\n".join(
+        inspect.getsource(symbol)
+        for symbol in (
+            contracts.StreamingSecurityInvariants,
+            contracts.StreamingContext,
+            contracts.SseEvent,
+            contracts.StreamingTextWindow,
+            contracts.StreamingPolicyDecision,
+            contracts.StreamingTokenizationResult,
+            contracts.StreamingEmission,
+            contracts.SseParserContract,
+            contracts.Utf8IncrementalDecoderContract,
+            contracts.StreamingRedactionStateMachineContract,
+            contracts.StreamingPolicyEvaluationContract,
+            contracts.StreamingTokenizationContract,
+            contracts.StreamingOutputEmitterContract,
+        )
+    )
 
     assert "from app.core.engine.gateway" not in source
     assert "from app.core.engine.streaming import StreamingEngine" not in source

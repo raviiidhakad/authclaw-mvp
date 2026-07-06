@@ -84,7 +84,6 @@ jobs:
             AGENTS.md
             .env.example
             apps/api/.env.example
-            apps/web/.env.example
           )
           lockfile_paths=(
             apps/web/package-lock.json

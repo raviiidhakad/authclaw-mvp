@@ -1,16 +1,11 @@
 import redis.asyncio as redis
+import asyncio
 from typing import AsyncGenerator
 from app.core.config import settings
 
-# Create a Redis connection pool
-redis_pool = redis.ConnectionPool.from_url(
-    settings.REDIS_URL,
-    decode_responses=True
-)
-
 async def get_redis() -> AsyncGenerator[redis.Redis, None]:
     """Dependency for injecting Redis client into routes or services."""
-    client = redis.Redis.from_pool(redis_pool)
+    client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
         yield client
     finally:
@@ -19,9 +14,25 @@ async def get_redis() -> AsyncGenerator[redis.Redis, None]:
 # Singleton-like instance for internal engines/services that don't use FastAPI Depends
 class RedisClient:
     _instance = None
+    _clients = {}
 
     @classmethod
     def get(cls) -> redis.Redis:
-        if cls._instance is None:
-            cls._instance = redis.Redis.from_pool(redis_pool)
-        return cls._instance
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = cls._clients.get(key)
+        if client is None:
+            client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+            cls._clients[key] = client
+            cls._instance = client
+        return client
+
+    @classmethod
+    async def aclose(cls, *, flush: bool = False) -> None:
+        clients = list(cls._clients.values())
+        cls._clients.clear()
+        cls._instance = None
+        for client in clients:
+            if flush:
+                await client.flushdb()
+            await client.aclose()

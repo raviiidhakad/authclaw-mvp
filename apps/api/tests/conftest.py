@@ -4,9 +4,15 @@ import uuid
 import tempfile
 from pathlib import Path
 
+RUNNING_IN_DOCKER = Path("/.dockerenv").exists()
+DEFAULT_DB_HOST = "db" if RUNNING_IN_DOCKER else "127.0.0.1"
+DEFAULT_DB_PORT = "5432" if RUNNING_IN_DOCKER else "5434"
+
 LOCAL_TEST_ENV_DEFAULTS = {
     "DATABASE_URL": "postgresql+asyncpg://authclaw_app:authclaw_app_password@127.0.0.1:5434/authclaw",
     "ALEMBIC_DATABASE_URL": "postgresql+asyncpg://postgres:password@127.0.0.1:5434/authclaw",
+    "DB_HOST": DEFAULT_DB_HOST,
+    "DB_PORT": DEFAULT_DB_PORT,
     "REDIS_URL": "redis://127.0.0.1:6379/0",
     "KAFKA_BROKERS": "127.0.0.1:19092",
     "VAULT_ADDR": "http://127.0.0.1:8200",
@@ -47,11 +53,8 @@ async def reset_singletons():
     await clickhouse_manager.disconnect()
     clickhouse_manager.client = None
     clickhouse_manager.session = None
-    redis_client = RedisClient._instance
-    RedisClient._instance = None
-    if redis_client is not None:
-        try:
-            await redis_client.aclose()
-        except RuntimeError as exc:
-            if "different loop" not in str(exc):
-                raise
+    try:
+        await RedisClient.aclose(flush=True)
+    except RuntimeError as exc:
+        if "different loop" not in str(exc) and "Event loop is closed" not in str(exc):
+            raise

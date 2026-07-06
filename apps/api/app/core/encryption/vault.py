@@ -19,21 +19,26 @@ class VaultEncryptionProvider(EncryptionProvider):
         self.key_name = getattr(settings, 'VAULT_TRANSIT_KEY', 'authclaw-key')
         self.mount_point = getattr(settings, 'VAULT_TRANSIT_MOUNT', 'transit')
 
-        # Auto-create key in dev if it doesn't exist (helpful for local docker-compose)
         if os.getenv('ENVIRONMENT', 'development') != 'production':
-            try:
-                # Enable transit if not enabled
-                sys_backends = self.client.sys.list_mounted_secrets_engines()['data']
-                if f"{self.mount_point}/" not in sys_backends:
-                    self.client.sys.enable_secrets_engine(backend_type='transit', path=self.mount_point)
-                # Create key if not exists
-                self.client.secrets.transit.read_key(name=self.key_name, mount_point=self.mount_point)
-            except hvac.exceptions.InvalidPath:
-                # Key doesn't exist
-                self.client.secrets.transit.create_key(name=self.key_name, mount_point=self.mount_point)
-            except Exception:
-                pass
+            self._ensure_dev_transit_key()
 
+    def _ensure_dev_transit_key(self) -> None:
+        try:
+            self.client.secrets.transit.read_key(name=self.key_name, mount_point=self.mount_point)
+            return
+        except hvac.exceptions.InvalidPath:
+            pass
+
+        try:
+            self.client.sys.enable_secrets_engine(backend_type='transit', path=self.mount_point)
+        except hvac.exceptions.InvalidRequest as exc:
+            if "path is already in use" not in str(exc).lower():
+                raise
+
+        try:
+            self.client.secrets.transit.read_key(name=self.key_name, mount_point=self.mount_point)
+        except hvac.exceptions.InvalidPath:
+            self.client.secrets.transit.create_key(name=self.key_name, mount_point=self.mount_point)
 
     def generate_data_key(self) -> tuple[bytes, str]:
         """

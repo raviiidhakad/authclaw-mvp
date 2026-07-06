@@ -31,6 +31,7 @@ def set_vault_env(monkeypatch):
     # Clear the singleton to reload provider
     import app.core.encryption
     monkeypatch.setenv('ENCRYPTION_PROVIDER', 'vault')
+    monkeypatch.setenv('ENVIRONMENT', 'development')
     monkeypatch.setattr(settings, 'ENCRYPTION_PROVIDER', 'vault')
     app.core.encryption._provider = None
     yield

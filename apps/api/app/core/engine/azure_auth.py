@@ -7,7 +7,15 @@ logger = logging.getLogger(__name__)
 
 class AzureADClient:
     def __init__(self):
-        self.redis = RedisClient.get()
+        self._redis = None
+
+    @property
+    def redis(self):
+        return self._redis or RedisClient.get()
+
+    @redis.setter
+    def redis(self, value):
+        self._redis = value
 
     async def get_access_token(self, tenant_id: str, client_id: str, client_secret: str) -> str:
         """

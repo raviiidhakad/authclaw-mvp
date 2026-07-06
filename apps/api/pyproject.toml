@@ -15,6 +15,7 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
     "live: opt-in tests that call real external providers and require local credentials",
+    "integration: opt-in tests that require local Docker services",
 ]
 
 [tool.ruff]

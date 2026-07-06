@@ -7,17 +7,23 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  RUNTIME_LOC_BUDGET: "60000"
+  PRODUCT_SOURCE_LOC_BUDGET: "60000"
+  NON_TEST_LOC_BUDGET: "70000"
+
 jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: LOC profiles and runtime gate
+      - name: LOC profiles and budget gates
         shell: bash
         run: |
           set -euo pipefail
-          RUNTIME_LIMIT=60000
-          PRODUCT_SOURCE_LIMIT=60000
+          RUNTIME_LIMIT="${RUNTIME_LOC_BUDGET}"
+          PRODUCT_SOURCE_LIMIT="${PRODUCT_SOURCE_LOC_BUDGET}"
+          NON_TEST_LIMIT="${NON_TEST_LOC_BUDGET}"
 
           common_excludes=(
             --exclude node_modules
@@ -34,6 +40,20 @@ jobs:
             --exclude ".env.*"
             --exclude "*.pyc"
             --exclude "*.tsbuildinfo"
+          )
+
+          test_excludes=(
+            --exclude tests
+            --exclude test
+            --exclude __tests__
+            --exclude conftest.py
+            --exclude "test_*.py"
+            --exclude "*_test.py"
+            --exclude "*.test.*"
+            --exclude "*.spec.*"
+            --exclude pytest.ini
+            --exclude playwright.config.ts
+            --exclude playwright.config.js
           )
 
           if ! command -v tokei >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
@@ -58,6 +78,22 @@ jobs:
             profile_code="$(code_loc "$@")"
             echo "$label code LOC: $profile_code"
             echo "::endgroup::"
+          }
+
+          check_budget() {
+            local label="$1"
+            local current="$2"
+            local budget="$3"
+            local delta=$(( budget - current ))
+
+            echo "$label current LOC: $current"
+            echo "$label budget LOC: $budget"
+            if (( delta < 0 )); then
+              echo "$label exceeded LOC: $((-delta))"
+              echo "::error::$label LOC $current exceeds budget $budget by $((-delta))"
+              exit 1
+            fi
+            echo "$label remaining LOC: $delta"
           }
 
           runtime_paths=(apps/api/app apps/web/src)
@@ -94,20 +130,15 @@ jobs:
           runtime_code="$profile_code"
           report_profile "product-source-excluding-lockfiles" "${product_source_paths[@]}"
           product_source_code="$profile_code"
+          report_profile "whole-project-excluding-tests" . "${test_excludes[@]}"
+          non_test_code="$profile_code"
           report_profile "lockfiles-report-only" "${lockfile_paths[@]}"
           report_profile "full-development-repo" .
 
-          if (( runtime_code > RUNTIME_LIMIT )); then
-            echo "::error::production runtime LOC $runtime_code exceeds budget $RUNTIME_LIMIT"
-            exit 1
-          fi
-          echo "production runtime LOC $runtime_code is within budget $RUNTIME_LIMIT"
-
-          if (( product_source_code > PRODUCT_SOURCE_LIMIT )); then
-            echo "::error::product source LOC $product_source_code exceeds budget $PRODUCT_SOURCE_LIMIT"
-            exit 1
-          fi
-          echo "product source LOC $product_source_code is within budget $PRODUCT_SOURCE_LIMIT"
+          echo "Test excludes: tests/, test/, __tests__/, conftest.py, test_*.py, *_test.py, *.test.*, *.spec.*, pytest.ini, playwright.config.*"
+          check_budget "production runtime" "$runtime_code" "$RUNTIME_LIMIT"
+          check_budget "product source excluding lockfiles" "$product_source_code" "$PRODUCT_SOURCE_LIMIT"
+          check_budget "whole project excluding tests" "$non_test_code" "$NON_TEST_LIMIT"
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
         with:

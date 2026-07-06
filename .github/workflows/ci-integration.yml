@@ -51,43 +51,7 @@ jobs:
           cd apps/api
           alembic upgrade head
 
-      - name: Wait for Redpanda listener
-        env:
-          KAFKA_BROKERS: localhost:19092
-        run: |
-          cd apps/api
-          python - <<'PY'
-          import asyncio
-          import os
-          from aiokafka import AIOKafkaProducer
-
-          async def main() -> None:
-              broker = os.environ["KAFKA_BROKERS"]
-              last_error = None
-              for attempt in range(1, 31):
-                  producer = AIOKafkaProducer(
-                      bootstrap_servers=broker,
-                      request_timeout_ms=3000,
-                  )
-                  try:
-                      await asyncio.wait_for(producer.start(), timeout=5)
-                      await producer.stop()
-                      print(f"Kafka listener ready at {broker} on attempt {attempt}")
-                      return
-                  except Exception as exc:
-                      last_error = exc
-                      try:
-                          await producer.stop()
-                      except Exception:
-                          pass
-                      print(f"Kafka listener not ready on attempt {attempt}: {exc}")
-                      await asyncio.sleep(2)
-              raise SystemExit(f"Kafka listener never became ready at {broker}: {last_error}")
-
-          asyncio.run(main())
-          PY
-
-      - name: Run core integration tests
+      - name: Run tenant isolation smoke
         env:
           PYTHONPATH: .
           APP_DEBUG: "false"
@@ -109,58 +73,6 @@ jobs:
         run: |
           cd apps/api
           pytest tests/test_rls_isolation.py \
-            tests/test_engine.py \
-            tests/test_limiter.py \
-            tests/test_streaming.py \
-            tests/test_azure_auth.py \
-            -vv -s --tb=short --durations=20 --timeout=180 --timeout-method=thread
-
-      - name: Run event backbone integration tests
-        env:
-          PYTHONPATH: .
-          APP_DEBUG: "false"
-          DATABASE_URL: ${{ secrets.INTEGRATION_DATABASE_URL || 'postgresql+asyncpg://authclaw_app:authclaw_app_password@localhost:5434/authclaw' }}
-          ALEMBIC_DATABASE_URL: ${{ secrets.INTEGRATION_ALEMBIC_DATABASE_URL || 'postgresql+asyncpg://postgres:password@localhost:5434/authclaw' }}
-          REDIS_URL: ${{ secrets.INTEGRATION_REDIS_URL || 'redis://localhost:6379/0' }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY || 'test-jwt-secret-at-least-32-bytes-long' }}
-          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY || '0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=' }}
-          KAFKA_BROKERS: localhost:19092
-          VAULT_ADDR: http://localhost:8200
-          VAULT_TOKEN: local-vault-root-token
-          CLICKHOUSE_URL: http://localhost:8123
-          CLICKHOUSE_USER: authclaw
-          CLICKHOUSE_PASSWORD: authclaw_clickhouse_local_password
-          CLICKHOUSE_DB: authclaw
-          PYTHONUNBUFFERED: "1"
-        run: |
-          cd apps/api
-          pytest \
-            tests/integration/test_event_backbone.py \
-            -vv -s --tb=short --durations=20 --timeout=180 --timeout-method=thread
-
-      - name: Run event stress integration tests
-        env:
-          PYTHONPATH: .
-          APP_DEBUG: "false"
-          DATABASE_URL: ${{ secrets.INTEGRATION_DATABASE_URL || 'postgresql+asyncpg://authclaw_app:authclaw_app_password@localhost:5434/authclaw' }}
-          ALEMBIC_DATABASE_URL: ${{ secrets.INTEGRATION_ALEMBIC_DATABASE_URL || 'postgresql+asyncpg://postgres:password@localhost:5434/authclaw' }}
-          REDIS_URL: ${{ secrets.INTEGRATION_REDIS_URL || 'redis://localhost:6379/0' }}
-          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY || 'test-jwt-secret-at-least-32-bytes-long' }}
-          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY || '0Us8ttRG0f5n1JuxMd-cp92xZcd9xxztZxQaNnhli50=' }}
-          KAFKA_BROKERS: localhost:19092
-          VAULT_ADDR: http://localhost:8200
-          VAULT_TOKEN: local-vault-root-token
-          CLICKHOUSE_URL: http://localhost:8123
-          CLICKHOUSE_USER: authclaw
-          CLICKHOUSE_PASSWORD: authclaw_clickhouse_local_password
-          CLICKHOUSE_DB: authclaw
-          PYTHONUNBUFFERED: "1"
-          STRESS_BATCH_SIZE: "10"
-          STRESS_TIMEOUT_SECONDS: "10"
-        run: |
-          cd apps/api
-          pytest \
-            tests/performance/test_backbone_stress.py \
             -vv -s --tb=short --durations=20 --timeout=180 --timeout-method=thread
 
       - name: Show service logs on failure

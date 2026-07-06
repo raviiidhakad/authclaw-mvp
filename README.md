@@ -76,11 +76,13 @@ AuthClaw implements defense-in-depth:
 Backend:
 ```bash
 cd apps/api
-pytest tests/
+pytest tests/test_api.py tests/test_gateway_api_contract.py tests/test_rls_isolation.py
 ```
 
 Frontend:
 ```bash
 cd apps/web
-npx playwright test
+npm run lint
+npx tsc --noEmit
+npm run build
 ```

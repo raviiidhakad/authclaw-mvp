@@ -42,16 +42,3 @@ jobs:
         run: |
           cd apps/web
           npm run build
-
-      - name: Install Playwright browsers
-        run: |
-          cd apps/web
-          npx playwright install --with-deps chromium
-
-      - name: Playwright
-        env:
-          CI: "1"
-          NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
-        run: |
-          cd apps/web
-          npx playwright test

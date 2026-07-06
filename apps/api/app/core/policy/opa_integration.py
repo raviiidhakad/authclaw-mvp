@@ -3,17 +3,23 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.core.engine.evaluator import EvaluationResult, PolicyEngine, RuleViolation
-from app.core.policy.opa_input import OpaInputBuilder, OpaInputContext
+from app.core.policy.opa_input import (
+    OpaInputBuilder,
+    OpaInputContext,
+    OpaPolicyVersion,
+    OpaPolicyVersionTracker,
+    safe_policy_matches,
+)
 from app.core.policy.opa_runtime import (
     OpaErrorCategory,
     OpaFailureMode,
+    OpaRuntimeMetrics,
     OpaRuntimeDecision,
     OpaRuntimeEvaluator,
     OpaRuntimeStatus,
@@ -24,13 +30,6 @@ from app.models.policy import Policy
 from app.models.provider import Provider
 from app.schemas.security_events import PolicyEvaluatedEvent
 from app.services.api_safety import sanitize_text
-
-
-@dataclass(frozen=True)
-class OpaPolicyVersion:
-    policy_version: str
-    policy_hash: str
-    policy_ids: list[str]
 
 
 @dataclass(frozen=True)
@@ -74,42 +73,6 @@ class OpaAuthoritativeDecision:
         if self.runtime_result is not None:
             payload["opa"] = self.runtime_result.audit_metadata()
         return payload
-
-
-class OpaPolicyVersionTracker:
-    """Derive deterministic policy hashes from existing ORM metadata only."""
-
-    @classmethod
-    def from_policies(cls, policies: list[Policy]) -> OpaPolicyVersion:
-        policy_payloads: list[dict[str, Any]] = []
-        for policy in sorted(policies, key=lambda item: str(item.id)):
-            rules = []
-            for rule in sorted(getattr(policy, "rules", []), key=lambda item: str(item.id)):
-                rules.append(
-                    {
-                        "id": str(rule.id),
-                        "type": getattr(rule.rule_type, "value", str(rule.rule_type)),
-                        "action": getattr(rule.action, "value", str(rule.action)),
-                        "conditions": rule.conditions or {},
-                        "is_active": bool(rule.is_active),
-                    }
-                )
-            policy_payloads.append(
-                {
-                    "id": str(policy.id),
-                    "name": sanitize_text(policy.name),
-                    "is_active": bool(policy.is_active),
-                    "priority": int(policy.priority or 0),
-                    "rules": rules,
-                }
-            )
-        encoded = json.dumps(policy_payloads, sort_keys=True, separators=(",", ":"), default=str)
-        policy_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        return OpaPolicyVersion(
-            policy_version=f"sha256:{policy_hash[:16]}",
-            policy_hash=policy_hash,
-            policy_ids=[item["id"] for item in policy_payloads],
-        )
 
 
 class OpaDecisionCache:
@@ -162,49 +125,6 @@ class OpaDecisionCache:
             "backend": "in_memory",
             "entries": len(self._items),
             "tenant_count": len(self._tenant_keys),
-        }
-
-
-@dataclass
-class OpaRuntimeMetrics:
-    cache_hits: int = 0
-    cache_misses: int = 0
-    runtime_failures: int = 0
-    allow_count: int = 0
-    deny_count: int = 0
-    redact_count: int = 0
-    evaluation_latencies_ms: list[int] = field(default_factory=list)
-
-    def record_cache_hit(self) -> None:
-        self.cache_hits += 1
-
-    def record_cache_miss(self) -> None:
-        self.cache_misses += 1
-
-    def record_decision(self, decision: OpaRuntimeDecision, latency_ms: int) -> None:
-        self.evaluation_latencies_ms.append(int(latency_ms))
-        if decision.runtime_status != OpaRuntimeStatus.OK:
-            self.runtime_failures += 1
-        if decision.allowed:
-            self.allow_count += 1
-        else:
-            self.deny_count += 1
-        if decision.redaction_required:
-            self.redact_count += 1
-
-    def snapshot(self) -> dict[str, Any]:
-        latencies = sorted(self.evaluation_latencies_ms)
-        count = len(latencies)
-        p95 = latencies[min(count - 1, int(count * 0.95))] if count else 0
-        return {
-            "cache_hits": self.cache_hits,
-            "cache_misses": self.cache_misses,
-            "runtime_failures": self.runtime_failures,
-            "allow_count": self.allow_count,
-            "deny_count": self.deny_count,
-            "redact_count": self.redact_count,
-            "evaluation_count": count,
-            "evaluation_latency_p95_ms": p95,
         }
 
 
@@ -378,7 +298,7 @@ class OpaRuntimeIntegration:
             return None
 
         version = OpaPolicyVersionTracker.from_policies(policies)
-        keyword_matches, regex_matches = self._safe_policy_matches(prompt, policies)
+        keyword_matches, regex_matches = safe_policy_matches(prompt, policies)
         normalized_policies = [normalized_from_policy(policy) for policy in policies]
         input_document = OpaInputBuilder().build(
             OpaInputContext(
@@ -627,40 +547,6 @@ class OpaRuntimeIntegration:
             or not self.strict_mode
             or not self.fail_closed
         )
-
-    @staticmethod
-    def _safe_policy_matches(prompt: str, policies: list[Policy]) -> tuple[list[str], list[str]]:
-        keyword_matches: list[str] = []
-        regex_matches: list[str] = []
-        lower_prompt = prompt.lower()
-        for policy in sorted(policies, key=lambda item: str(getattr(item, "id", ""))):
-            for rule in sorted(getattr(policy, "rules", []) or [], key=lambda item: str(getattr(item, "id", ""))):
-                if not getattr(rule, "is_active", False):
-                    continue
-                conditions = getattr(rule, "conditions", {}) or {}
-                keywords = conditions.get("keywords", conditions.get("blocked_terms", [])) or []
-                if isinstance(keywords, str):
-                    keywords = [keywords]
-                for keyword in keywords:
-                    keyword_text = str(keyword)
-                    if keyword_text and keyword_text.lower() in lower_prompt:
-                        keyword_hash = hashlib.sha256(keyword_text.encode("utf-8")).hexdigest()[:12]
-                        keyword_matches.append(
-                            f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:keyword:{keyword_hash}"
-                        )
-                patterns = conditions.get("regex_patterns", conditions.get("patterns", [])) or []
-                if isinstance(patterns, str):
-                    patterns = [patterns]
-                for pattern in patterns:
-                    try:
-                        if re.search(str(pattern), prompt):
-                            pattern_hash = hashlib.sha256(str(pattern).encode("utf-8")).hexdigest()[:12]
-                            regex_matches.append(
-                                f"policy:{getattr(policy, 'id', '')}:rule:{getattr(rule, 'id', '')}:regex:{pattern_hash}"
-                            )
-                    except re.error:
-                        continue
-        return sorted(set(keyword_matches)), sorted(set(regex_matches))
 
     @staticmethod
     def _hybrid_mismatch(adapter_result: EvaluationResult, runtime_decision: OpaRuntimeDecision) -> str | None:

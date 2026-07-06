@@ -28,7 +28,11 @@ class TenantPlanLimiter:
     """Conservative Redis-backed limiter for tenant-plan abuse controls."""
 
     def __init__(self, redis_client: Any | None = None) -> None:
-        self.redis = redis_client or RedisClient.get()
+        self._redis_client = redis_client
+
+    @property
+    def redis(self) -> Any:
+        return self._redis_client or RedisClient.get()
 
     async def limits_for_tenant(self, db: Any, tenant_id: uuid.UUID | str) -> TenantPlanLimits:
         tenant = await self._load_tenant(db, tenant_id)

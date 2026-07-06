@@ -49,12 +49,25 @@ end
 
 class RateLimiter:
     def __init__(self):
-        self.redis = RedisClient.get()
+        self._redis_client = None
         self._script = None
+        self._script_client = None
+
+    @property
+    def redis(self):
+        return self._redis_client or RedisClient.get()
+
+    @redis.setter
+    def redis(self, redis_client):
+        self._redis_client = redis_client
+        self._script = None
+        self._script_client = None
 
     async def _get_script(self):
-        if not self._script:
-            self._script = self.redis.register_script(TOKEN_BUCKET_LUA)
+        redis_client = self.redis
+        if self._script is None or self._script_client is not redis_client:
+            self._script = redis_client.register_script(TOKEN_BUCKET_LUA)
+            self._script_client = redis_client
         return self._script
 
     async def check_rate_limit(

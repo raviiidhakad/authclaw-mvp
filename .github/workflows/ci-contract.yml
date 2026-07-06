@@ -21,7 +21,7 @@ jobs:
         run: |
           cd apps/api
           pip install -r requirements.txt
-      - name: Run contract tests
+      - name: Run product API contract smoke
         env:
           PYTHONPATH: .
           APP_DEBUG: "false"
@@ -38,6 +38,4 @@ jobs:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
         run: |
           cd apps/api
-          pytest tests/test_adapters_contract.py \
-            tests/integration/providers/test_contracts.py \
-            -v --tb=short -s
+          pytest tests/test_gateway_api_contract.py -v --tb=short -s

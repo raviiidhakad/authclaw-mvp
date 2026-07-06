@@ -7,11 +7,138 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  RUNTIME_LOC_BUDGET: "60000"
+  PRODUCT_SOURCE_LOC_BUDGET: "60000"
+  NON_TEST_LOC_BUDGET: "70000"
+
 jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: LOC profiles and budget gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNTIME_LIMIT="${RUNTIME_LOC_BUDGET}"
+          PRODUCT_SOURCE_LIMIT="${PRODUCT_SOURCE_LOC_BUDGET}"
+          NON_TEST_LIMIT="${NON_TEST_LOC_BUDGET}"
+
+          common_excludes=(
+            --exclude node_modules
+            --exclude .venv
+            --exclude .next
+            --exclude dist
+            --exclude build
+            --exclude __pycache__
+            --exclude .pytest_cache
+            --exclude coverage
+            --exclude playwright-report
+            --exclude test-results
+            --exclude .env
+            --exclude ".env.*"
+            --exclude "*.pyc"
+            --exclude "*.tsbuildinfo"
+          )
+
+          test_excludes=(
+            --exclude tests
+            --exclude test
+            --exclude __tests__
+            --exclude conftest.py
+            --exclude "test_*.py"
+            --exclude "*_test.py"
+            --exclude "*.test.*"
+            --exclude "*.spec.*"
+            --exclude pytest.ini
+            --exclude playwright.config.ts
+            --exclude playwright.config.js
+          )
+
+          if ! command -v tokei >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+            cargo install tokei --locked >/dev/null 2>&1 || true
+          fi
+
+          if ! command -v tokei >/dev/null 2>&1; then
+            echo "::error::tokei unavailable; cannot enforce production runtime LOC budget"
+            exit 1
+          fi
+
+          code_loc() {
+            tokei "$@" "${common_excludes[@]}" --output json \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["Total"]["code"])'
+          }
+
+          report_profile() {
+            local label="$1"
+            shift
+            echo "::group::$label"
+            tokei "$@" "${common_excludes[@]}"
+            profile_code="$(code_loc "$@")"
+            echo "$label code LOC: $profile_code"
+            echo "::endgroup::"
+          }
+
+          check_budget() {
+            local label="$1"
+            local current="$2"
+            local budget="$3"
+            local delta=$(( budget - current ))
+
+            echo "$label current LOC: $current"
+            echo "$label budget LOC: $budget"
+            if (( delta < 0 )); then
+              echo "$label exceeded LOC: $((-delta))"
+              echo "::error::$label LOC $current exceeds budget $budget by $((-delta))"
+              exit 1
+            fi
+            echo "$label remaining LOC: $delta"
+          }
+
+          runtime_paths=(apps/api/app apps/web/src)
+          product_source_paths=(
+            apps/api/app
+            apps/web/src
+            apps/api/alembic
+            apps/api/scripts
+            apps/api/requirements.txt
+            apps/api/pyproject.toml
+            apps/api/alembic.ini
+            apps/api/Dockerfile
+            apps/api/.dockerignore
+            apps/web/Dockerfile
+            apps/web/.dockerignore
+            apps/web/package.json
+            apps/web/next.config.ts
+            apps/web/postcss.config.mjs
+            apps/web/tsconfig.json
+            apps/web/eslint.config.mjs
+            docker-compose.yml
+            .github/workflows
+            README.md
+            AGENTS.md
+            .env.example
+            apps/api/.env.example
+          )
+          lockfile_paths=(
+            apps/web/package-lock.json
+            apps/api/uv.lock
+          )
+
+          report_profile "production-runtime" "${runtime_paths[@]}"
+          runtime_code="$profile_code"
+          report_profile "product-source-excluding-lockfiles" "${product_source_paths[@]}"
+          product_source_code="$profile_code"
+          report_profile "whole-project-excluding-tests" . "${test_excludes[@]}"
+          non_test_code="$profile_code"
+          report_profile "lockfiles-report-only" "${lockfile_paths[@]}"
+          report_profile "full-development-repo" .
+
+          echo "Test excludes: tests/, test/, __tests__/, conftest.py, test_*.py, *_test.py, *.test.*, *.spec.*, pytest.ini, playwright.config.*"
+          check_budget "production runtime" "$runtime_code" "$RUNTIME_LIMIT"
+          check_budget "product source excluding lockfiles" "$product_source_code" "$PRODUCT_SOURCE_LIMIT"
+          check_budget "whole project excluding tests" "$non_test_code" "$NON_TEST_LIMIT"
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
         with:

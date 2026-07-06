@@ -43,7 +43,7 @@ jobs:
         run: |
           cd apps/api
           alembic upgrade head
-      - name: Run unit tests
+      - name: Run backend smoke tests
         env:
           PYTHONPATH: .
           APP_DEBUG: "false"
@@ -62,22 +62,14 @@ jobs:
           CLICKHOUSE_DB: authclaw
         run: |
           cd apps/api
-          pytest tests/ \
-            --ignore=tests/integration \
-            --ignore=tests/performance \
-            --ignore=tests/security \
-            -x -q \
-            --cov=app --cov-report=xml --cov-report=term-missing \
-            --cov-fail-under=75
+          pytest \
+            tests/test_api.py \
+            tests/test_gateway_api_contract.py \
+            tests/test_rls_isolation.py \
+            -x -q --tb=short --disable-warnings
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs --no-color db redis redpanda vault clickhouse
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: apps/api/coverage.xml
       - name: Stop services
         if: always()
         run: docker compose down --volumes

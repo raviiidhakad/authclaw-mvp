@@ -1,5 +1,43 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
+import type { AxiosResponse } from 'axios';
 import { apiClient } from '@/lib/api-client';
+
+type ApiResponseData = AxiosResponse['data'];
+
+function invalidateOnSuccess(queryClient: QueryClient, queryKeys: QueryKey[]) {
+  return () => {
+    queryKeys.forEach((queryKey) => queryClient.invalidateQueries({ queryKey }));
+  };
+}
+
+async function getData<T = ApiResponseData>(url: string, params?: Record<string, unknown>) {
+  const res = await apiClient.get(url, params === undefined ? undefined : { params });
+  return res.data as T;
+}
+
+async function getItems<T = ApiResponseData>(url: string, params?: Record<string, unknown>) {
+  const data = await getData<T[] | { items?: T[] }>(url, params);
+  return Array.isArray(data) ? data : (data.items ?? []);
+}
+
+async function postData<T = ApiResponseData>(url: string, data?: unknown) {
+  const res = await apiClient.post(url, data);
+  return res.data as T;
+}
+
+async function patchData<T = ApiResponseData>(url: string, data: unknown) {
+  const res = await apiClient.patch(url, data);
+  return res.data as T;
+}
+
+async function putData<T = ApiResponseData>(url: string, data: unknown) {
+  const res = await apiClient.put(url, data);
+  return res.data as T;
+}
+
+async function deleteData(url: string) {
+  await apiClient.delete(url);
+}
 
 // ── Dashboard / Stats ──
 export function useDashboardStats() {
@@ -20,80 +58,52 @@ export function useDashboardStats() {
 export function usePolicies(skip = 0, limit = 50) {
   return useQuery({
     queryKey: ['policies', skip, limit],
-    queryFn: async () => {
-      const res = await apiClient.get('/policies', { params: { skip, limit } });
-      return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
-    },
+    queryFn: () => getItems('/policies', { skip, limit }),
   });
 }
 
 export function useCreatePolicy() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: Record<string, unknown>) => {
-      const res = await apiClient.post('/policies', data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['policies'] });
-    },
+    mutationFn: (data: Record<string, unknown>) => postData('/policies', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['policies']]),
   });
 }
 
 export function useDeletePolicy() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await apiClient.delete(`/policies/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['policies'] });
-    },
+    mutationFn: (id: string) => deleteData(`/policies/${id}`),
+    onSuccess: invalidateOnSuccess(queryClient, [['policies']]),
   });
 }
 
 export function useUpdatePolicy() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
-      const res = await apiClient.patch(`/policies/${id}`, data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['policies'] });
-    },
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => patchData(`/policies/${id}`, data),
+    onSuccess: invalidateOnSuccess(queryClient, [['policies']]),
   });
 }
 
 // ── Policy Violations (dedicated violations endpoint) ──
 export function useValidatePolicyYaml() {
   return useMutation({
-    mutationFn: async (yamlSource: string) => {
-      const res = await apiClient.post('/policies/validate', { yaml_source: yamlSource });
-      return res.data;
-    },
+    mutationFn: (yamlSource: string) => postData('/policies/validate', { yaml_source: yamlSource }),
   });
 }
 
 export function useTestPolicyYaml() {
   return useMutation({
-    mutationFn: async ({ yamlSource, sampleText }: { yamlSource: string; sampleText: string }) => {
-      const res = await apiClient.post('/policies/test', { yaml_source: yamlSource, sample_text: sampleText });
-      return res.data;
-    },
+    mutationFn: ({ yamlSource, sampleText }: { yamlSource: string; sampleText: string }) => postData('/policies/test', { yaml_source: yamlSource, sample_text: sampleText }),
   });
 }
 
 export function useImportPolicyYaml() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (yamlSource: string) => {
-      const res = await apiClient.post('/policies/import-yaml', { yaml_source: yamlSource });
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['policies'] });
-    },
+    mutationFn: (yamlSource: string) => postData('/policies/import-yaml', { yaml_source: yamlSource }),
+    onSuccess: invalidateOnSuccess(queryClient, [['policies']]),
   });
 }
 
@@ -114,8 +124,7 @@ export function useGatewayRequests(skip = 0, limit = 50, status?: string) {
     queryFn: async () => {
       const params: { skip: number; limit: number; status?: string } = { skip, limit };
       if (status) params.status = status;
-      const res = await apiClient.get('/gateway/requests', { params });
-      return res.data; // { items, total }
+      return getData('/gateway/requests', params);
     },
     refetchInterval: 5000,
   });
@@ -124,11 +133,7 @@ export function useGatewayRequests(skip = 0, limit = 50, status?: string) {
 export function useGatewayRequestDetail(id: string | null) {
   return useQuery({
     queryKey: ['gateway-request', id],
-    queryFn: async () => {
-      if (!id) return null;
-      const res = await apiClient.get(`/gateway/requests/${id}`);
-      return res.data;
-    },
+    queryFn: () => (id ? getData(`/gateway/requests/${id}`) : null),
     enabled: !!id,
   });
 }
@@ -137,48 +142,31 @@ export function useGatewayRequestDetail(id: string | null) {
 export function useGatewayRoutes() {
   return useQuery({
     queryKey: ['gateway-routes'],
-    queryFn: async () => {
-      const res = await apiClient.get('/gateway-routes');
-      return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
-    },
+    queryFn: () => getItems('/gateway-routes'),
   });
 }
 
 export function useCreateGatewayRoute() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: Record<string, unknown>) => {
-      const res = await apiClient.post('/gateway-routes', data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
-    },
+    mutationFn: (data: Record<string, unknown>) => postData('/gateway-routes', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['gateway-routes']]),
   });
 }
 
 export function useUpdateGatewayRoute() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
-      const res = await apiClient.patch(`/gateway-routes/${id}`, data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
-    },
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => patchData(`/gateway-routes/${id}`, data),
+    onSuccess: invalidateOnSuccess(queryClient, [['gateway-routes']]),
   });
 }
 
 export function useDeleteGatewayRoute() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await apiClient.delete(`/gateway-routes/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
-    },
+    mutationFn: (id: string) => deleteData(`/gateway-routes/${id}`),
+    onSuccess: invalidateOnSuccess(queryClient, [['gateway-routes']]),
   });
 }
 
@@ -206,10 +194,7 @@ export type AuditIntegrityReport = {
 export function useAuditIntegrityVerification() {
   return useQuery({
     queryKey: ['audit-integrity-verification'],
-    queryFn: async () => {
-      const res = await apiClient.get('/audit/verify');
-      return res.data as AuditIntegrityReport;
-    },
+    queryFn: () => getData<AuditIntegrityReport>('/audit/verify'),
     refetchInterval: 30000,
   });
 }
@@ -218,10 +203,7 @@ export function useAuditIntegrityVerification() {
 export function useComplianceDashboard() {
   return useQuery({
     queryKey: ['compliance-dashboard'],
-    queryFn: async () => {
-      const res = await apiClient.get('/compliance/dashboard');
-      return res.data;
-    },
+    queryFn: () => getData('/compliance/dashboard'),
     refetchInterval: 5000,
   });
 }
@@ -229,15 +211,8 @@ export function useComplianceDashboard() {
 export function useCalculateCompliance() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const res = await apiClient.post('/compliance/scores/calculate');
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['compliance-dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['compliance'] });
-      queryClient.invalidateQueries({ queryKey: ['compliance-history'] });
-    },
+    mutationFn: () => postData('/compliance/scores/calculate'),
+    onSuccess: invalidateOnSuccess(queryClient, [['compliance-dashboard'], ['compliance'], ['compliance-history']]),
   });
 }
 
@@ -314,71 +289,46 @@ export function useComplianceHistory(limit = 10, framework = 'gdpr') {
 export function useProviders() {
   return useQuery({
     queryKey: ['providers'],
-    queryFn: async () => {
-      const res = await apiClient.get('/providers');
-      return Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
-    },
+    queryFn: () => getItems('/providers'),
   });
 }
 
 export function useCreateProvider() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: Record<string, unknown>) => {
-      const res = await apiClient.post('/providers', data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-    },
+    mutationFn: (data: Record<string, unknown>) => postData('/providers', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['providers']]),
   });
 }
 
 export function useDeleteProvider() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await apiClient.delete(`/providers/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-    },
+    mutationFn: (id: string) => deleteData(`/providers/${id}`),
+    onSuccess: invalidateOnSuccess(queryClient, [['providers']]),
   });
 }
 
 export function useUpdateProvider() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
-      const res = await apiClient.patch(`/providers/${id}`, data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] });
-    },
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => patchData(`/providers/${id}`, data),
+    onSuccess: invalidateOnSuccess(queryClient, [['providers']]),
   });
 }
 
 export function useApiKeys(skip = 0, limit = 50) {
   return useQuery({
     queryKey: ['api-keys', skip, limit],
-    queryFn: async () => {
-      const res = await apiClient.get('/api-keys', { params: { skip, limit } });
-      return res.data; // { items, total }
-    },
+    queryFn: () => getData('/api-keys', { skip, limit }),
   });
 }
 
 export function useCreateApiKey() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: Record<string, unknown>) => {
-      const res = await apiClient.post('/api-keys', data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] });
-    },
+    mutationFn: (data: Record<string, unknown>) => postData('/api-keys', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['api-keys']]),
   });
 }
 
@@ -388,9 +338,7 @@ export function useRevokeApiKey() {
     mutationFn: async (id: string) => {
       await apiClient.post(`/api-keys/${id}/revoke`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['api-keys']]),
   });
 }
 
@@ -436,87 +384,61 @@ export type TenantUser = {
 export function useTenantDetails() {
   return useQuery({
     queryKey: ['tenant-details'],
-    queryFn: async () => {
-      const res = await apiClient.get('/tenants');
-      return res.data as TenantDetails;
-    },
+    queryFn: () => getData<TenantDetails>('/tenants'),
   });
 }
 
 export function useUpdateTenantDetails() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: Partial<Pick<TenantDetails, 'name' | 'status' | 'plan' | 'settings'>>) => {
-      const res = await apiClient.patch('/tenants', data);
-      return res.data as TenantDetails;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tenant-details'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
-    },
+    mutationFn: (data: Partial<Pick<TenantDetails, 'name' | 'status' | 'plan' | 'settings'>>) => patchData<TenantDetails>('/tenants', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['tenant-details'], ['dashboard-stats']]),
   });
 }
 
 export function useRateLimitTiers() {
   return useQuery({
     queryKey: ['rate-limit-tiers'],
-    queryFn: async () => {
-      const res = await apiClient.get('/tenants/rate-limit-tiers');
-      return res.data as RateLimitTier[];
-    },
+    queryFn: () => getData<RateLimitTier[]>('/tenants/rate-limit-tiers'),
   });
 }
 
 export function useTenantUsers() {
   return useQuery({
     queryKey: ['tenant-users'],
-    queryFn: async () => {
-      const res = await apiClient.get('/users');
-      return res.data as TenantUser[];
-    },
+    queryFn: () => getData<TenantUser[]>('/users'),
   });
 }
 
 export function useCreateTenantUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { email: string; first_name: string; last_name: string; password: string; role_name: string }) => {
-      const res = await apiClient.post('/users', data);
-      return res.data as TenantUser;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+    mutationFn: (data: { email: string; first_name: string; last_name: string; password: string; role_name: string }) => postData<TenantUser>('/users', data),
+    onSuccess: invalidateOnSuccess(queryClient, [['tenant-users']]),
   });
 }
 
 export function useUpdateTenantUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: Partial<Pick<TenantUser, 'email' | 'first_name' | 'last_name' | 'is_active'>> }) => {
-      const res = await apiClient.patch(`/users/${id}`, data);
-      return res.data as TenantUser;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+    mutationFn: ({ id, data }: { id: string; data: Partial<Pick<TenantUser, 'email' | 'first_name' | 'last_name' | 'is_active'>> }) => patchData<TenantUser>(`/users/${id}`, data),
+    onSuccess: invalidateOnSuccess(queryClient, [['tenant-users']]),
   });
 }
 
 export function useAssignTenantUserRoles() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, roles }: { id: string; roles: string[] }) => {
-      const res = await apiClient.put(`/users/${id}/roles`, { roles });
-      return res.data as TenantUser;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+    mutationFn: ({ id, roles }: { id: string; roles: string[] }) => putData<TenantUser>(`/users/${id}/roles`, { roles }),
+    onSuccess: invalidateOnSuccess(queryClient, [['tenant-users']]),
   });
 }
 
 export function useDeleteTenantUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await apiClient.delete(`/users/${id}`);
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tenant-users'] }),
+    mutationFn: (id: string) => deleteData(`/users/${id}`),
+    onSuccess: invalidateOnSuccess(queryClient, [['tenant-users']]),
   });
 }
 
@@ -548,39 +470,24 @@ export function useApprovals() {
 export function useApproveAction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, code }: { id: string; code: string }) => {
-      const res = await apiClient.post(`/approvals/${id}/approve`, { code });
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-    },
+    mutationFn: ({ id, code }: { id: string; code: string }) => postData(`/approvals/${id}/approve`, { code }),
+    onSuccess: invalidateOnSuccess(queryClient, [['approvals']]),
   });
 }
 
 export function useRejectAction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiClient.post(`/approvals/${id}/reject`);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-    },
+    mutationFn: (id: string) => postData(`/approvals/${id}/reject`),
+    onSuccess: invalidateOnSuccess(queryClient, [['approvals']]),
   });
 }
 
 export function useRunAgentScan() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (target: string) => {
-      const res = await apiClient.post('/ai/analyze', { target });
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approvals'] });
-    },
+    mutationFn: (target: string) => postData('/ai/analyze', { target }),
+    onSuccess: invalidateOnSuccess(queryClient, [['approvals']]),
   });
 }
 
@@ -669,65 +576,51 @@ export interface FindingsFilters {
 }
 
 export async function listIntegrations(params?: { provider_type?: string; status?: string; skip?: number; limit?: number }) {
-  const res = await apiClient.get('/integrations', { params });
-  return res.data as { items: CloudIntegration[]; total: number };
+  return getData<{ items: CloudIntegration[]; total: number }>('/integrations', params);
 }
 
 export async function getIntegration(id: string) {
-  const res = await apiClient.get(`/integrations/${id}`);
-  return res.data as CloudIntegration;
+  return getData<CloudIntegration>(`/integrations/${id}`);
 }
 
 export async function createIntegration(data: IntegrationCreatePayload) {
-  const res = await apiClient.post('/integrations', data);
-  return res.data as CloudIntegration;
+  return postData<CloudIntegration>('/integrations', data);
 }
 
 export async function updateIntegration({ id, data }: { id: string; data: IntegrationUpdatePayload }) {
-  const res = await apiClient.patch(`/integrations/${id}`, data);
-  return res.data as CloudIntegration;
+  return patchData<CloudIntegration>(`/integrations/${id}`, data);
 }
 
 export async function deleteIntegration(id: string) {
-  await apiClient.delete(`/integrations/${id}`);
+  await deleteData(`/integrations/${id}`);
 }
 
 export async function validateIntegration(data: IntegrationCreatePayload) {
-  const res = await apiClient.post('/integrations/validate', data);
-  return res.data as IntegrationValidationResult;
+  return postData<IntegrationValidationResult>('/integrations/validate', data);
 }
 
 export async function validateExistingIntegration(id: string) {
-  const res = await apiClient.post(`/integrations/${id}/validate`);
-  return res.data as IntegrationValidationResult;
+  return postData<IntegrationValidationResult>(`/integrations/${id}/validate`);
 }
 
 export async function requestIntegrationSync(id: string) {
-  const res = await apiClient.post(`/integrations/${id}/sync`);
-  return res.data as { integration_id: string; status: string; queued: boolean };
+  return postData<{ integration_id: string; status: string; queued: boolean }>(`/integrations/${id}/sync`);
 }
 
 export async function getIntegrationHealth(id?: string) {
-  const res = await apiClient.get(id ? `/integrations/${id}/health` : '/integrations/health');
-  return res.data as IntegrationHealth | { registered_providers: string[]; circuit_breakers: Record<string, unknown>; items: IntegrationHealth[] };
+  return getData<IntegrationHealth | { registered_providers: string[]; circuit_breakers: Record<string, unknown>; items: IntegrationHealth[] }>(id ? `/integrations/${id}/health` : '/integrations/health');
 }
 
 export async function listFindings(params: FindingsFilters = {}) {
-  const cleanParams = Object.fromEntries(
-    Object.entries(params).filter(([, value]) => value !== undefined && value !== '')
-  );
-  const res = await apiClient.get('/findings', { params: cleanParams });
-  return res.data as { items: SecurityFinding[]; total: number; skip: number; limit: number };
+  return getData<{ items: SecurityFinding[]; total: number; skip: number; limit: number }>('/findings', cleanParams(params));
 }
 
 export async function getFinding(id: string) {
-  const res = await apiClient.get(`/findings/${id}`);
-  return res.data as SecurityFinding;
+  return getData<SecurityFinding>(`/findings/${id}`);
 }
 
 export async function updateFindingStatus({ id, status }: { id: string; status: FindingStatus }) {
-  const res = await apiClient.patch(`/findings/${id}`, { status });
-  return res.data as SecurityFinding;
+  return patchData<SecurityFinding>(`/findings/${id}`, { status });
 }
 
 export function useIntegrations(params?: { provider_type?: string; status?: string; skip?: number; limit?: number }) {
@@ -742,10 +635,7 @@ export function useCreateIntegration() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createIntegration,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['integrations'] });
-      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['integrations'], ['integration-health']]),
   });
 }
 
@@ -753,10 +643,7 @@ export function useUpdateIntegration() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateIntegration,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['integrations'] });
-      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['integrations'], ['integration-health']]),
   });
 }
 
@@ -764,10 +651,7 @@ export function useDeleteIntegration() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: deleteIntegration,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['integrations'] });
-      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['integrations'], ['integration-health']]),
   });
 }
 
@@ -783,10 +667,7 @@ export function useRequestIntegrationSync() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: requestIntegrationSync,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['integrations'] });
-      queryClient.invalidateQueries({ queryKey: ['integration-health'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['integrations'], ['integration-health']]),
   });
 }
 
@@ -1040,120 +921,98 @@ export interface ComplianceAskSession {
 
 type ListResponse<T> = { items: T[]; total: number; skip: number; limit: number; status?: string };
 
-function cleanParams(params: Record<string, unknown> = {}) {
+function cleanParams(params: object = {}) {
   return Object.fromEntries(
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')
   );
 }
 
 export async function listComplianceFrameworks(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/frameworks', { params: cleanParams(params) });
-  return res.data as ComplianceFramework[];
+  return getData<ComplianceFramework[]>('/compliance/frameworks', cleanParams(params));
 }
 
 export async function getComplianceFramework(id: string) {
-  const res = await apiClient.get(`/compliance/frameworks/${id}`);
-  return res.data as ComplianceFramework;
+  return getData<ComplianceFramework>(`/compliance/frameworks/${id}`);
 }
 
 export async function listComplianceControls(frameworkId: string, params: Record<string, unknown> = {}) {
-  const res = await apiClient.get(`/compliance/frameworks/${frameworkId}/controls`, { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceControl>;
+  return getData<ListResponse<ComplianceControl>>(`/compliance/frameworks/${frameworkId}/controls`, cleanParams(params));
 }
 
 export async function getComplianceControl(id: string) {
-  const res = await apiClient.get(`/compliance/controls/${id}`);
-  return res.data as ComplianceControl;
+  return getData<ComplianceControl>(`/compliance/controls/${id}`);
 }
 
 export async function listComplianceMappings(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/mappings', { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceMapping>;
+  return getData<ListResponse<ComplianceMapping>>('/compliance/mappings', cleanParams(params));
 }
 
 export async function reviewComplianceMapping({ id, data }: { id: string; data: { review_status: 'approved' | 'rejected' | 'overridden'; override_reason?: string } }) {
-  const res = await apiClient.patch(`/compliance/mappings/${id}/review`, data);
-  return res.data as ComplianceMapping;
+  return patchData<ComplianceMapping>(`/compliance/mappings/${id}/review`, data);
 }
 
 export async function runComplianceAssessment(data: { framework_id?: string; framework?: string }) {
-  const res = await apiClient.post('/compliance/assessments/run', data);
-  return res.data as ComplianceAssessment;
+  return postData<ComplianceAssessment>('/compliance/assessments/run', data);
 }
 
 export async function listComplianceAssessments(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/assessments', { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceAssessment>;
+  return getData<ListResponse<ComplianceAssessment>>('/compliance/assessments', cleanParams(params));
 }
 
 export async function getComplianceAssessment(id: string) {
-  const res = await apiClient.get(`/compliance/assessments/${id}`);
-  return res.data as ComplianceAssessment;
+  return getData<ComplianceAssessment>(`/compliance/assessments/${id}`);
 }
 
 export async function getAssessmentControls(id: string, params: Record<string, unknown> = {}) {
-  const res = await apiClient.get(`/compliance/assessments/${id}/controls`, { params: cleanParams(params) });
-  return res.data as ControlAssessmentResult[];
+  return getData<ControlAssessmentResult[]>(`/compliance/assessments/${id}/controls`, cleanParams(params));
 }
 
 export async function listComplianceEvidence(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/evidence', { params: cleanParams(params) });
-  return res.data as ListResponse<EvidenceItem>;
+  return getData<ListResponse<EvidenceItem>>('/compliance/evidence', cleanParams(params));
 }
 
 export async function getComplianceEvidence(id: string) {
-  const res = await apiClient.get(`/compliance/evidence/${id}`);
-  return res.data as EvidenceItem;
+  return getData<EvidenceItem>(`/compliance/evidence/${id}`);
 }
 
 export async function listComplianceGaps(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/gaps', { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceGap>;
+  return getData<ListResponse<ComplianceGap>>('/compliance/gaps', cleanParams(params));
 }
 
 export async function getComplianceGap(id: string) {
-  const res = await apiClient.get(`/compliance/gaps/${id}`);
-  return res.data as ComplianceGap;
+  return getData<ComplianceGap>(`/compliance/gaps/${id}`);
 }
 
 export async function listComplianceRecommendations(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/recommendations', { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceRecommendation>;
+  return getData<ListResponse<ComplianceRecommendation>>('/compliance/recommendations', cleanParams(params));
 }
 
 export async function listKnowledgeDocuments(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/knowledge', { params: cleanParams(params) });
-  return res.data as ListResponse<KnowledgeDocument>;
+  return getData<ListResponse<KnowledgeDocument>>('/compliance/knowledge', cleanParams(params));
 }
 
 export async function getKnowledgeDocument(id: string) {
-  const res = await apiClient.get(`/compliance/knowledge/${id}`);
-  return res.data as KnowledgeDocument;
+  return getData<KnowledgeDocument>(`/compliance/knowledge/${id}`);
 }
 
 export async function ingestKnowledge(data: { tenant_scoped?: boolean } = { tenant_scoped: false }) {
-  const res = await apiClient.post('/compliance/knowledge/ingest', data);
-  return res.data as { documents_seen: number; documents_created: number; documents_updated: number; chunks_created: number };
+  return postData<{ documents_seen: number; documents_created: number; documents_updated: number; chunks_created: number }>('/compliance/knowledge/ingest', data);
 }
 
 export async function queryComplianceRetrieval(data: { query: string; framework_id?: string; control_id?: string; limit?: number; session_id?: string }) {
-  const res = await apiClient.post('/compliance/retrieval/query', data);
-  return res.data;
+  return postData('/compliance/retrieval/query', data);
 }
 
 export async function askCompliance(data: { question: string; framework_id?: string; control_id?: string; finding_id?: string; assessment_id?: string }) {
-  const res = await apiClient.post('/compliance/ask', data);
-  return res.data as ComplianceAskResponse;
+  return postData<ComplianceAskResponse>('/compliance/ask', data);
 }
 
 export async function listComplianceAskSessions(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/compliance/ask/sessions', { params: cleanParams(params) });
-  return res.data as ListResponse<ComplianceAskSession>;
+  return getData<ListResponse<ComplianceAskSession>>('/compliance/ask/sessions', cleanParams(params));
 }
 
 export async function getComplianceAskSession(id: string) {
-  const res = await apiClient.get(`/compliance/ask/sessions/${id}`);
-  return res.data as ComplianceAskSession;
+  return getData<ComplianceAskSession>(`/compliance/ask/sessions/${id}`);
 }
 
 export function useComplianceFrameworks(params: Record<string, unknown> = {}) {
@@ -1180,9 +1039,7 @@ export function useReviewComplianceMapping() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: reviewComplianceMapping,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['compliance-mappings'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['compliance-mappings']]),
   });
 }
 
@@ -1190,12 +1047,7 @@ export function useRunComplianceAssessment() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: runComplianceAssessment,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['compliance-assessments'] });
-      queryClient.invalidateQueries({ queryKey: ['compliance-gaps'] });
-      queryClient.invalidateQueries({ queryKey: ['compliance-evidence'] });
-      queryClient.invalidateQueries({ queryKey: ['compliance-recommendations'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['compliance-assessments'], ['compliance-gaps'], ['compliance-evidence'], ['compliance-recommendations']]),
   });
 }
 
@@ -1225,12 +1077,12 @@ export function useKnowledgeDocuments(params: Record<string, unknown> = {}) {
 
 export function useIngestKnowledge() {
   const queryClient = useQueryClient();
-  return useMutation({ mutationFn: ingestKnowledge, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['compliance-knowledge'] }) });
+  return useMutation({ mutationFn: ingestKnowledge, onSuccess: invalidateOnSuccess(queryClient, [['compliance-knowledge']]) });
 }
 
 export function useAskCompliance() {
   const queryClient = useQueryClient();
-  return useMutation({ mutationFn: askCompliance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['compliance-ask-sessions'] }) });
+  return useMutation({ mutationFn: askCompliance, onSuccess: invalidateOnSuccess(queryClient, [['compliance-ask-sessions']]) });
 }
 
 export function useComplianceAskSessions(params: Record<string, unknown> = {}) {
@@ -1426,8 +1278,7 @@ export interface ShareLinkRecord {
 export type TrustReportListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
 
 export async function getTrustOverview() {
-  const res = await apiClient.get('/trust/overview');
-  return res.data as TrustOverview;
+  return getData<TrustOverview>('/trust/overview');
 }
 
 export async function getTrustPosture(kind: 'security' | 'compliance' | 'remediation' | 'integrations') {
@@ -1437,53 +1288,43 @@ export async function getTrustPosture(kind: 'security' | 'compliance' | 'remedia
     remediation: '/trust/remediation-posture',
     integrations: '/trust/integration-health',
   } satisfies Record<string, string>;
-  const res = await apiClient.get(pathByKind[kind]);
-  return res.data as TrustPosture;
+  return getData<TrustPosture>(pathByKind[kind]);
 }
 
 export async function getAuditExportVerificationStates() {
-  const res = await apiClient.get('/trust/audit-export-verification-states');
-  return res.data as AuditExportVerificationStates;
+  return getData<AuditExportVerificationStates>('/trust/audit-export-verification-states');
 }
 
 export async function listTrustNotifications(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/trust/notifications', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<TrustNotification> & { unread: number };
+  return getData<TrustReportListResponse<TrustNotification> & { unread: number }>('/trust/notifications', cleanParams(params));
 }
 
 export async function getNotificationUnreadCount() {
-  const res = await apiClient.get('/trust/notifications/unread-count');
-  return res.data as { unread: number };
+  return getData<{ unread: number }>('/trust/notifications/unread-count');
 }
 
 export async function markTrustNotificationRead(id: string) {
-  const res = await apiClient.post(`/trust/notifications/${id}/read`);
-  return res.data as TrustNotification;
+  return postData<TrustNotification>(`/trust/notifications/${id}/read`);
 }
 
 export async function markAllTrustNotificationsRead() {
-  const res = await apiClient.post('/trust/notifications/mark-all-read');
-  return res.data as { unread: number };
+  return postData<{ unread: number }>('/trust/notifications/mark-all-read');
 }
 
 export async function listActivityTimeline(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/trust/activity', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ActivityTimelineItem>;
+  return getData<TrustReportListResponse<ActivityTimelineItem>>('/trust/activity', cleanParams(params));
 }
 
 export async function listReportTemplates(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/reports/templates', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ReportTemplate>;
+  return getData<TrustReportListResponse<ReportTemplate>>('/reports/templates', cleanParams(params));
 }
 
 export async function createReportTemplate(data: ReportTemplatePayload) {
-  const res = await apiClient.post('/reports/templates', { format: 'json', ...data });
-  return res.data as ReportTemplate;
+  return postData<ReportTemplate>('/reports/templates', { format: 'json', ...data });
 }
 
 export async function updateReportTemplate({ id, data }: { id: string; data: Partial<ReportTemplatePayload> }) {
-  const res = await apiClient.patch(`/reports/templates/${id}`, data);
-  return res.data as ReportTemplate;
+  return patchData<ReportTemplate>(`/reports/templates/${id}`, data);
 }
 
 export async function deleteReportTemplate(id: string) {
@@ -1491,73 +1332,59 @@ export async function deleteReportTemplate(id: string) {
 }
 
 export async function createReportRun(data: ReportRunPayload) {
-  const res = await apiClient.post('/reports/run', data);
-  return res.data as ReportRun;
+  return postData<ReportRun>('/reports/run', data);
 }
 
 export async function listReportRuns(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/reports/runs', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ReportRun>;
+  return getData<TrustReportListResponse<ReportRun>>('/reports/runs', cleanParams(params));
 }
 
 export async function getReportRun(id: string) {
-  const res = await apiClient.get(`/reports/runs/${id}`);
-  return res.data as ReportRun;
+  return getData<ReportRun>(`/reports/runs/${id}`);
 }
 
 export async function listReportArtifacts(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/reports/artifacts', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ReportArtifactMetadata>;
+  return getData<TrustReportListResponse<ReportArtifactMetadata>>('/reports/artifacts', cleanParams(params));
 }
 
 export async function getReportArtifact(id: string) {
-  const res = await apiClient.get(`/reports/artifacts/${id}`);
-  return res.data as ReportArtifactMetadata;
+  return getData<ReportArtifactMetadata>(`/reports/artifacts/${id}`);
 }
 
 export async function getReportArtifactManifest(id: string) {
-  const res = await apiClient.get(`/reports/artifacts/${id}/manifest`);
-  return res.data as ExportManifest;
+  return getData<ExportManifest>(`/reports/artifacts/${id}/manifest`);
 }
 
 export async function downloadReportArtifact(id: string) {
-  const res = await apiClient.get(`/reports/artifacts/${id}/download`);
-  return res.data as ReportArtifactDownload;
+  return getData<ReportArtifactDownload>(`/reports/artifacts/${id}/download`);
 }
 
 export async function createShareLink(data: { artifact_id: string; expires_at: string; max_downloads: number }) {
-  const res = await apiClient.post('/trust/share-links', data);
-  return res.data as ShareLinkRecord;
+  return postData<ShareLinkRecord>('/trust/share-links', data);
 }
 
 export async function listShareLinks(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/trust/share-links', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ShareLinkRecord>;
+  return getData<TrustReportListResponse<ShareLinkRecord>>('/trust/share-links', cleanParams(params));
 }
 
 export async function revokeShareLink(id: string) {
-  const res = await apiClient.post(`/trust/share-links/${id}/revoke`);
-  return res.data as ShareLinkRecord;
+  return postData<ShareLinkRecord>(`/trust/share-links/${id}/revoke`);
 }
 
 export async function createEvidencePackage(data: EvidencePackagePayload) {
-  const res = await apiClient.post('/evidence-packages', data);
-  return res.data as EvidencePackageResponse;
+  return postData<EvidencePackageResponse>('/evidence-packages', data);
 }
 
 export async function listEvidencePackages(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/evidence-packages', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ReportRun>;
+  return getData<TrustReportListResponse<ReportRun>>('/evidence-packages', cleanParams(params));
 }
 
 export async function getEvidencePackage(id: string) {
-  const res = await apiClient.get(`/evidence-packages/${id}`);
-  return res.data as EvidencePackageResponse;
+  return getData<EvidencePackageResponse>(`/evidence-packages/${id}`);
 }
 
 export async function listReportAccessLogs(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/reports/access-logs', { params: cleanParams(params) });
-  return res.data as TrustReportListResponse<ReportAccessLog>;
+  return getData<TrustReportListResponse<ReportAccessLog>>('/reports/access-logs', cleanParams(params));
 }
 
 export function useTrustOverview() {
@@ -1584,10 +1411,7 @@ export function useMarkTrustNotificationRead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: markTrustNotificationRead,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['trust-notifications'] });
-      queryClient.invalidateQueries({ queryKey: ['trust-notification-unread-count'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['trust-notifications'], ['trust-notification-unread-count']]),
   });
 }
 
@@ -1595,10 +1419,7 @@ export function useMarkAllTrustNotificationsRead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: markAllTrustNotificationsRead,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['trust-notifications'] });
-      queryClient.invalidateQueries({ queryKey: ['trust-notification-unread-count'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['trust-notifications'], ['trust-notification-unread-count']]),
   });
 }
 
@@ -1614,7 +1435,7 @@ export function useCreateReportTemplate() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createReportTemplate,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-templates'] }),
+    onSuccess: invalidateOnSuccess(queryClient, [['report-templates']]),
   });
 }
 
@@ -1633,7 +1454,7 @@ export function useDeleteReportTemplate() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: deleteReportTemplate,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-templates'] }),
+    onSuccess: invalidateOnSuccess(queryClient, [['report-templates']]),
   });
 }
 
@@ -1641,10 +1462,7 @@ export function useCreateReportRun() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createReportRun,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['report-runs'] });
-      queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['report-runs'], ['report-artifacts']]),
   });
 }
 
@@ -1668,7 +1486,7 @@ export function useDownloadReportArtifact() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: downloadReportArtifact,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['report-access-logs'] }),
+    onSuccess: invalidateOnSuccess(queryClient, [['report-access-logs']]),
   });
 }
 
@@ -1676,10 +1494,7 @@ export function useCreateShareLink() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createShareLink,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['share-links'] });
-      queryClient.invalidateQueries({ queryKey: ['report-access-logs'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['share-links'], ['report-access-logs']]),
   });
 }
 
@@ -1691,10 +1506,7 @@ export function useRevokeShareLink() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: revokeShareLink,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['share-links'] });
-      queryClient.invalidateQueries({ queryKey: ['report-access-logs'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['share-links'], ['report-access-logs']]),
   });
 }
 
@@ -1702,11 +1514,7 @@ export function useCreateEvidencePackage() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createEvidencePackage,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['evidence-packages'] });
-      queryClient.invalidateQueries({ queryKey: ['report-runs'] });
-      queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['evidence-packages'], ['report-runs'], ['report-artifacts']]),
   });
 }
 
@@ -1829,33 +1637,27 @@ export interface RiskPosture {
 }
 
 export async function listRiskProbeRuns(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/risk/probes', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<AdversarialProbeRun>;
+  return getData<RemediationListResponse<AdversarialProbeRun>>('/risk/probes', cleanParams(params));
 }
 
 export async function createRiskProbeRun(data: { name: string; category: RiskProbeCategory | string; target_surface?: string; model_target?: string | null }) {
-  const res = await apiClient.post('/risk/probes/run', data);
-  return res.data as AdversarialProbeRun;
+  return postData<AdversarialProbeRun>('/risk/probes/run', data);
 }
 
 export async function listRiskVulnerabilities(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/risk/vulnerabilities', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<VulnerabilityRegisterItem>;
+  return getData<RemediationListResponse<VulnerabilityRegisterItem>>('/risk/vulnerabilities', cleanParams(params));
 }
 
 export async function updateRiskVulnerability({ id, data }: { id: string; data: Record<string, unknown> }) {
-  const res = await apiClient.patch(`/risk/vulnerabilities/${id}`, data);
-  return res.data as VulnerabilityRegisterItem;
+  return patchData<VulnerabilityRegisterItem>(`/risk/vulnerabilities/${id}`, data);
 }
 
 export async function getRiskPosture() {
-  const res = await apiClient.get('/risk/posture');
-  return res.data as RiskPosture;
+  return getData<RiskPosture>('/risk/posture');
 }
 
 export async function seedRiskDemoData() {
-  const res = await apiClient.post('/risk/seed-demo');
-  return res.data as Record<string, number>;
+  return postData<Record<string, number>>('/risk/seed-demo');
 }
 
 export function useRiskProbeRuns(params: Record<string, unknown> = {}) {
@@ -1866,10 +1668,7 @@ export function useCreateRiskProbeRun() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createRiskProbeRun,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['risk-probe-runs'] });
-      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['risk-probe-runs'], ['risk-posture']]),
   });
 }
 
@@ -1881,10 +1680,7 @@ export function useUpdateRiskVulnerability() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateRiskVulnerability,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['risk-vulnerabilities'] });
-      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['risk-vulnerabilities'], ['risk-posture']]),
   });
 }
 
@@ -1896,11 +1692,7 @@ export function useSeedRiskDemoData() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: seedRiskDemoData,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['risk-probe-runs'] });
-      queryClient.invalidateQueries({ queryKey: ['risk-vulnerabilities'] });
-      queryClient.invalidateQueries({ queryKey: ['risk-posture'] });
-    },
+    onSuccess: invalidateOnSuccess(queryClient, [['risk-probe-runs'], ['risk-vulnerabilities'], ['risk-posture']]),
   });
 }
 
@@ -2073,98 +1865,79 @@ export interface RemediationPlanDetail extends RemediationPlan {
 export type RemediationListResponse<T> = { items: T[]; total: number; skip: number; limit: number };
 
 export async function listRemediationPlans(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/remediation/plans', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationPlan>;
+  return getData<RemediationListResponse<RemediationPlan>>('/remediation/plans', cleanParams(params));
 }
 
 export async function generateRemediationPlan(data: { source_type: 'finding' | 'gap' | 'recommendation'; source_id: string }) {
-  const res = await apiClient.post('/remediation/plans/generate', data);
-  return res.data as RemediationPlanDetail;
+  return postData<RemediationPlanDetail>('/remediation/plans/generate', data);
 }
 
 export async function getRemediationPlan(id: string) {
-  const res = await apiClient.get(`/remediation/plans/${id}`);
-  return res.data as RemediationPlanDetail;
+  return getData<RemediationPlanDetail>(`/remediation/plans/${id}`);
 }
 
 export async function listPlanArtifacts(planId: string, params: Record<string, unknown> = {}) {
-  const res = await apiClient.get(`/remediation/plans/${planId}/artifacts`, { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationArtifact>;
+  return getData<RemediationListResponse<RemediationArtifact>>(`/remediation/plans/${planId}/artifacts`, cleanParams(params));
 }
 
 export async function getRemediationArtifact(id: string) {
-  const res = await apiClient.get(`/remediation/artifacts/${id}`);
-  return res.data as RemediationArtifact;
+  return getData<RemediationArtifact>(`/remediation/artifacts/${id}`);
 }
 
 export async function validateRemediationPlan(planId: string) {
-  const res = await apiClient.post(`/remediation/plans/${planId}/validate`);
-  return res.data as { plan: RemediationPlan; artifact: RemediationArtifact; policy_check: RemediationPolicyCheck };
+  return postData<{ plan: RemediationPlan; artifact: RemediationArtifact; policy_check: RemediationPolicyCheck }>(`/remediation/plans/${planId}/validate`);
 }
 
 export async function listPolicyChecks(planId: string, params: Record<string, unknown> = {}) {
-  const res = await apiClient.get(`/remediation/plans/${planId}/policy-checks`, { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationPolicyCheck>;
+  return getData<RemediationListResponse<RemediationPolicyCheck>>(`/remediation/plans/${planId}/policy-checks`, cleanParams(params));
 }
 
 export async function requestRemediationApproval({ planId, reason }: { planId: string; reason?: string }) {
-  const res = await apiClient.post(`/remediation/plans/${planId}/request-approval`, { reason });
-  return res.data as RemediationApproval;
+  return postData<RemediationApproval>(`/remediation/plans/${planId}/request-approval`, { reason });
 }
 
 export async function listRemediationApprovals(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/remediation/approvals', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationApproval>;
+  return getData<RemediationListResponse<RemediationApproval>>('/remediation/approvals', cleanParams(params));
 }
 
 export async function getRemediationApproval(id: string) {
-  const res = await apiClient.get(`/remediation/approvals/${id}`);
-  return res.data as RemediationApproval;
+  return getData<RemediationApproval>(`/remediation/approvals/${id}`);
 }
 
 export async function approveRemediationApproval({ id, approval_reason, mfa_verified }: { id: string; approval_reason: string; mfa_verified: boolean }) {
-  const res = await apiClient.post(`/remediation/approvals/${id}/approve`, { approval_reason, mfa_verified });
-  return res.data as RemediationApproval;
+  return postData<RemediationApproval>(`/remediation/approvals/${id}/approve`, { approval_reason, mfa_verified });
 }
 
 export async function rejectRemediationApproval({ id, rejection_reason }: { id: string; rejection_reason: string }) {
-  const res = await apiClient.post(`/remediation/approvals/${id}/reject`, { rejection_reason });
-  return res.data as RemediationApproval;
+  return postData<RemediationApproval>(`/remediation/approvals/${id}/reject`, { rejection_reason });
 }
 
 export async function revokeRemediationApproval({ id, reason }: { id: string; reason: string }) {
-  const res = await apiClient.post(`/remediation/approvals/${id}/revoke`, { reason });
-  return res.data as RemediationApproval;
+  return postData<RemediationApproval>(`/remediation/approvals/${id}/revoke`, { reason });
 }
 
 export async function listRemediationJobs(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/remediation/jobs', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationExecutionJob>;
+  return getData<RemediationListResponse<RemediationExecutionJob>>('/remediation/jobs', cleanParams(params));
 }
 
 export async function getRemediationJob(id: string) {
-  const res = await apiClient.get(`/remediation/jobs/${id}`);
-  return res.data as RemediationExecutionJob;
+  return getData<RemediationExecutionJob>(`/remediation/jobs/${id}`);
 }
 
 export async function listRemediationDryRuns(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/remediation/dry-runs', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationDryRunResult>;
+  return getData<RemediationListResponse<RemediationDryRunResult>>('/remediation/dry-runs', cleanParams(params));
 }
 
 export async function getRemediationDryRun(id: string) {
-  const res = await apiClient.get(`/remediation/dry-runs/${id}`);
-  return res.data as RemediationDryRunResult;
+  return getData<RemediationDryRunResult>(`/remediation/dry-runs/${id}`);
 }
 
 export async function listRemediationVerificationResults(params: Record<string, unknown> = {}) {
-  const res = await apiClient.get('/remediation/verification-results', { params: cleanParams(params) });
-  return res.data as RemediationListResponse<RemediationVerificationResult>;
+  return getData<RemediationListResponse<RemediationVerificationResult>>('/remediation/verification-results', cleanParams(params));
 }
 
 export async function getRemediationVerificationResult(id: string) {
-  const res = await apiClient.get(`/remediation/verification-results/${id}`);
-  return res.data as RemediationVerificationResult;
+  return getData<RemediationVerificationResult>(`/remediation/verification-results/${id}`);
 }
 
 export function useRemediationPlans(params: Record<string, unknown> = {}) {
@@ -2175,7 +1948,7 @@ export function useGenerateRemediationPlan() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: generateRemediationPlan,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['remediation-plans'] }),
+    onSuccess: invalidateOnSuccess(queryClient, [['remediation-plans']]),
   });
 }
 

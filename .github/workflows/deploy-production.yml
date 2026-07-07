@@ -1,13 +1,10 @@
-name: Deploy — Production
+name: Deploy - Production
 
-# Production deployment is MANUALLY triggered only.
-# Requires explicit approval from the "production" GitHub environment.
-# Preceded by mandatory staging deployment and sign-off.
 on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag to promote to production (must match what is in staging)"
+        description: "Image tag to promote to production. Must already exist in GHCR."
         required: true
         type: string
       confirm:
@@ -17,19 +14,18 @@ on:
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: false   # Never cancel an in-flight production deploy
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/authclaw-api
-  ECS_CLUSTER: authclaw-production
-  ECS_SERVICE_API: authclaw-api-production
-  ECS_SERVICE_AUDIT: authclaw-audit-worker-production
-  ECS_SERVICE_SECURITY: authclaw-security-worker-production
+  ECS_CLUSTER: authclaw-cluster-prod
+  ECS_SERVICE_API: authclaw-api-service
+  TASK_FAMILY_API: authclaw-prod-api
+  CONTAINER_API: authclaw-api
 
 jobs:
-  # ── Safety gate: explicit confirmation required ──────────────────────
   validate-input:
     runs-on: ubuntu-latest
     steps:
@@ -41,14 +37,11 @@ jobs:
           fi
           echo "::notice::Deployment confirmed for tag: ${{ inputs.image_tag }}"
 
-  # ── Database migrations (zero-downtime, backward-compatible only) ────
   run-migrations:
     needs: validate-input
     runs-on: ubuntu-latest
-    environment: production     # Requires GitHub environment approval
+    environment: production
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -59,12 +52,12 @@ jobs:
       - name: Create pre-deploy snapshot
         run: |
           SNAPSHOT_ID=$(aws rds create-db-snapshot \
-            --db-instance-identifier authclaw-production \
+            --db-instance-identifier authclaw-prod \
             --db-snapshot-identifier authclaw-prod-pre-deploy-$(date +%Y%m%d%H%M%S) \
             --query 'DBSnapshot.DBSnapshotIdentifier' \
             --output text)
           echo "Pre-deploy snapshot: $SNAPSHOT_ID"
-          echo "SNAPSHOT_ID=$SNAPSHOT_ID" >> $GITHUB_ENV
+          echo "SNAPSHOT_ID=$SNAPSHOT_ID" >> "$GITHUB_ENV"
 
       - name: Wait for snapshot completion
         run: |
@@ -75,16 +68,16 @@ jobs:
       - name: Run Alembic migrations via ECS Task
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition authclaw-migration-production \
+            --task-definition ${{ env.TASK_FAMILY_API }} \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --task-definition $TASK_DEF \
+            --task-definition "$TASK_DEF" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.PROD_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.PROD_MIGRATION_SG_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --overrides '{"containerOverrides":[{"name":"${{ env.CONTAINER_API }}","command":["alembic","upgrade","head"]}]}' \
             --query 'tasks[0].taskArn' \
             --output text)
 
@@ -92,11 +85,11 @@ jobs:
 
           aws ecs wait tasks-stopped \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN
+            --tasks "$TASK_ARN"
 
           EXIT_CODE=$(aws ecs describe-tasks \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN \
+            --tasks "$TASK_ARN" \
             --query 'tasks[0].containers[0].exitCode' \
             --output text)
 
@@ -106,14 +99,11 @@ jobs:
           fi
           echo "::notice::Production migrations completed successfully."
 
-  # ── Blue/green-style rolling deployment ─────────────────────────────
   deploy-api:
     needs: run-migrations
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -121,12 +111,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update ECS task definition with new image
+      - name: Fetch current API task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_FAMILY_API }} \
+            --query taskDefinition > api-task-definition.json
+
+      - name: Render API task definition with new image
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: .aws/task-definitions/api-production.json
-          container-name: api
+          task-definition: api-task-definition.json
+          container-name: ${{ env.CONTAINER_API }}
           image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
 
       - name: Deploy API to ECS
@@ -139,11 +135,23 @@ jobs:
           wait-for-service-stability: true
           wait-for-minutes: 15
 
-  # ── Deploy workers ───────────────────────────────────────────────────
   deploy-workers:
     needs: run-migrations
     runs-on: ubuntu-latest
     environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - service: authclaw-audit-worker
+            family: authclaw-prod-audit-worker
+            container: authclaw-audit-worker
+          - service: authclaw-security-worker
+            family: authclaw-prod-security-worker
+            container: authclaw-security-worker
+          - service: authclaw-reconciler-worker
+            family: authclaw-prod-reconciler-worker
+            container: authclaw-reconciler-worker
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -152,23 +160,29 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Audit Worker
+      - name: Fetch current worker task definition
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_AUDIT }} \
-            --force-new-deployment \
-            --no-cli-pager
+          aws ecs describe-task-definition \
+            --task-definition ${{ matrix.worker.family }} \
+            --query taskDefinition > worker-task-definition.json
 
-      - name: Deploy Security Worker
-        run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_SECURITY }} \
-            --force-new-deployment \
-            --no-cli-pager
+      - name: Render worker task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: worker-task-definition.json
+          container-name: ${{ matrix.worker.container }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
 
-  # ── Production smoke test ────────────────────────────────────────────
+      - name: Deploy worker to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ matrix.worker.service }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 15
+
   smoke-test:
     needs: [deploy-api, deploy-workers]
     runs-on: ubuntu-latest
@@ -189,20 +203,20 @@ jobs:
 
       - name: Post deployment summary
         run: |
-          echo "## Production Deployment Complete :white_check_mark:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image Tag:** \`${{ inputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| RDS Snapshot | ✅ ${{ env.SNAPSHOT_ID }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Migrations | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| API | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Audit Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Security Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Smoke Test | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "## Production Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image Tag:** \`${{ inputs.image_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| RDS Snapshot | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Migrations | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| API | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Audit Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reconciler Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Smoke Test | passed |" >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Rollback job (triggered manually on failure) ─────────────────────
   rollback:
     needs: smoke-test
     if: failure()
@@ -227,7 +241,7 @@ jobs:
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_API }} \
-            --task-definition $PREV_TASK_DEF \
+            --task-definition "$PREV_TASK_DEF" \
             --no-cli-pager
 
           echo "::error::Production smoke test failed. Rolled back API to: $PREV_TASK_DEF"

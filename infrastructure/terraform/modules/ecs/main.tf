@@ -297,7 +297,7 @@ resource "aws_ecs_task_definition" "audit_worker" {
     name      = "authclaw-audit-worker"
     image     = "ghcr.io/${var.environment}-placeholder/authclaw-api:latest"
     essential = true
-    command   = ["python", "-m", "app.workers.audit"]
+    command   = ["python", "-m", "app.workers.audit_worker"]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -322,7 +322,7 @@ resource "aws_ecs_task_definition" "security_worker" {
     name      = "authclaw-security-worker"
     image     = "ghcr.io/${var.environment}-placeholder/authclaw-api:latest"
     essential = true
-    command   = ["python", "-m", "app.workers.security"]
+    command   = ["python", "-m", "app.workers.security_worker"]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -347,7 +347,7 @@ resource "aws_ecs_task_definition" "reconciler_worker" {
     name      = "authclaw-reconciler-worker"
     image     = "ghcr.io/${var.environment}-placeholder/authclaw-api:latest"
     essential = true
-    command   = ["python", "-m", "app.workers.reconciler"]
+    command   = ["python", "-m", "app.workers.connector_worker"]
     logConfiguration = {
       logDriver = "awslogs"
       options = {

@@ -49,6 +49,11 @@ class CohereAdapter(BaseProviderAdapter):
             "chat_history": chat_history,
         }
         
+        if "max_tokens" in payload:
+            request_payload["max_tokens"] = payload["max_tokens"]
+        if "temperature" in payload:
+            request_payload["temperature"] = payload["temperature"]
+
         if payload.get("stream"):
             request_payload["stream"] = True
             

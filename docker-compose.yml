@@ -54,6 +54,13 @@ services:
         condition: service_started
       clickhouse:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c",
+        "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/docs')"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
     command: >
       sh -c "alembic upgrade head &&
              python scripts/seed.py &&

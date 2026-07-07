@@ -185,3 +185,18 @@ Recovery steps:
 - Connector worker health restored.
 - Report artifacts and manifests remain retrievable.
 - Audit events remain sanitized.
+
+## Critical Observability Alerts
+
+These alerts are repository configuration only until they fire in staging or production.
+
+| Alert | Meaning | First checks | Safe mitigation | Escalate when |
+| --- | --- | --- | --- | --- |
+| `authclaw-<env>-alb-target-latency` | API target response time is sustained above the operational threshold. | Check API task health, provider latency, DB/Redis health, and recent deploys. | Scale API tasks if saturated, roll back recent deploy if correlated, keep gateway fail-closed controls enabled. | Latency remains elevated after scale/rollback or security pipeline health is degraded. |
+| `authclaw-<env>-alb-target-5xx` / `authclaw-<env>-alb-5xx` | API target or ALB is returning sustained 5xx errors. | Check `/health`, `/api/v1/health/security-pipeline`, ECS task restarts, and dependency status. | Roll back faulty release, restart unhealthy tasks, restore failed dependency. | Errors affect authenticated gateway/compliance/trust flows or audit writes. |
+| `authclaw-<env>-opa-fail-closed` | Gateway denied safely because policy engine evaluation failed, not because policy intentionally denied. | Check OPA health, OPA URL/config, policy bundle load, and security-pipeline health. | Restore OPA sidecar/runtime or switch only through approved fail-closed incident procedure. | More than one evaluation window is affected or all gateway traffic is denied. |
+| `authclaw-<env>-gateway-rate-limit-store-unavailable` | Redis-backed gateway rate-limit check failed closed. | Check Redis health, security groups, credentials, and API Redis client errors. | Restore Redis/fail over cache; do not bypass tenant-plan limits without approval. | Legitimate customer gateway traffic is blocked. |
+| `authclaw-<env>-audit-primary-write-failure` | Authoritative PostgreSQL audit write failed. | Check PostgreSQL health, migrations, RLS/session errors, and audit-worker logs. | Stop non-essential mutating workflows, restore DB connectivity, verify audit chain after recovery. | Any primary audit write failure is confirmed. |
+| `authclaw-<env>-audit-clickhouse-mirror-failure` | ClickHouse analytics mirror is failing while PostgreSQL remains authoritative. | Check ClickHouse health and audit-worker mirror errors. | Restore ClickHouse and reconcile analytics/reports if replay is available. | Mirror failures persist beyond the evaluation window or reports become materially stale. |
+| `authclaw-<env>-worker-dlq-growth` | Worker processing exhausted retries and routed messages to DLQ. | Check worker logs, Kafka broker health, and failing event schema/version. | Pause unsafe worker actions if needed; fix failing processor path; replay only after root cause is known. | DLQ growth continues or affects remediation/audit/security topics. |
+| `authclaw-<env>-worker-dlq-publish-failure` | Worker could not publish a failed message to DLQ. | Check Kafka/Redpanda availability, DLQ topic permissions, and producer errors. | Restore broker/topic permissions and preserve original logs for replay analysis. | Any DLQ publish failure is confirmed. |

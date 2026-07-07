@@ -1,8 +1,5 @@
-name: Deploy — Staging
+name: Deploy - Staging
 
-# Triggers after the container image CI workflow passes on main.
-# All security, integration, and container gates must pass before
-# this workflow runs. The ci-promote gate handles gate checking.
 on:
   workflow_run:
     workflows: ["CI Container"]
@@ -11,25 +8,24 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Specific image tag to deploy (default: latest sha)"
+        description: "Specific image tag to deploy. Defaults to sha-<commit>."
         required: false
         type: string
 
 concurrency:
   group: deploy-staging
-  cancel-in-progress: false   # Never cancel an in-flight staging deploy
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/authclaw-api
-  ECS_CLUSTER: authclaw-staging
-  ECS_SERVICE_API: authclaw-api-staging
-  ECS_SERVICE_AUDIT: authclaw-audit-worker-staging
-  ECS_SERVICE_SECURITY: authclaw-security-worker-staging
+  ECS_CLUSTER: authclaw-cluster-staging
+  ECS_SERVICE_API: authclaw-api-service
+  TASK_FAMILY_API: authclaw-staging-api
+  CONTAINER_API: authclaw-api
 
 jobs:
-  # ── Guard: only run when staging CD is explicitly enabled ───────────
   check-gate:
     runs-on: ubuntu-latest
     if: >
@@ -43,10 +39,9 @@ jobs:
       - name: Evaluate deployment gate
         id: gate
         run: |
-          echo "should_deploy=true" >> $GITHUB_OUTPUT
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
           echo "::notice::Staging deployment gate passed."
 
-  # ── Database migrations ─────────────────────────────────────────────
   run-migrations:
     needs: check-gate
     if: needs.check-gate.outputs.should_deploy == 'true'
@@ -65,30 +60,28 @@ jobs:
       - name: Run Alembic migrations via ECS Task
         run: |
           TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition authclaw-migration-staging \
+            --task-definition ${{ env.TASK_FAMILY_API }} \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
 
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --task-definition $TASK_DEF \
+            --task-definition "$TASK_DEF" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.STAGING_PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.STAGING_MIGRATION_SG_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}' \
+            --overrides '{"containerOverrides":[{"name":"${{ env.CONTAINER_API }}","command":["alembic","upgrade","head"]}]}' \
             --query 'tasks[0].taskArn' \
             --output text)
 
           echo "Migration task ARN: $TASK_ARN"
 
-          # Wait for completion (max 5 minutes)
           aws ecs wait tasks-stopped \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN
+            --tasks "$TASK_ARN"
 
-          # Check exit code
           EXIT_CODE=$(aws ecs describe-tasks \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $TASK_ARN \
+            --tasks "$TASK_ARN" \
             --query 'tasks[0].containers[0].exitCode' \
             --output text)
 
@@ -98,14 +91,11 @@ jobs:
           fi
           echo "::notice::Migrations completed successfully."
 
-  # ── Deploy API service ──────────────────────────────────────────────
   deploy-api:
     needs: run-migrations
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -117,20 +107,28 @@ jobs:
         id: image
         run: |
           if [ -n "${{ inputs.image_tag }}" ]; then
-            echo "tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "tag=sha-$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+            echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Update ECS task definition with new image
+      - name: Fetch current API task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_FAMILY_API }} \
+            --query taskDefinition > api-task-definition.json
+
+      - name: Render API task definition with new image
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: .aws/task-definitions/api-staging.json
-          container-name: api
+          task-definition: api-task-definition.json
+          container-name: ${{ env.CONTAINER_API }}
           image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
 
-      - name: Deploy API to ECS (rolling update)
+      - name: Deploy API to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
@@ -139,14 +137,24 @@ jobs:
           wait-for-service-stability: true
           wait-for-minutes: 10
 
-  # ── Deploy workers ──────────────────────────────────────────────────
   deploy-workers:
     needs: run-migrations
     runs-on: ubuntu-latest
     environment: staging
+    strategy:
+      fail-fast: false
+      matrix:
+        worker:
+          - service: authclaw-audit-worker
+            family: authclaw-staging-audit-worker
+            container: authclaw-audit-worker
+          - service: authclaw-security-worker
+            family: authclaw-staging-security-worker
+            container: authclaw-security-worker
+          - service: authclaw-reconciler-worker
+            family: authclaw-staging-reconciler-worker
+            container: authclaw-reconciler-worker
     steps:
-      - uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -154,23 +162,40 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Audit Worker
+      - name: Determine image tag
+        id: image
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_AUDIT }} \
-            --force-new-deployment \
-            --no-cli-pager
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "tag=sha-$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Deploy Security Worker
+      - name: Fetch current worker task definition
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_SECURITY }} \
-            --force-new-deployment \
-            --no-cli-pager
+          aws ecs describe-task-definition \
+            --task-definition ${{ matrix.worker.family }} \
+            --query taskDefinition > worker-task-definition.json
 
-  # ── Post-deploy smoke test ──────────────────────────────────────────
+      - name: Render worker task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: worker-task-definition.json
+          container-name: ${{ matrix.worker.container }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}
+
+      - name: Deploy worker to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ matrix.worker.service }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
   smoke-test:
     needs: [deploy-api, deploy-workers]
     runs-on: ubuntu-latest
@@ -191,12 +216,13 @@ jobs:
 
       - name: Post deployment summary
         run: |
-          echo "## Staging Deployment Complete :rocket:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Migrations | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| API | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Audit Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Security Worker | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Smoke Test | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "## Staging Deployment Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Migrations | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| API | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Audit Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Security Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reconciler Worker | passed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Smoke Test | passed |" >> "$GITHUB_STEP_SUMMARY"

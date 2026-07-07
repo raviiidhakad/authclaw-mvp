@@ -12,10 +12,12 @@ Live tests call real provider endpoints and validate:
   2. Streaming returns valid SSE chunks
 """
 import json
+import os
 import time
 import asyncio
 import pytest
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models.provider import ProviderType
@@ -203,6 +205,196 @@ class TestGeminiAdapterUnit:
 
 
 # ===========================================================================
+# -- PHASE D DETERMINISTIC CONTRACT TESTS (always run, no credentials needed)
+# ===========================================================================
+
+class _LineStream:
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+def _provider(provider_type, config=None):
+    return SimpleNamespace(
+        id="provider-id",
+        tenant_id="tenant-id",
+        name=f"{provider_type.value} provider",
+        type=provider_type,
+        config=config or {},
+        is_active=True,
+    )
+
+
+async def _collect_stream_text(adapter, lines):
+    chunks = []
+    done = False
+    async for raw in adapter.stream_response(_LineStream(lines)):
+        text = raw.decode("utf-8").strip()
+        if text == "data: [DONE]":
+            done = True
+            continue
+        assert text.startswith("data: ")
+        payload = json.loads(text[len("data: "):])
+        chunks.append(payload["choices"][0]["delta"].get("content", ""))
+    return "".join(chunks), done
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "adapter", "patch_path", "config", "expected_url", "header_name"),
+    [
+        (ProviderType.openai, OpenAIAdapter(), "app.core.providers.adapters.openai.retrieve_provider_api_key", {}, "https://api.openai.com/v1/chat/completions", "Authorization"),
+        (ProviderType.anthropic, AnthropicAdapter(), "app.core.providers.adapters.anthropic.retrieve_provider_api_key", {}, "https://api.anthropic.com/v1/messages", "x-api-key"),
+        (ProviderType.cohere, CohereAdapter(), "app.core.providers.adapters.cohere.retrieve_provider_api_key", {}, "https://api.cohere.ai/v1/chat", "Authorization"),
+        (
+            ProviderType.azure_openai,
+            AzureOpenAIAdapter(),
+            "app.core.providers.adapters.azure.retrieve_provider_api_key",
+            {"auth_type": "api_key", "azure_resource_name": "authclaw-eastus", "azure_deployment_id": "gpt-4o-mini", "azure_api_version": "2024-02-01"},
+            "https://authclaw-eastus.openai.azure.com/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-02-01",
+            "api-key",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_phase_d_provider_endpoint_and_auth_contract(monkeypatch, provider_type, adapter, patch_path, config, expected_url, header_name):
+    monkeypatch.setattr(patch_path, AsyncMock(return_value="provider-secret-placeholder"))
+
+    url, headers = await adapter.get_connection_details(_provider(provider_type, config))
+
+    assert url == expected_url
+    assert headers[header_name]
+    assert "provider-secret-placeholder" in headers[header_name]
+    assert "Content-Type" in headers
+
+
+def test_phase_d_request_tuning_fields_are_mapped():
+    payload = {
+        "model": "provider-model",
+        "messages": [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Hello"},
+        ],
+        "max_tokens": 17,
+        "temperature": 0.2,
+        "stream": True,
+    }
+
+    assert OpenAIAdapter().transform_request(payload)["temperature"] == 0.2
+    assert AzureOpenAIAdapter().transform_request(payload)["max_tokens"] == 17
+
+    anthropic = AnthropicAdapter().transform_request(payload)
+    assert anthropic["max_tokens"] == 17
+    assert anthropic["temperature"] == 0.2
+    assert anthropic["stream"] is True
+    assert anthropic["system"] == "Be concise."
+
+    cohere = CohereAdapter().transform_request(payload)
+    assert cohere["message"] == "Hello"
+    assert cohere["max_tokens"] == 17
+    assert cohere["temperature"] == 0.2
+    assert cohere["stream"] is True
+
+
+@pytest.mark.parametrize(
+    ("adapter", "lines"),
+    [
+        (OpenAIAdapter(), ['data: {"choices":[{"delta":{"content":"Hel"}}]}', 'data: {"choices":[{"delta":{"content":"lo"}}]}', 'data: [DONE]']),
+        (AzureOpenAIAdapter(), ['data: {"choices":[{"delta":{"content":"Hel"}}]}', 'data: {"choices":[{"delta":{"content":"lo"}}]}', 'data: [DONE]']),
+        (AnthropicAdapter(), ['event: content_block_delta', 'data: {"type":"content_block_delta","delta":{"text":"Hel"}}', 'data: {malformed}', 'data: {"type":"content_block_delta","delta":{"text":"lo"}}', 'data: {"type":"message_stop"}']),
+        (CohereAdapter(), ['{"event_type":"text-generation","text":"Hel"}', '{malformed}', '{"event_type":"text-generation","text":"lo"}', '{"event_type":"stream-end"}']),
+    ],
+)
+@pytest.mark.asyncio
+async def test_phase_d_streaming_contract_maps_content_and_done(adapter, lines):
+    text, done = await _collect_stream_text(adapter, lines)
+
+    assert text == "Hello"
+    assert done is True
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [OpenAIAdapter(), AnthropicAdapter(), CohereAdapter(), AzureOpenAIAdapter()],
+)
+def test_phase_d_provider_errors_are_sanitized(adapter):
+    result = adapter.normalize_error(429, '{"error":{"message":"rate limit for sk-proj-secret","type":"rate_limit_error","code":"rate_limit"},"message":"rate limit for sk-proj-secret"}')
+
+    rendered = json.dumps(result)
+    assert "sk-proj-secret" not in rendered
+    assert "error" in result
+
+
+class _InvalidJsonResponse:
+    status_code = 200
+    text = "not json"
+
+    def json(self):
+        raise ValueError("invalid json")
+
+
+class _InvalidJsonClient:
+    def __init__(self, timeout):
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, *_args, **_kwargs):
+        return _InvalidJsonResponse()
+
+
+class _TimeoutClient(_InvalidJsonClient):
+    async def post(self, *_args, **_kwargs):
+        raise httpx.ReadTimeout("slow provider")
+
+
+class _CancelledClient(_InvalidJsonClient):
+    async def post(self, *_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+
+@pytest.mark.asyncio
+async def test_phase_d_malformed_success_response_fails_closed(monkeypatch):
+    from app.core.engine.gateway import AIProviderClient
+
+    monkeypatch.setattr("app.core.providers.adapters.openai.retrieve_provider_api_key", AsyncMock(return_value="provider-secret-placeholder"))
+    monkeypatch.setattr("httpx.AsyncClient", _InvalidJsonClient)
+
+    response = await AIProviderClient().chat_completion(_provider(ProviderType.openai), STANDARD_PAYLOAD)
+
+    assert response.status_code == 502
+    assert response.body["error"]["code"] == "invalid_json"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_timeout_maps_to_gateway_timeout(monkeypatch):
+    from app.core.engine.gateway import AIProviderClient
+
+    monkeypatch.setattr("app.core.providers.adapters.openai.retrieve_provider_api_key", AsyncMock(return_value="provider-secret-placeholder"))
+    monkeypatch.setattr("httpx.AsyncClient", _TimeoutClient)
+
+    response = await AIProviderClient().chat_completion(_provider(ProviderType.openai), STANDARD_PAYLOAD)
+
+    assert response.status_code == 504
+    assert response.body["error"]["code"] == "read_timeout"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_cancellation_is_not_converted_to_generic_500(monkeypatch):
+    from app.core.engine.gateway import AIProviderClient
+
+    monkeypatch.setattr("app.core.providers.adapters.openai.retrieve_provider_api_key", AsyncMock(return_value="provider-secret-placeholder"))
+    monkeypatch.setattr("httpx.AsyncClient", _CancelledClient)
+
+    with pytest.raises(asyncio.CancelledError):
+        await AIProviderClient().chat_completion(_provider(ProviderType.openai), STANDARD_PAYLOAD)
+
 # ─── LIVE TESTS (skip when credentials absent) ──────────────────────────────
 # ===========================================================================
 

@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "AuthClaw"
     APP_ENV: str = "development"
-    APP_DEBUG: bool = True
+    APP_DEBUG: bool = False
     APP_VERSION: str = "0.1.0"
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000

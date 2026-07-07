@@ -34,13 +34,14 @@ GROQ_KEY     = _get_env("GROQ_API_KEY")
 GEMINI_KEY   = _get_env("GEMINI_API_KEY")
 COHERE_KEY   = _get_env("COHERE_API_KEY")
 AZURE_KEY    = _get_env("AZURE_OPENAI_API_KEY")
+LIVE_PROVIDER_TESTS = os.getenv("AUTHCLAW_LIVE_PROVIDER_TESTS", "").strip() == "1"
 
-requires_openai   = pytest.mark.skipif(not OPENAI_KEY,   reason="OPENAI_API_KEY not set")
-requires_anthropic = pytest.mark.skipif(not ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY not set")
-requires_groq     = pytest.mark.skipif(not GROQ_KEY,     reason="GROQ_API_KEY not set")
-requires_gemini   = pytest.mark.skipif(not GEMINI_KEY,   reason="GEMINI_API_KEY not set")
-requires_cohere   = pytest.mark.skipif(not COHERE_KEY,   reason="COHERE_API_KEY not set")
-requires_azure    = pytest.mark.skipif(not AZURE_KEY,    reason="AZURE_OPENAI_API_KEY not set")
+requires_openai   = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and OPENAI_KEY),   reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and OPENAI_API_KEY required")
+requires_anthropic = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and ANTHROPIC_KEY), reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and ANTHROPIC_API_KEY required")
+requires_groq     = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and GROQ_KEY),     reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and GROQ_API_KEY required")
+requires_gemini   = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and GEMINI_KEY),   reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and GEMINI_API_KEY required")
+requires_cohere   = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and COHERE_KEY),   reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and COHERE_API_KEY required")
+requires_azure    = pytest.mark.skipif(not (LIVE_PROVIDER_TESTS and AZURE_KEY),    reason="AUTHCLAW_LIVE_PROVIDER_TESTS=1 and AZURE_OPENAI_API_KEY required")
 
 
 # ---------------------------------------------------------------------------

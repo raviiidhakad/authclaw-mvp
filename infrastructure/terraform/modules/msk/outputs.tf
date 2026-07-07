@@ -4,7 +4,7 @@ output "msk_bootstrap_brokers" {
     length(aws_msk_serverless_cluster.main) > 0
     ? "serverless-iam:${aws_msk_serverless_cluster.main[0].cluster_name}"
     : ""
-  ) : (
+    ) : (
     length(aws_msk_cluster.main) > 0
     ? aws_msk_cluster.main[0].bootstrap_brokers_sasl_iam
     : ""

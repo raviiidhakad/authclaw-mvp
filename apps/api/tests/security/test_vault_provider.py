@@ -43,7 +43,7 @@ def test_vault_provider_generate_and_decrypt():
     plaintext_dek, encrypted_dek = provider.generate_data_key()
     assert len(plaintext_dek) == 32 # 256 bits
     assert isinstance(encrypted_dek, str)
-    assert encrypted_dek.startswith("vault:v1:")
+    assert encrypted_dek.startswith("vault:v")
 
     decrypted_dek = provider.decrypt_dek(encrypted_dek)
     assert decrypted_dek == plaintext_dek
@@ -60,8 +60,22 @@ def test_vault_envelope_encryption_flow():
     payload = json.loads(encrypted_payload_str)
     assert payload["version"] == 1
     assert payload["provider"] == "vault"
-    assert payload["enc_dek"].startswith("vault:v1:")
+    assert payload["enc_dek"].startswith("vault:v")
     
     # 3. Decrypt
     decrypted = decrypt_value(encrypted_payload_str)
     assert decrypted == plaintext
+
+
+def test_vault_rotation_keeps_old_ciphertext_decryptable():
+    provider = VaultEncryptionProvider()
+    plaintext_dek, encrypted_dek = provider.generate_data_key()
+    old_version = int(encrypted_dek.split(":")[1].removeprefix("v"))
+
+    provider.client.secrets.transit.rotate_key(name=provider.key_name, mount_point=provider.mount_point)
+    rotated_plaintext_dek, rotated_encrypted_dek = provider.generate_data_key()
+    new_version = int(rotated_encrypted_dek.split(":")[1].removeprefix("v"))
+
+    assert new_version > old_version
+    assert provider.decrypt_dek(encrypted_dek) == plaintext_dek
+    assert provider.decrypt_dek(rotated_encrypted_dek) == rotated_plaintext_dek

@@ -251,6 +251,7 @@ class GatewayBenchmarkPatch:
         self._publish = None
         self._token_store_batch = None
         self._token_retrieve = None
+        self._check_gateway_limits = None
 
     def install(self) -> None:
         for name, value in {
@@ -266,6 +267,7 @@ class GatewayBenchmarkPatch:
         from app.core.detection.presidio_engine import presidio_engine
         from app.core.engine.token_vault import TokenVaultService
         from app.core.events.producer import producer as event_producer
+        from app.core.rate_limit import limiter as rate_limiter_module
 
         self._presidio_is_healthy = presidio_engine.is_healthy
         self._presidio_scan = presidio_engine.scan
@@ -273,6 +275,7 @@ class GatewayBenchmarkPatch:
         self._token_retrieve = TokenVaultService.retrieve
         self._publish_security_event = event_producer.publish_security_event
         self._publish = event_producer.publish
+        self._check_gateway_limits = rate_limiter_module.check_gateway_limits
 
         presidio_engine.is_healthy = lambda: True
         presidio_engine.scan = AsyncMock(side_effect=lambda text: FakeScanResult(text))
@@ -280,6 +283,7 @@ class GatewayBenchmarkPatch:
         TokenVaultService.retrieve = AsyncMock(return_value=None)
         event_producer.publish_security_event = AsyncMock()
         event_producer.publish = AsyncMock()
+        rate_limiter_module.check_gateway_limits = AsyncMock()
 
     def restore(self) -> None:
         for name, value in self._settings.items():
@@ -289,6 +293,7 @@ class GatewayBenchmarkPatch:
         from app.core.detection.presidio_engine import presidio_engine
         from app.core.engine.token_vault import TokenVaultService
         from app.core.events.producer import producer as event_producer
+        from app.core.rate_limit import limiter as rate_limiter_module
 
         if self._presidio_is_healthy is not None:
             presidio_engine.is_healthy = self._presidio_is_healthy
@@ -302,6 +307,8 @@ class GatewayBenchmarkPatch:
             event_producer.publish_security_event = self._publish_security_event
         if self._publish is not None:
             event_producer.publish = self._publish
+        if self._check_gateway_limits is not None:
+            rate_limiter_module.check_gateway_limits = self._check_gateway_limits
 
 
 class GatewayBenchmarkService:

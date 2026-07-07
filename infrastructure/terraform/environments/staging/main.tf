@@ -89,17 +89,17 @@ module "rds" {
 }
 
 module "redis" {
-  source                   = "../../modules/redis"
-  environment              = "staging"
-  vpc_id                   = module.vpc.vpc_id
-  subnet_ids               = module.vpc.private_data_subnets
-  node_type                = "cache.t4g.medium"
-  num_cache_nodes          = 2
-  automatic_failover       = true
-  kms_key_id               = module.kms.cache_key_arn
-  allowed_security_group   = module.ecs.security_group_id
-  snapshot_retention_days  = 7
-  cloudmap_namespace_id    = module.vpc.cloudmap_namespace_id
+  source                  = "../../modules/redis"
+  environment             = "staging"
+  vpc_id                  = module.vpc.vpc_id
+  subnet_ids              = module.vpc.private_data_subnets
+  node_type               = "cache.t4g.medium"
+  num_cache_nodes         = 2
+  automatic_failover      = true
+  kms_key_id              = module.kms.cache_key_arn
+  allowed_security_group  = module.ecs.security_group_id
+  snapshot_retention_days = 7
+  cloudmap_namespace_id   = module.vpc.cloudmap_namespace_id
 }
 
 module "msk" {
@@ -116,27 +116,32 @@ module "msk" {
 }
 
 module "vault" {
-  source                 = "../../modules/vault"
-  environment            = "staging"
-  vpc_id                 = module.vpc.vpc_id
-  subnet_ids             = module.vpc.private_app_subnets
-  vault_task_role_arn    = module.iam.vault_task_role_arn
-  execution_role_arn     = module.iam.ecs_task_execution_role_arn
-  vault_unseal_key_arn   = module.kms.vault_unseal_key_arn
-  vault_unseal_key_id    = module.kms.vault_unseal_key_id
-  ecs_cluster_id         = module.ecs.ecs_cluster_id
-  cloudmap_namespace_id  = module.vpc.cloudmap_namespace_id
-  alb_security_group_id  = module.ecs.alb_security_group_id
-  desired_count          = 3
-  task_cpu               = 1024
-  task_memory            = 2048
+  source                = "../../modules/vault"
+  environment           = "staging"
+  vpc_id                = module.vpc.vpc_id
+  subnet_ids            = module.vpc.private_app_subnets
+  vault_task_role_arn   = module.iam.vault_task_role_arn
+  execution_role_arn    = module.iam.ecs_task_execution_role_arn
+  vault_unseal_key_arn  = module.kms.vault_unseal_key_arn
+  vault_unseal_key_id   = module.kms.vault_unseal_key_id
+  ecs_cluster_id        = module.ecs.ecs_cluster_id
+  cloudmap_namespace_id = module.vpc.cloudmap_namespace_id
+  alb_security_group_id = module.ecs.alb_security_group_id
+  desired_count         = 3
+  task_cpu              = 1024
+  task_memory           = 2048
 }
 
 module "monitoring" {
-  source         = "../../modules/monitoring"
-  environment    = "staging"
-  db_identifier  = "authclaw-staging"
-  redis_id       = "authclaw-staging"
-  alb_arn_suffix = module.ecs.alb_arn
-  sns_email      = var.alert_email
+  source                           = "../../modules/monitoring"
+  environment                      = "staging"
+  db_identifier                    = "authclaw-staging"
+  redis_id                         = "authclaw-staging"
+  alb_arn_suffix                   = module.ecs.alb_arn_suffix
+  sns_email                        = var.alert_email
+  alb_target_group_arn_suffix      = module.ecs.api_target_group_arn_suffix
+  api_log_group_name               = module.ecs.api_log_group_name
+  audit_worker_log_group_name      = module.ecs.audit_worker_log_group_name
+  security_worker_log_group_name   = module.ecs.security_worker_log_group_name
+  reconciler_worker_log_group_name = module.ecs.reconciler_worker_log_group_name
 }

@@ -1,7 +1,8 @@
 import json
 import logging
 import asyncio
-from typing import Optional, Dict, Any
+from contextlib import suppress
+from typing import Optional, Dict, Any, Mapping
 from aiokafka import AIOKafkaProducer
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -9,6 +10,7 @@ from app.models.event import WALEvent, WALEventStatus
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+KAFKA_SEND_TIMEOUT_SECONDS = 5.0
 
 class EventProducer:
     _instance = None
@@ -49,20 +51,24 @@ class EventProducer:
     async def stop(self):
         if self._recovery_task:
             self._recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._recovery_task
+            self._recovery_task = None
         if self._producer:
             await self._producer.stop()
+            self._producer = None
 
-    async def publish(self, topic: str, event: BaseModel):
+    async def publish(self, topic: str, event: BaseModel | Mapping[str, Any]):
         """
         Publish an event to Kafka. Fallback to WAL if broker is unreachable.
         """
-        payload = event.model_dump(mode='json')
+        payload = event.model_dump(mode='json') if isinstance(event, BaseModel) else dict(event)
         # Serialize UUIDs and Datetimes natively handled by model_dump, but ensure it's fully JSON serializable
         try:
             # We try sending directly
             if not self._producer:
                 raise Exception("Producer not initialized")
-            await self._producer.send_and_wait(topic, value=payload)
+            await asyncio.wait_for(self._producer.send_and_wait(topic, value=payload), timeout=KAFKA_SEND_TIMEOUT_SECONDS)
             logger.debug(f"Successfully published event to {topic}")
         except Exception as e:
             logger.warning(f"Failed to publish to Kafka ({e}). Writing to WAL.")
@@ -162,4 +168,5 @@ class EventProducer:
 
 
 producer = EventProducer()
+
 

@@ -6,7 +6,6 @@ from app.core.encryption.kms import KmsEncryptionProvider
 import moto
 import boto3
 from app.core.config import settings
-import os
 
 @pytest.fixture(autouse=True)
 def set_env(monkeypatch):
@@ -82,3 +81,27 @@ def test_tamper_resistance_raises_error(kms_mock):
     # Decrypt should raise error due to Invalid Tag (GCM authentication failed)
     with pytest.raises(ValueError, match="Ciphertext tampered or authentication tag invalid"):
         decrypt_value(tampered_payload_str)
+
+
+def test_kms_key_rotation_keeps_old_ciphertext_decryptable(kms_mock):
+    client, first_key_id = kms_mock
+    old_payload = encrypt_value("old-secret")
+
+    second_key_id = client.create_key(Description="Rotated Test Key")["KeyMetadata"]["KeyId"]
+    settings.KMS_KEY_ID = second_key_id
+    import app.core.encryption
+    app.core.encryption._provider = None
+
+    new_payload = encrypt_value("new-secret")
+
+    assert first_key_id != second_key_id
+    assert decrypt_value(old_payload) == "old-secret"
+    assert decrypt_value(new_payload) == "new-secret"
+
+
+def test_kms_unavailable_decrypt_fails_closed(kms_mock):
+    encrypted_payload_str = encrypt_value("protected-secret")
+
+    with patch.object(KmsEncryptionProvider, "decrypt_dek", side_effect=RuntimeError("kms unavailable")):
+        with pytest.raises(RuntimeError, match="kms unavailable"):
+            decrypt_value(encrypted_payload_str)

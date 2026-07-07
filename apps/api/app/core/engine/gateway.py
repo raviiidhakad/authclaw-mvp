@@ -214,7 +214,8 @@ class AIProviderClient:
                         body = adapter.normalize_error(status_code, response.text)
                 except (ValueError, json.JSONDecodeError):
                     if 200 <= status_code < 300:
-                        body = {"error": {"message": f"Provider returned non-JSON response (HTTP {status_code})", "type": "parse_error", "code": "invalid_json"}}
+                        status_code = 502
+                        body = {"error": {"message": "Provider returned non-JSON response.", "type": "parse_error", "code": "invalid_json"}}
                     else:
                         body = adapter.normalize_error(status_code, response.text)
 

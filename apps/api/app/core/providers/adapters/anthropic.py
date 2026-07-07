@@ -33,6 +33,9 @@ class AnthropicAdapter(BaseProviderAdapter):
         if system_msgs:
             request_payload["system"] = " ".join(system_msgs)
             
+        if "temperature" in payload:
+            request_payload["temperature"] = payload["temperature"]
+
         if payload.get("stream"):
             request_payload["stream"] = True
             

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import inspect
+import json
 import logging
 import secrets
 import uuid
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from app.core.exceptions import ForbiddenException
+from app.core.redis import RedisClient
 from app.schemas.events import RemediationWorkerTokenEvent
 from app.services.remediation_state_machine import REMEDIATION_EVENTS_TOPIC
 
@@ -88,6 +90,76 @@ class InMemoryWorkerTokenStore:
         self.records[record.token_hash] = record
 
 
+class RedisWorkerTokenStore:
+    def __init__(self, redis_client=None, prefix: str = "worker_token") -> None:
+        self._redis = redis_client
+        self.prefix = prefix
+
+    @property
+    def redis(self):
+        return self._redis or RedisClient.get()
+
+    async def put(self, record: WorkerTokenRecord) -> None:
+        ttl = max(1, int((record.expires_at - _utcnow()).total_seconds()))
+        await self.redis.set(self._key(record.token_hash), json.dumps(self._dump(record)), ex=ttl)
+
+    async def get(self, token_hash: str) -> WorkerTokenRecord | None:
+        raw = await self.redis.get(self._key(token_hash))
+        if raw is None:
+            return None
+        return self._load(json.loads(raw))
+
+    async def update(self, record: WorkerTokenRecord) -> None:
+        await self.put(record)
+
+    def _key(self, token_hash: str) -> str:
+        return f"{self.prefix}:{token_hash}"
+
+    @staticmethod
+    def _dump(record: WorkerTokenRecord) -> dict:
+        scope = record.scope
+        return {
+            "token_id": record.token_id,
+            "token_hash": record.token_hash,
+            "scope": {
+                "tenant_id": str(scope.tenant_id),
+                "worker_type": scope.worker_type,
+                "job_id": str(scope.job_id) if scope.job_id else None,
+                "action_type": scope.action_type,
+                "provider_scope": scope.provider_scope,
+                "resource_scope": scope.resource_scope,
+                "created_by": str(scope.created_by) if scope.created_by is not None else None,
+                "one_time": scope.one_time,
+            },
+            "expires_at": record.expires_at.isoformat(),
+            "created_at": record.created_at.isoformat(),
+            "revoked_at": record.revoked_at.isoformat() if record.revoked_at else None,
+            "used_at": record.used_at.isoformat() if record.used_at else None,
+        }
+
+    @staticmethod
+    def _load(payload: dict) -> WorkerTokenRecord:
+        scope = payload["scope"]
+        return WorkerTokenRecord(
+            token_id=payload["token_id"],
+            token_hash=payload["token_hash"],
+            scope=WorkerTokenScope(
+                tenant_id=uuid.UUID(scope["tenant_id"]),
+                worker_type=scope["worker_type"],
+                job_id=uuid.UUID(scope["job_id"]) if scope.get("job_id") else None,
+                action_type=scope["action_type"],
+                provider_scope=scope.get("provider_scope"),
+                resource_scope=scope.get("resource_scope"),
+                created_by=scope.get("created_by"),
+                one_time=bool(scope.get("one_time", True)),
+            ),
+            expires_at=datetime.fromisoformat(payload["expires_at"]),
+            created_at=datetime.fromisoformat(payload["created_at"]),
+            revoked_at=datetime.fromisoformat(payload["revoked_at"]) if payload.get("revoked_at") else None,
+            used_at=datetime.fromisoformat(payload["used_at"]) if payload.get("used_at") else None,
+        )
+
+
 class WorkerTokenService:
     def __init__(
         self,
@@ -96,7 +168,7 @@ class WorkerTokenService:
         event_producer=None,
         ttl_seconds: int = WORKER_TOKEN_TTL_SECONDS,
     ) -> None:
-        self.store = store or InMemoryWorkerTokenStore()
+        self.store = store or RedisWorkerTokenStore()
         self.event_producer = event_producer
         self.ttl_seconds = max(1, int(ttl_seconds))
 

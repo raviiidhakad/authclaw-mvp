@@ -2,13 +2,20 @@ import secrets
 import hashlib
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from slugify import slugify
 
 from app.api.dependencies import get_db, get_current_user
-from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core.security import (
+    create_access_token,
+    get_password_hash,
+    protect_mfa_secret,
+    reveal_mfa_secret,
+    verify_password,
+)
+from app.core.rate_limit.limiter import rate_limiter
 from app.core.exceptions import UnauthorizedException, BadRequestException
 from app.models.user import User
 from app.models.tenant import Tenant
@@ -34,13 +41,32 @@ import pyotp
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+async def _check_auth_limit(scope: str, identifier: str, limit: int = 5, window_seconds: int = 300) -> None:
+    key_hash = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+    allowed = await rate_limiter.check_rate_limit(
+        f"rl:auth:{scope}:{key_hash}",
+        limit,
+        limit / window_seconds,
+        fail_open=False,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication attempts. Please retry later.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
 @router.post("/login", response_model=Token | LoginMfaResponse)
 async def login(
-    request: LoginRequest, db: AsyncSession = Depends(get_db)
+    request: LoginRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     OAuth2 compatible token login, get access and refresh tokens
     """
+    client_host = http_request.client.host if http_request.client else "unknown"
+    await _check_auth_limit("login", f"{request.email.lower()}:{client_host}")
     result = await db.execute(select(User).where(User.email == request.email))
     user = result.scalars().first()
     
@@ -115,7 +141,9 @@ async def login(
 
 @router.post("/login/mfa", response_model=Token)
 async def login_mfa(
-    request: LoginMfaRequest, db: AsyncSession = Depends(get_db)
+    request: LoginMfaRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     Complete login using MFA challenge token and TOTP code.
@@ -149,8 +177,11 @@ async def login_mfa(
     if not user or not user.is_active or not user.mfa_enabled:
         raise UnauthorizedException(detail="User not eligible for MFA login")
 
+    client_host = http_request.client.host if http_request.client else "unknown"
+    await _check_auth_limit("login_mfa", f"{user.id}:{client_host}")
+
     # Verify TOTP
-    totp = pyotp.TOTP(user.mfa_secret)
+    totp = pyotp.TOTP(reveal_mfa_secret(user.mfa_secret))
     if not totp.verify(request.code):
         raise UnauthorizedException(detail="Invalid MFA code")
 
@@ -421,7 +452,7 @@ async def setup_mfa(
     )
     
     # Store secret temporarily or permanently, but keep mfa_enabled=False
-    current_user.mfa_secret = secret
+    current_user.mfa_secret = protect_mfa_secret(secret)
     await db.commit()
     
     return {
@@ -441,7 +472,8 @@ async def verify_mfa(
     if not current_user.mfa_secret:
         raise BadRequestException(detail="MFA secret not set. Please setup MFA first.")
         
-    totp = pyotp.TOTP(current_user.mfa_secret)
+    await _check_auth_limit("mfa_verify", str(current_user.id))
+    totp = pyotp.TOTP(reveal_mfa_secret(current_user.mfa_secret))
     if not totp.verify(request.code):
         raise UnauthorizedException(detail="Invalid MFA code")
         

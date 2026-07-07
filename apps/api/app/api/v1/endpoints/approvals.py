@@ -24,6 +24,7 @@ from app.models.approval import Approval, ApprovalStatus
 from app.schemas.approval import ApprovalResponse
 from app.schemas.auth import MFAVerifyRequest
 from app.core.exceptions import UnauthorizedException, BadRequestException, NotFoundException
+from app.core.security import reveal_mfa_secret
 import pyotp
 
 router = APIRouter()
@@ -164,7 +165,7 @@ async def approve_action(
     if not current_user.mfa_enabled or not current_user.mfa_secret:
         raise BadRequestException(detail="You must set up MFA before approving actions.")
 
-    totp = pyotp.TOTP(current_user.mfa_secret)
+    totp = pyotp.TOTP(reveal_mfa_secret(current_user.mfa_secret))
     if not totp.verify(mfa_request.code):
         raise UnauthorizedException(detail="Invalid MFA code. Approval denied.")
 

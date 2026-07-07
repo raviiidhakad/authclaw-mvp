@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -24,6 +25,11 @@ from app.core.policy.cache import policy_cache
 
 audit_worker = AuditWorker()
 security_worker = SecurityWorker()
+
+def _operation_id(route: APIRoute) -> str:
+    method = next(iter(sorted(route.methods or {"GET"}))).lower()
+    path = route.path_format.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+    return f"{route.name}_{method}_{path or 'root'}"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +59,7 @@ app = FastAPI(
     docs_url=f"{settings.API_PREFIX}/docs",
     redoc_url=f"{settings.API_PREFIX}/redoc",
     lifespan=lifespan,
+    generate_unique_id_function=_operation_id,
 )
 
 # Add Custom Middleware

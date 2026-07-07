@@ -1,7 +1,7 @@
 import pytest
 from datetime import timedelta
 import uuid
-from app.core.security import create_access_token
+from app.core.security import create_access_token, protect_mfa_secret, reveal_mfa_secret
 from app.api.dependencies import get_current_user
 from app.core.exceptions import UnauthorizedException
 from unittest.mock import AsyncMock
@@ -52,3 +52,12 @@ async def test_access_token_accepted_by_api():
     # Should not raise UnauthorizedException for token type
     user = await get_current_user(db=db_mock, token=access_token)
     assert str(user.id) == user_id
+
+
+def test_mfa_secret_encrypted_at_rest_and_legacy_plaintext_supported():
+    secret = "JBSWY3DPEHPK3PXP"
+    stored = protect_mfa_secret(secret)
+
+    assert stored != secret
+    assert reveal_mfa_secret(stored) == secret
+    assert reveal_mfa_secret(secret) == secret

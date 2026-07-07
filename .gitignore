@@ -56,6 +56,7 @@ api_logs*.txt
 alembic/versions/__pycache__/
 
 # Generated/local artifacts
+.tools/
 tmp/
 output/
 scratch/

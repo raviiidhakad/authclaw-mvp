@@ -253,9 +253,9 @@ resource "aws_ecs_task_definition" "api" {
 
   container_definitions = jsonencode([
     {
-      name      = "authclaw-api"
-      image     = "ghcr.io/${var.environment}-placeholder/authclaw-api:latest"
-      essential = true
+      name         = "authclaw-api"
+      image        = "ghcr.io/${var.environment}-placeholder/authclaw-api:latest"
+      essential    = true
       portMappings = [{ containerPort = 8000, protocol = "tcp" }]
       logConfiguration = {
         logDriver = "awslogs"

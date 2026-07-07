@@ -61,28 +61,28 @@ resource "aws_db_parameter_group" "postgres15" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier              = "authclaw-${var.environment}"
-  engine                  = "postgres"
-  engine_version          = "15"
-  instance_class          = var.instance_class
-  allocated_storage       = 20
-  max_allocated_storage   = 100
-  storage_encrypted       = true
-  kms_key_id              = var.kms_key_id
-  db_name                 = var.db_name
-  username                = var.db_username
-  password                = random_password.db.result
-  db_subnet_group_name    = aws_db_subnet_group.main.name
-  vpc_security_group_ids  = [aws_security_group.rds.id]
-  parameter_group_name    = aws_db_parameter_group.postgres15.name
-  backup_retention_period = var.backup_retention_days
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "sun:04:00-sun:05:00"
-  multi_az                = var.multi_az
-  deletion_protection     = var.multi_az # protect prod
-  skip_final_snapshot     = !var.multi_az
+  identifier                   = "authclaw-${var.environment}"
+  engine                       = "postgres"
+  engine_version               = "15"
+  instance_class               = var.instance_class
+  allocated_storage            = 20
+  max_allocated_storage        = 100
+  storage_encrypted            = true
+  kms_key_id                   = var.kms_key_id
+  db_name                      = var.db_name
+  username                     = var.db_username
+  password                     = random_password.db.result
+  db_subnet_group_name         = aws_db_subnet_group.main.name
+  vpc_security_group_ids       = [aws_security_group.rds.id]
+  parameter_group_name         = aws_db_parameter_group.postgres15.name
+  backup_retention_period      = var.backup_retention_days
+  backup_window                = "03:00-04:00"
+  maintenance_window           = "sun:04:00-sun:05:00"
+  multi_az                     = var.multi_az
+  deletion_protection          = var.multi_az # protect prod
+  skip_final_snapshot          = !var.multi_az
   performance_insights_enabled = var.multi_az
-  tags                    = { Name = "authclaw-${var.environment}-postgres" }
+  tags                         = { Name = "authclaw-${var.environment}-postgres" }
 }
 
 # Cloud Map alias record for postgres.authclaw.local

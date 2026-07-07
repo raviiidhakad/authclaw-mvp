@@ -72,3 +72,36 @@ def test_cli_defaults_point_to_local_compose_ports():
     assert harness.DEFAULT_TCP_TARGETS["redpanda_kafka"] == ("localhost", 19092)
     assert harness.DEFAULT_TCP_TARGETS["vault"] == ("localhost", 8200)
     assert harness.DEFAULT_TCP_TARGETS["clickhouse_http"] == ("localhost", 8123)
+
+
+def test_monitoring_module_wires_phase_e_critical_alerts():
+    current = Path(__file__).resolve()
+    monitoring_tf = next(
+        (
+            root / "infrastructure" / "terraform" / "modules" / "monitoring" / "main.tf"
+            for root in (current.parent, *current.parents)
+            if (root / "infrastructure" / "terraform" / "modules" / "monitoring" / "main.tf").exists()
+        ),
+        None,
+    )
+    if monitoring_tf is None:
+        pytest.skip("Terraform monitoring module is not available in this test mount")
+
+    text = monitoring_tf.read_text(encoding="utf-8")
+    required = {
+        "gateway latency": "aws_cloudwatch_metric_alarm\" \"alb_target_latency",
+        "target 5xx": "aws_cloudwatch_metric_alarm\" \"alb_target_5xx",
+        "opa fail closed": "OpaFailClosedFailureCount",
+        "rate limit store": "GatewayRateLimitStoreUnavailableCount",
+        "audit primary": "AuditPrimaryWriteFailureCount",
+        "audit mirror": "AuditClickHouseMirrorFailureCount",
+        "dlq routed": "WorkerDlqRoutedCount",
+        "dlq publish failure": "WorkerDlqPublishFailureCount",
+    }
+    missing = [name for name, needle in required.items() if needle not in text]
+    assert not missing
+
+    forbidden = ["tenant_id", "user_id", "request_id", "event_id", "email"]
+    metric_filter_blocks = [block for block in text.split('resource "aws_cloudwatch_log_metric_filter"') if "metric_transformation" in block]
+    assert metric_filter_blocks
+    assert not any(label in block for block in metric_filter_blocks for label in forbidden)

@@ -48,10 +48,10 @@ resource "aws_security_group" "vault" {
   }
 
   ingress {
-    from_port = 8201
-    to_port   = 8201
-    protocol  = "tcp"
-    self      = true
+    from_port   = 8201
+    to_port     = 8201
+    protocol    = "tcp"
+    self        = true
     description = "Vault cluster HA communication"
   }
 
@@ -82,10 +82,10 @@ resource "aws_ecs_task_definition" "vault" {
       { containerPort = 8201, protocol = "tcp" }
     ]
     environment = [
-      { name = "VAULT_ADDR",       value = "http://0.0.0.0:8200" },
-      { name = "VAULT_API_ADDR",   value = "http://0.0.0.0:8200" },
+      { name = "VAULT_ADDR", value = "http://0.0.0.0:8200" },
+      { name = "VAULT_API_ADDR", value = "http://0.0.0.0:8200" },
       { name = "VAULT_CLUSTER_ADDR", value = "http://0.0.0.0:8201" },
-      { name = "AWS_REGION",       value = data.aws_region.current.name }
+      { name = "AWS_REGION", value = data.aws_region.current.name }
     ]
     command = [
       "server",

@@ -62,10 +62,10 @@ resource "aws_elasticache_replication_group" "main" {
   auth_token                 = random_password.redis_auth.result
   kms_key_id                 = var.kms_key_id
   # Backup strategy: daily snapshots, configurable retention
-  snapshot_retention_limit   = var.snapshot_retention_days
-  snapshot_window            = "02:00-03:00"
-  maintenance_window         = "sun:03:00-sun:04:00"
-  tags                       = { Name = "authclaw-${var.environment}-redis" }
+  snapshot_retention_limit = var.snapshot_retention_days
+  snapshot_window          = "02:00-03:00"
+  maintenance_window       = "sun:03:00-sun:04:00"
+  tags                     = { Name = "authclaw-${var.environment}-redis" }
 }
 
 resource "aws_service_discovery_service" "redis" {

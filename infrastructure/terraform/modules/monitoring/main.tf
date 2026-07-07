@@ -167,10 +167,10 @@ resource "aws_lambda_function" "backup_validator" {
 
   environment {
     variables = {
-      DB_IDENTIFIER   = var.db_identifier
-      REDIS_GROUP_ID  = var.redis_id
-      SNS_TOPIC_ARN   = aws_sns_topic.alerts.arn
-      ENVIRONMENT     = var.environment
+      DB_IDENTIFIER  = var.db_identifier
+      REDIS_GROUP_ID = var.redis_id
+      SNS_TOPIC_ARN  = aws_sns_topic.alerts.arn
+      ENVIRONMENT    = var.environment
     }
   }
 
@@ -206,33 +206,221 @@ resource "aws_cloudwatch_dashboard" "main" {
       {
         type = "metric"
         properties = {
-          title  = "RDS CPU Utilization"
+          title   = "RDS CPU Utilization"
           metrics = [["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", var.db_identifier]]
-          period = 300
-          stat   = "Average"
-          region = data.aws_region.current.name
+          period  = 300
+          stat    = "Average"
+          region  = data.aws_region.current.name
         }
       },
       {
         type = "metric"
         properties = {
-          title  = "Redis CPU Utilization"
+          title   = "Redis CPU Utilization"
           metrics = [["AWS/ElastiCache", "CPUUtilization", "ReplicationGroupId", var.redis_id]]
-          period = 300
-          stat   = "Average"
-          region = data.aws_region.current.name
+          period  = 300
+          stat    = "Average"
+          region  = data.aws_region.current.name
         }
       },
       {
         type = "metric"
         properties = {
-          title  = "ALB 5xx Errors"
+          title   = "ALB 5xx Errors"
           metrics = [["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", "LoadBalancer", var.alb_arn_suffix]]
-          period = 60
-          stat   = "Sum"
-          region = data.aws_region.current.name
+          period  = 60
+          stat    = "Sum"
+          region  = data.aws_region.current.name
         }
       }
     ]
   })
+}
+
+locals {
+  worker_log_group_names = {
+    audit      = var.audit_worker_log_group_name
+    security   = var.security_worker_log_group_name
+    reconciler = var.reconciler_worker_log_group_name
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "opa_fail_closed" {
+  name           = "authclaw-${var.environment}-opa-fail-closed"
+  log_group_name = var.api_log_group_name
+  pattern        = "\"Gateway policy evaluation failed closed\""
+
+  metric_transformation {
+    name      = "OpaFailClosedFailureCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "gateway_rate_limit_store_unavailable" {
+  name           = "authclaw-${var.environment}-gateway-rate-limit-store-unavailable"
+  log_group_name = var.api_log_group_name
+  pattern        = "\"Gateway rate limit check failed closed\""
+
+  metric_transformation {
+    name      = "GatewayRateLimitStoreUnavailableCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "audit_primary_write_failure" {
+  name           = "authclaw-${var.environment}-audit-primary-write-failure"
+  log_group_name = var.audit_worker_log_group_name
+  pattern        = "authoritative_audit_write_failed"
+
+  metric_transformation {
+    name      = "AuditPrimaryWriteFailureCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "audit_clickhouse_mirror_failure" {
+  name           = "authclaw-${var.environment}-audit-clickhouse-mirror-failure"
+  log_group_name = var.audit_worker_log_group_name
+  pattern        = "clickhouse_audit_mirror_write_failed"
+
+  metric_transformation {
+    name      = "AuditClickHouseMirrorFailureCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "worker_dlq_routed" {
+  for_each       = local.worker_log_group_names
+  name           = "authclaw-${var.environment}-${each.key}-dlq-routed"
+  log_group_name = each.value
+  pattern        = "\"Routed message to DLQ\""
+
+  metric_transformation {
+    name      = "WorkerDlqRoutedCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "worker_dlq_publish_failure" {
+  for_each       = local.worker_log_group_names
+  name           = "authclaw-${var.environment}-${each.key}-dlq-publish-failure"
+  log_group_name = each.value
+  pattern        = "\"Failed to route message to DLQ\""
+
+  metric_transformation {
+    name      = "WorkerDlqPublishFailureCount"
+    namespace = "AuthClaw/Operational"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_name          = "authclaw-${var.environment}-alb-target-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+  dimensions          = { LoadBalancer = var.alb_arn_suffix }
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_latency" {
+  alarm_name          = "authclaw-${var.environment}-alb-target-latency"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 1
+  dimensions          = { TargetGroup = var.alb_target_group_arn_suffix }
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "opa_fail_closed" {
+  alarm_name          = "authclaw-${var.environment}-opa-fail-closed"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "OpaFailClosedFailureCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "gateway_rate_limit_store_unavailable" {
+  alarm_name          = "authclaw-${var.environment}-gateway-rate-limit-store-unavailable"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "GatewayRateLimitStoreUnavailableCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "audit_primary_write_failure" {
+  alarm_name          = "authclaw-${var.environment}-audit-primary-write-failure"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "AuditPrimaryWriteFailureCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "audit_clickhouse_mirror_failure" {
+  alarm_name          = "authclaw-${var.environment}-audit-clickhouse-mirror-failure"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "AuditClickHouseMirrorFailureCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 5
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_dlq_growth" {
+  alarm_name          = "authclaw-${var.environment}-worker-dlq-growth"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "WorkerDlqRoutedCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_dlq_publish_failure" {
+  alarm_name          = "authclaw-${var.environment}-worker-dlq-publish-failure"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "WorkerDlqPublishFailureCount"
+  namespace           = "AuthClaw/Operational"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
 }

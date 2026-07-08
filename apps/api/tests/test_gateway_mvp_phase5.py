@@ -337,6 +337,16 @@ async def test_audit_storage_is_sanitized_only_by_default(monkeypatch):
     monkeypatch.setattr("app.core.config.settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION", False)
     db = FakeDb(allow_empty_execute=True)
     audit = AuditEngine(db)
+    secret_blob = (
+        "email person@example.test token=credential_placeholder_123456 "
+        "Authorization: Bearer auth_placeholder_1234567890 "
+        "Bearer bearer_placeholder_1234567890 "
+        "gsk_providerplaceholder1234567890 "
+        "ac_0123456789abcdef0123456789abcdef0123456789abcdef "
+        "vault://tenant/provider/key awt_workerplaceholder0123456789abcdef "
+        "password=pass_placeholder_123456 mfa_secret=totp_placeholder_123456 "
+        "cookie=session_placeholder_123456"
+    )
 
     await audit.log_request(
         tenant_id=uuid.uuid4(),
@@ -344,9 +354,9 @@ async def test_audit_storage_is_sanitized_only_by_default(monkeypatch):
         provider_id=uuid.uuid4(),
         api_key_id=uuid.uuid4(),
         model="llama3-8b-8192",
-        original_payload={"messages": [{"role": "user", "content": "email person@example.test token=demo-secret"}]},
+        original_payload={"messages": [{"role": "user", "content": secret_blob}]},
         modified_payload={"messages": [{"role": "user", "content": "email [redacted] [redacted]"}]},
-        response_payload={"choices": [{"message": {"content": "call +1 202-555-0100 token=demo-secret"}}]},
+        response_payload={"choices": [{"message": {"content": "call +1 202-555-0100 " + secret_blob}}]},
         tokens_prompt=1,
         tokens_completion=1,
         latency_ms=12,
@@ -357,10 +367,27 @@ async def test_audit_storage_is_sanitized_only_by_default(monkeypatch):
     response = next(item for item in db.added if isinstance(item, GatewayResponse))
     audit_log = next(item for item in db.added if isinstance(item, AuditLog))
     rendered = f"{request.prompt_original} {request.prompt_redacted} {response.response_original} {response.response_redacted} {audit_log.metadata_}"
+    from app.api.v1.endpoints.gateway import _sanitize_trace_text
+    api_rendered = _sanitize_trace_text(secret_blob)
 
-    assert "person@example.test" not in rendered
-    assert "demo-secret" not in rendered
-    assert "+1 202-555-0100" not in rendered
+    for protected in (
+        "person@example.test",
+        "credential_placeholder",
+        "auth_placeholder",
+        "bearer_placeholder",
+        "providerplaceholder",
+        "0123456789abcdef0123456789abcdef0123456789abcdef",
+        "vault://",
+        "workerplaceholder",
+        "pass_placeholder",
+        "totp_placeholder",
+        "session_placeholder",
+        "+1 202-555-0100",
+    ):
+        assert protected not in rendered
+        assert protected not in api_rendered
+    assert "token=[redacted]" in rendered
+    assert "token=[redacted]" in api_rendered
     assert audit_log.metadata_["raw_gateway_audit_retention"] is False
     assert audit_log.metadata_["stored_prompt"] == "sanitized_preview"
     assert audit_log.metadata_["prompt_original_hash"]

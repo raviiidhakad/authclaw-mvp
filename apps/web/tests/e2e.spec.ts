@@ -346,7 +346,7 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   await expect(page.getByText('Verified', { exact: true })).toBeVisible();
   await expect(page.getByText(/12 scanned/i)).toBeVisible();
   await expect(page.getByRole('button', { name: /Verify Integrity/i })).toBeVisible();
-  await page.getByText(/gateway.request/i).click();
+  await page.getByRole('table').getByText(/gateway.request/i).click();
   await expect(page.getByText(/Backend verification: Verified/i)).toBeVisible();
 
   await page.goto('/reports/artifacts');

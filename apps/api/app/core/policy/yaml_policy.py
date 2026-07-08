@@ -17,6 +17,8 @@ SUPPORTED_SCHEMA_VERSIONS = {"authclaw.policy/v1", "v1"}
 SUPPORTED_RULE_TYPES = {item.value for item in RuleType}
 SUPPORTED_ACTIONS = {item.value for item in PolicyAction}
 SUPPORTED_REDACTION_MODES = {"MASK", "HASH", "SYNTHETIC"}
+SUPPORTED_POLICY_KEYS = {"version", "schema_version", "name", "description", "enabled", "is_active", "priority", "rules"}
+SUPPORTED_RULE_KEYS = {"type", "rule_type", "action", "message", "enabled", "is_active", "conditions"}
 UNSAFE_DISABLE_KEYS = {
     "disable_security",
     "disable_security_pipeline",
@@ -303,6 +305,9 @@ def validate_policy_yaml(source: str, adapter: OpaPolicyAdapter | None = None) -
     errors: list[PolicyValidationIssue] = []
     warnings: list[PolicyValidationIssue] = []
 
+    for key in sorted(set(loaded) - SUPPORTED_POLICY_KEYS):
+        errors.append(PolicyValidationIssue("unsupported_field", "Unsupported policy field.", f"$.{key}"))
+
     schema_version = str(loaded.get("version") or loaded.get("schema_version") or "")
     if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         errors.append(
@@ -343,6 +348,8 @@ def validate_policy_yaml(source: str, adapter: OpaPolicyAdapter | None = None) -
         if not isinstance(raw_rule, dict):
             errors.append(PolicyValidationIssue("invalid_rule", "Policy rule must be an object.", f"$.rules[{index}]"))
             continue
+        for key in sorted(set(raw_rule) - SUPPORTED_RULE_KEYS):
+            errors.append(PolicyValidationIssue("unsupported_field", "Unsupported policy rule field.", f"$.rules[{index}].{key}"))
         rule_type = str(raw_rule.get("type") or raw_rule.get("rule_type") or "")
         action = str(raw_rule.get("action") or "")
         conditions = raw_rule.get("conditions") or {}

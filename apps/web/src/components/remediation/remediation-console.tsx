@@ -74,7 +74,7 @@ function rolesFor(user: unknown) {
     roleUser.role_name,
     ...(Array.isArray(roleUser.roles) ? roleUser.roles : []),
   ].filter((role): role is string => typeof role === 'string' && role.length > 0).map((role) => role.toLowerCase());
-  return roles.length ? roles : ['owner'];
+  return roles;
 }
 
 function hasAnyRole(user: unknown, allowed: string[]) {

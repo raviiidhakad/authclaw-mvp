@@ -700,6 +700,51 @@ class GatewayService:
                                 },
                             )
                         ))
+                        from app.core.engine.evaluator import EvaluationResult, RuleViolation
+                        _rule_message: Optional[str] = None
+                        if route_attached_policies and decision.keyword_hits:
+                            for _pol in route_attached_policies:
+                                for _rule in (_pol.rules or []):
+                                    _rule_kws = (_rule.conditions or {}).get("keywords", [])
+                                    if any(kw in decision.keyword_hits for kw in _rule_kws):
+                                        _rule_message = _rule.message or None
+                                        break
+                                if _rule_message:
+                                    break
+                        _block_reason = _rule_message or decision.block_reason or "Blocked by policy."
+                        _inbound_eval = EvaluationResult(
+                            allowed=False,
+                            modified_prompt=full_prompt,
+                            action_taken="block",
+                            violations=[
+                                RuleViolation(
+                                    policy_id=None,
+                                    rule_id=None,
+                                    rule_type="content_filter",
+                                    action="block",
+                                    message=_block_reason,
+                                    context={"keyword_hits": decision.keyword_hits},
+                                )
+                            ],
+                        )
+                        await self.audit_engine.log_request(
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            provider_id=provider.id,
+                            api_key_id=api_key_id,
+                            model=model,
+                            original_payload=payload,
+                            modified_payload=payload,
+                            response_payload={"error": {"message": "Request blocked.", "code": 403}},
+                            tokens_prompt=0,
+                            tokens_completion=0,
+                            latency_ms=0,
+                            status_code=403,
+                            error_message="Blocked by policy: " + _block_reason,
+                            error_type="policy_violation",
+                            error_code="blocked",
+                            evaluation_result=_inbound_eval,
+                        )
                         return {
                             "status_code": 403,
                             "data": {
@@ -707,7 +752,7 @@ class GatewayService:
                                     "message": "Request blocked by AuthClaw security policy.",
                                     "type": "security_policy_violation",
                                     "code": 403,
-                                    "block_reason": decision.block_reason,
+                                    "block_reason": _block_reason,
                                 }
                             },
                         }

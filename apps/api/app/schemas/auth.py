@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr
 
 # Auth Schemas
@@ -28,6 +28,7 @@ class UserResponse(BaseModel):
     last_name: str
     tenant_id: uuid.UUID
     mfa_enabled: bool
+    roles: List[str] = []
 
 class TenantResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

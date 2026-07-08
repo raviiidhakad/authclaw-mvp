@@ -29,10 +29,12 @@ type Provider = {
 };
 
 type PolicyLite = {
-  id: string;
-  name: string;
-  is_active: boolean;
-  priority: number;
+  id?: string;
+  policy_id?: string;
+  name?: string;
+  is_active?: boolean;
+  priority?: number;
+  policy?: { id?: string; name?: string; is_active?: boolean; priority?: number };
 };
 
 type GatewayRouteForm = {
@@ -53,6 +55,13 @@ type ApiError = {
     };
   };
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function getPolicyId(policy: PolicyLite) {
+  const value = policy.id || policy.policy_id || policy.policy?.id || '';
+  return UUID_RE.test(value) ? value : '';
+}
 
 // ─── Modal wrapper ─────────────────────────────────────────────────────────────
 
@@ -266,9 +275,12 @@ export default function GatewayRoutesPage() {
             className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
           >
             <option value="">Tenant active policies</option>
-            {(policies as PolicyLite[] | undefined)?.filter((policy) => policy.is_active).map((policy) => (
-              <option key={policy.id} value={policy.id}>{policy.name} (priority {policy.priority})</option>
-            ))}
+            {(policies as PolicyLite[] | undefined)?.filter((policy) => policy.is_active ?? policy.policy?.is_active).map((policy) => {
+              const policyId = getPolicyId(policy);
+              const policyName = policy.name || policy.policy?.name || 'Unnamed policy';
+              const priority = policy.priority ?? policy.policy?.priority ?? 0;
+              return policyId ? <option key={policyId} value={policyId}>{policyName} (priority {priority})</option> : null;
+            })}
           </select>
           <p className="text-[11px] text-neutral-500">Disabled or cross-tenant policies are rejected by the backend.</p>
         </div>
@@ -365,7 +377,9 @@ export default function GatewayRoutesPage() {
               {filteredRoutes.map((route) => {
                 const isExpanded = expandedId === route.id;
                 const provider = (providers as Provider[] | undefined)?.find((p) => p.id === route.provider_id);
-                const attachedPolicy = (policies as PolicyLite[] | undefined)?.find((p) => p.id === route.config?.policy_id);
+                const attachedPolicy = (policies as PolicyLite[] | undefined)?.find((p) => (
+                  (p.id || p.policy_id || p.policy?.id) === route.config?.policy_id
+                ));
                 
                 return (
                   <motion.div 
@@ -424,7 +438,7 @@ export default function GatewayRoutesPage() {
                             {attachedPolicy && (
                               <span className="flex items-center gap-1.5 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 text-emerald-400">
                                 <Shield className="w-3 h-3" />
-                                <span className="font-medium text-[10px]">Policy: {attachedPolicy.name}</span>
+                                <span className="font-medium text-[10px]">Policy: {attachedPolicy.name || attachedPolicy.policy?.name}</span>
                               </span>
                             )}
                           </div>
@@ -486,7 +500,7 @@ export default function GatewayRoutesPage() {
                               </div>
                               <div>
                                 <p className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold mb-1">Attached Policy</p>
-                                <p className="text-neutral-300">{attachedPolicy ? `${attachedPolicy.name} (${attachedPolicy.is_active ? 'active' : 'disabled'})` : 'Tenant active policies'}</p>
+                                <p className="text-neutral-300">{attachedPolicy ? `${attachedPolicy.name || attachedPolicy.policy?.name} (${(attachedPolicy.is_active ?? attachedPolicy.policy?.is_active) ? 'active' : 'disabled'})` : 'Tenant active policies'}</p>
                               </div>
                             </div>
                           </div>

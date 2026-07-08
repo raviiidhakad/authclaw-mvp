@@ -27,11 +27,13 @@ type AuditEvent = {
 
 export default function AuditPage() {
   const [search, setSearch] = useState('');
+  const [eventTypeFilter, setEventTypeFilter] = useState('');
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const { data, isLoading: loading, error } = useAuditLogs(0, 100);
+  const { data, isLoading: loading, error } = useAuditLogs(0, 100, eventTypeFilter || undefined);
   const verification = useAuditIntegrityVerification();
   
   const events = data?.items || [];
+  const eventTypes = Array.from(new Set((events as AuditEvent[]).map((event) => event.event_type).filter(Boolean))).sort();
 
   const filteredEvents = (events as AuditEvent[]).filter((e) =>
     search === '' || 
@@ -147,9 +149,21 @@ export default function AuditPage() {
               className="pl-9 bg-black/20 border-neutral-800/50 text-neutral-100 focus-visible:ring-1 focus-visible:ring-neutral-700"
             />
           </div>
-          <Button variant="outline" className="border-neutral-800/50 bg-black/20 text-neutral-300 hover:bg-neutral-800">
+          <label className="sr-only" htmlFor="audit-event-type-filter">Filter by event type</label>
+          <select
+            id="audit-event-type-filter"
+            value={eventTypeFilter}
+            onChange={(event) => setEventTypeFilter(event.target.value)}
+            className="h-10 rounded-md border border-neutral-800/50 bg-black/20 px-3 text-sm text-neutral-300"
+          >
+            <option value="">All event types</option>
+            {eventTypes.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+          <Button variant="outline" className="border-neutral-800/50 bg-black/20 text-neutral-300 hover:bg-neutral-800" onClick={() => setEventTypeFilter('')}>
             <Filter className="w-4 h-4 mr-2" />
-            Filters
+            Clear
           </Button>
         </div>
 

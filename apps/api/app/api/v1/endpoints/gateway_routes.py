@@ -65,6 +65,8 @@ class GatewayRouteResponse(BaseModel):
 
 
 SAFE_ROUTE_CONFIG_FIELDS = {"model", "default_model", "temperature", "max_tokens", "policy_id"}
+# Fields that hold structured UUID values — must NOT pass through sanitize_text (which corrupts UUIDs via phone-number regex).
+UUID_ROUTE_CONFIG_FIELDS = {"policy_id"}
 
 
 def _sanitize_route_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -75,8 +77,11 @@ def _sanitize_route_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
             continue
         if key not in SAFE_ROUTE_CONFIG_FIELDS:
             continue
-        sanitized[key] = sanitize_text(value) if isinstance(value, str) else value
+        # UUID fields must not pass through sanitize_text — the phone-number regex
+        # matches digit-dash sequences inside UUIDs and corrupts them.
+        sanitized[key] = value if key in UUID_ROUTE_CONFIG_FIELDS else (sanitize_text(value) if isinstance(value, str) else value)
     return sanitized
+
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

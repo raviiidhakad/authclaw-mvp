@@ -599,7 +599,7 @@ function GatewayPlayground({ onRequestSent, hasRoutes, hasProviders }: { onReque
 
                     <button
                       onClick={sendRequest}
-                      disabled={isLoading}
+                      disabled={isLoading || isCreatingKey}
                       className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-sm font-medium transition-all"
                     >
                       {isLoading ? (

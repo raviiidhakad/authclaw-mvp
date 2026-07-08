@@ -6,7 +6,6 @@ import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-// Removed lucide-react import for SVG replacement
 
 type ApiError = {
   message?: string;
@@ -28,8 +27,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  
-  // MFA State
   const [mfaStep, setMfaStep] = useState(false);
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
@@ -130,12 +127,12 @@ export default function LoginPage() {
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium text-neutral-300">Password</label>
-            <Link href="#" className="text-xs text-blue-500 hover:text-blue-400">Forgot password?</Link>
+            <span className="text-xs text-neutral-500">Password reset is handled by your tenant admin.</span>
           </div>
           <div className="relative">
             <Input 
               type={showPassword ? "text" : "password"} 
-              placeholder="••••••••" 
+              placeholder="********"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="bg-neutral-950 border-neutral-800 text-neutral-100 placeholder:text-neutral-600 pr-10"

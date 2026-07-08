@@ -21,7 +21,7 @@ from app.models.gateway import GatewayRequest, GatewayResponse, RequestStatus
 from app.models.policy import PolicyViolation, ViolationSeverity, ViolationResolution
 from app.models.audit import EventType, AuditAction
 from app.models.tenant import Tenant
-from app.services.api_safety import sanitize_text
+from app.services.api_safety import sanitize_text, sanitize_trace_text
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class AuditEngine:
     def _safe_preview(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        return sanitize_text(value)
+        return sanitize_trace_text(value)
 
     async def _append_canonical_audit_log(
         self,
@@ -125,8 +125,8 @@ class AuditEngine:
             prompt_redacted = None
 
         if not settings.ENABLE_RAW_GATEWAY_AUDIT_RETENTION:
-            sanitized_original_prompt = self._safe_preview(prompt_original) or ""
-            sanitized_modified_prompt = self._safe_preview(prompt_redacted) if prompt_redacted else None
+            sanitized_original_prompt = sanitize_trace_text(prompt_original) or ""
+            sanitized_modified_prompt = sanitize_trace_text(prompt_redacted) if prompt_redacted else None
             prompt_original = sanitized_original_prompt
             prompt_redacted = (
                 sanitized_modified_prompt

@@ -1,5 +1,4 @@
 import hashlib
-import re
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Header, Query
@@ -16,17 +15,9 @@ from app.models.user import User
 from app.models.gateway import GatewayRequest, RequestStatus
 from app.core.engine.gateway import GatewayService
 from app.schemas.gateway import GatewayRequestListResponse, GatewayRequestDetail
-from app.services.api_safety import sanitize_text
+from app.services.api_safety import sanitize_text, sanitize_trace_text as _sanitize_trace_text
 
 router = APIRouter()
-
-_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
-_CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]*?){13,19}(?!\d)")
-_SECRET_RE = re.compile(
-    r"(?i)\b(token|secret|password|credential|api[_-]?key|authorization)\b\s*[:=]\s*[^,\s}]+"
-)
-
 
 def _extract_gateway_token(authorization: str | None, x_api_key: str | None) -> str:
     token = (x_api_key or "").strip()
@@ -37,16 +28,6 @@ def _extract_gateway_token(authorization: str | None, x_api_key: str | None) -> 
     if scheme.lower() != "bearer" or not value.strip():
         raise UnauthorizedException(detail="Missing or invalid gateway API key header")
     return value.strip()
-
-
-def _sanitize_trace_text(value: str | None) -> str:
-    text = value or ""
-    text = _EMAIL_RE.sub("[redacted-email]", text)
-    text = _PHONE_RE.sub("[redacted-phone]", text)
-    text = _CARD_RE.sub("[redacted-card]", text)
-    text = _SECRET_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
-    return text
-
 
 async def verify_api_key(
     authorization: str | None = Header(None),

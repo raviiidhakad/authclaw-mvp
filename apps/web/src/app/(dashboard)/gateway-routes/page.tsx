@@ -377,7 +377,9 @@ export default function GatewayRoutesPage() {
               {filteredRoutes.map((route) => {
                 const isExpanded = expandedId === route.id;
                 const provider = (providers as Provider[] | undefined)?.find((p) => p.id === route.provider_id);
-                const attachedPolicy = (policies as PolicyLite[] | undefined)?.find((p) => getPolicyId(p) === route.config?.policy_id);
+                const attachedPolicy = (policies as PolicyLite[] | undefined)?.find((p) => (
+                  (p.id || p.policy_id || p.policy?.id) === route.config?.policy_id
+                ));
                 
                 return (
                   <motion.div 

@@ -43,6 +43,7 @@ services:
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=${VAULT_DEV_ROOT_TOKEN_ID:-local-vault-root-token}
       - FF_USE_REAL_CONNECTORS=true
+      - ENABLE_EXTERNAL_TRUST_SHARING=${ENABLE_EXTERNAL_TRUST_SHARING:-false}
     depends_on:
       db:
         condition: service_healthy

@@ -62,7 +62,7 @@ def _registered_api_routes() -> set[tuple[str, str]]:
     return registered
 
 
-def test_sprint5_phase3_routes_registered_without_public_share_surface():
+def test_sprint5_phase3_routes_registered_with_token_scoped_share_surface():
     expected = {
         ("GET", "/trust/overview"),
         ("GET", "/trust/security-posture"),
@@ -82,10 +82,11 @@ def test_sprint5_phase3_routes_registered_without_public_share_surface():
         ("POST", "/evidence-packages"),
         ("GET", "/evidence-packages"),
         ("GET", "/evidence-packages/{package_id}"),
+        ("GET", "/trust/shared/{token}"),
     }
     registered = _registered_api_routes()
     assert expected <= registered
-    forbidden_fragments = ("/public", "/share/")
+    forbidden_fragments = ("/public",)
     for _, path in registered:
         assert not any(fragment in path for fragment in forbidden_fragments)
 
@@ -284,7 +285,7 @@ async def test_evidence_package_create_list_detail_filters_and_cross_tenant(monk
             await _cleanup_all(db, tenant_a.id, tenant_b.id)
 
 
-def test_phase3_api_source_has_no_public_share_download_or_execution_clients():
+def test_phase3_api_source_has_no_cloud_download_or_execution_clients():
     combined = "\n".join(
         inspect.getsource(module)
         for module in (trust_api, reports_api, evidence_api)
@@ -298,7 +299,6 @@ def test_phase3_api_source_has_no_public_share_download_or_execution_clients():
         "terraform destroy",
         "os.system",
         "@router.get(\"/download",
-        "public",
     )
     for token in forbidden:
         assert token not in combined

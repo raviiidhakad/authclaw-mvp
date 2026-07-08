@@ -5,13 +5,14 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_tenant, get_db
 from app.api.v1.endpoints.trust_common import (
     artifact_or_404,
     ensure_permission,
+    manifest_for_artifact_or_404,
     require_trust_permission,
     set_tenant_context,
     share_link_or_404,
@@ -34,6 +35,9 @@ from app.schemas.trust import (
     ActivityTimelineItemResponse,
     ActivityTimelineListResponse,
     AuditExportVerificationStatesResponse,
+    SharedTrustArtifactResponse,
+    SharedTrustPageResponse,
+    SharedTrustPostureResponse,
     ShareLinkCreateRequest,
     ShareLinkCreateResponse,
     ShareLinkListResponse,
@@ -474,6 +478,17 @@ def _normalize_expiry(value: datetime) -> datetime:
     return value
 
 
+def _shared_posture(posture: TrustPostureResponse) -> SharedTrustPostureResponse:
+    return SharedTrustPostureResponse(
+        generated_at=posture.generated_at,
+        posture=posture.posture,
+        counts=posture.counts,
+        status_counts=posture.status_counts,
+        severity_counts=posture.severity_counts,
+        freshness=posture.freshness,
+    )
+
+
 async def _assert_shareable_artifact(db: AsyncSession, tenant_id: uuid.UUID, artifact_id: uuid.UUID):
     artifact = await artifact_or_404(db, tenant_id, artifact_id)
     run = (await db.execute(select(ReportRun).where(ReportRun.tenant_id == tenant_id, ReportRun.id == artifact.run_id))).scalars().first()
@@ -483,6 +498,81 @@ async def _assert_shareable_artifact(db: AsyncSession, tenant_id: uuid.UUID, art
     if artifact.expires_at is not None and artifact.expires_at <= now:
         raise BadRequestException(detail="Expired artifacts cannot be shared")
     return artifact
+
+
+async def _shared_link_or_404(db: AsyncSession, raw_token: str) -> ExternalShareLink:
+    _sharing_enabled_or_403()
+    row = (
+        await db.execute(
+            text("SELECT share_link_id, tenant_id FROM shared_trust_lookup_link(:token_hash)"),
+            {"token_hash": hash_share_token(raw_token)},
+        )
+    ).mappings().first()
+    if row is None:
+        raise NotFoundException(detail="Share link not found")
+    await set_tenant_context(db, row["tenant_id"])
+    share_link = (await db.execute(select(ExternalShareLink).where(ExternalShareLink.id == row["share_link_id"]))).scalars().first()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if share_link is None or share_link.revoked_at is not None or share_link.expires_at <= now:
+        raise NotFoundException(detail="Share link not found")
+    views = await db.scalar(
+        select(func.count(ReportAccessLog.id)).where(
+            ReportAccessLog.external_share_id == share_link.id,
+            ReportAccessLog.action == "external_view",
+        )
+    )
+    if (views or 0) >= share_link.max_downloads:
+        raise ForbiddenException(detail="Share link view limit reached")
+    return share_link
+
+
+@router.get("/shared/{token}", response_model=SharedTrustPageResponse)
+async def get_shared_trust_page(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    share_link = await _shared_link_or_404(db, token)
+    await set_tenant_context(db, share_link.tenant_id)
+    tenant = (await db.execute(select(Tenant).where(Tenant.id == share_link.tenant_id))).scalars().first()
+    if tenant is None:
+        raise NotFoundException(detail="Share link not found")
+    artifact = await _assert_shareable_artifact(db, share_link.tenant_id, share_link.artifact_id)
+    manifest = await manifest_for_artifact_or_404(db, share_link.tenant_id, artifact.id)
+    security = await _security_posture(db, share_link.tenant_id)
+    compliance = await _compliance_posture(db, share_link.tenant_id)
+    remediation = await _remediation_posture(db, share_link.tenant_id)
+    integrations = await _integration_health(db, share_link.tenant_id)
+    db.add(
+        ReportAccessLog(
+            tenant_id=share_link.tenant_id,
+            artifact_id=artifact.id,
+            actor_user_id=None,
+            external_share_id=share_link.id,
+            action="external_view",
+            ip_hash=hash_access_metadata(request.client.host if request.client else None),
+            user_agent_hash=hash_access_metadata(request.headers.get("user-agent")),
+        )
+    )
+    await db.commit()
+    await set_tenant_context(db, share_link.tenant_id)
+    return SharedTrustPageResponse(
+        organization=sanitizer.sanitize(str(tenant.name)),
+        generated_at=datetime.now(timezone.utc),
+        language="Evidence-supported public trust posture. This is not legal advice and does not certify compliance.",
+        expires_at=share_link.expires_at,
+        artifact=SharedTrustArtifactResponse(
+            artifact_type=artifact.artifact_type,
+            content_hash=artifact.content_hash,
+            manifest_hash=manifest.manifest_hash,
+            created_at=artifact.created_at,
+            expires_at=artifact.expires_at,
+        ),
+        security_posture=_shared_posture(security),
+        compliance_posture=_shared_posture(compliance),
+        remediation_posture=_shared_posture(remediation),
+        integration_health=_shared_posture(integrations),
+    )
 
 
 @router.post("/share-links", response_model=ShareLinkCreateResponse, status_code=201)

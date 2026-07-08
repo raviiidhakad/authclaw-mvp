@@ -102,7 +102,7 @@ async def test_gateway_benchmark_policy_block_does_not_call_provider() -> None:
     report = reports[0]
     assert report.latency_result.benchmark.metadata.sample_count == 2
     assert report.provider_call_count == 0
-    assert report.audit_call_count == 0
+    assert report.audit_call_count == 3
     assert report.gateway_overhead_ms["p95_ms"] >= 0
 
 

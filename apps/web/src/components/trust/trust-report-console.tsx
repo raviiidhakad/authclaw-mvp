@@ -933,6 +933,12 @@ function ShareLinksTable({
 }
 
 function ShareLinkSheet({ result, onClose }: { result: { token?: string; artifact_id: string; expires_at: string } | null; onClose: () => void }) {
+  const shareUrl = result?.token && typeof window !== 'undefined' ? `${window.location.origin}/trust/shared/${encodeURIComponent(result.token)}` : '';
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    await navigator.clipboard.writeText(shareUrl);
+    toast.success('Share URL copied');
+  };
   return (
     <Sheet open={!!result} onOpenChange={(open) => !open && onClose()}>
       <SheetContent className="w-full sm:max-w-xl bg-[#0a0a0a] border-white/10 text-neutral-100 overflow-y-auto">
@@ -944,10 +950,11 @@ function ShareLinkSheet({ result, onClose }: { result: { token?: string; artifac
             </SheetHeader>
             <div className="p-4 space-y-4">
               <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-                Copy this token now. The console only displays the external share token immediately after creation.
+                Copy this external URL now. The console only displays it immediately after creation.
               </div>
-              <Info label="Share token" value={result.token || 'not returned'} mono />
+              <Info label="Share URL" value={shareUrl || 'not returned'} mono />
               <Info label="Expires" value={dateText(result.expires_at)} />
+              <Button disabled={!shareUrl} onClick={copyShareUrl}>Copy share URL</Button>
             </div>
           </>
         )}

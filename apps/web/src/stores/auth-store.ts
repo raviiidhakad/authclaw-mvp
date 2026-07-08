@@ -7,6 +7,9 @@ interface User {
   last_name: string;
   tenant_id: string;
   mfa_enabled?: boolean;
+  roles?: string[];
+  role?: string;
+  role_name?: string;
 }
 
 interface AuthState {

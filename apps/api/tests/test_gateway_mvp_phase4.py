@@ -188,6 +188,27 @@ rules:
     assert any(error.code == "unsafe_allow_all" for error in allow_all.errors)
 
 
+def test_yaml_unsupported_fields_are_rejected():
+    result = validate_policy_yaml(
+        """
+version: authclaw.policy/v1
+name: Unsupported fields
+enabled: true
+priority: 1
+unknown_top_level: true
+rules:
+  - type: content_filter
+    action: block
+    unsupported_rule_field: true
+    conditions:
+      keywords: ["token="]
+"""
+    )
+
+    assert result.valid is False
+    assert {error.path for error in result.errors} >= {"$.unknown_top_level", "$.rules[0].unsupported_rule_field"}
+
+
 def test_opa_adapter_seam_can_be_swapped():
     class DenyAdapter(OpaPolicyAdapter):
         name = "test_deny_adapter"

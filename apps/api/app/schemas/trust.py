@@ -28,6 +28,35 @@ class TrustOverviewResponse(BaseModel):
     integration_health: TrustPostureResponse
 
 
+class SharedTrustPostureResponse(BaseModel):
+    generated_at: datetime
+    posture: str
+    counts: dict[str, Any] = Field(default_factory=dict)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    severity_counts: dict[str, int] = Field(default_factory=dict)
+    freshness: dict[str, Any] = Field(default_factory=dict)
+
+
+class SharedTrustArtifactResponse(BaseModel):
+    artifact_type: str
+    content_hash: str
+    manifest_hash: str | None = None
+    created_at: datetime
+    expires_at: datetime | None = None
+
+
+class SharedTrustPageResponse(BaseModel):
+    organization: str
+    generated_at: datetime
+    language: str
+    expires_at: datetime
+    artifact: SharedTrustArtifactResponse
+    security_posture: SharedTrustPostureResponse
+    compliance_posture: SharedTrustPostureResponse
+    remediation_posture: SharedTrustPostureResponse
+    integration_health: SharedTrustPostureResponse
+
+
 class AuditExportVerificationStateInfo(BaseModel):
     state: str
     severity: str

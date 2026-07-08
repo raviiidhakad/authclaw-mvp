@@ -41,8 +41,13 @@ export function useAuth() {
         throw new Error('No token');
       }
       const res = await apiClient.get('/auth/me');
-      setUser(res.data);
-      return res.data;
+      let user = res.data;
+      if (!Array.isArray(user.roles) || user.roles.length === 0) {
+        const detail = await apiClient.get(`/users/${user.id}`);
+        user = { ...user, roles: detail.data.roles || [] };
+      }
+      setUser(user);
+      return user;
     } catch (err: unknown) {
       const apiError = asApiError(err);
       if (apiError.message !== 'No token') {

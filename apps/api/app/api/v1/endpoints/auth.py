@@ -294,12 +294,26 @@ async def signup(
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
-    current_user: User = Depends(get_current_user)
-) -> User:
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """
     Get current user information.
     """
-    return current_user
+    role_result = await db.execute(
+        select(Role.name)
+        .join(UserRole, UserRole.role_id == Role.id)
+        .where(UserRole.user_id == current_user.id, UserRole.tenant_id == current_user.tenant_id)
+    )
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "tenant_id": current_user.tenant_id,
+        "mfa_enabled": current_user.mfa_enabled,
+        "roles": list(role_result.scalars().all()),
+    }
 
 
 @router.post("/refresh", response_model=Token)

@@ -40,6 +40,7 @@ class CloudProvider(str, enum.Enum):
     aws    = "aws"
     github = "github"
     gcp    = "gcp"
+    azure  = "azure"
 
 
 class IntegrationStatus(str, enum.Enum):

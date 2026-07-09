@@ -187,7 +187,7 @@ async def test_create_integration_stores_credentials_in_vault_not_postgres(monke
 def test_create_integration_validates_provider_type():
     with pytest.raises(ValidationError):
         IntegrationCreate(
-            provider_type="azure",
+            provider_type="unsupported_cloud",
             target_identifier="target",
             credentials={"token": "secret"},
         )

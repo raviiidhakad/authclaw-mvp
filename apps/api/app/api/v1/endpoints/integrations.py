@@ -49,6 +49,7 @@ def _load_connector_modules() -> None:
         "app.services.connectors.aws",
         "app.services.connectors.github",
         "app.services.connectors.gcp",
+        "app.services.connectors.azure",
     ):
         importlib.import_module(module_name)
 

@@ -24,11 +24,21 @@ type AuditEvent = {
   previous_hash?: string | null;
   integrity_hash?: string | null;
 };
+type AuditRecordVerification = {
+  status: string;
+  record_verified: boolean;
+  scanned_records: number;
+  missing_records: number;
+  tampered_records: number;
+  chain_breaks: number;
+};
 
 export default function AuditPage() {
   const [search, setSearch] = useState('');
   const [eventTypeFilter, setEventTypeFilter] = useState('');
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [recordVerification, setRecordVerification] = useState<Record<string, AuditRecordVerification>>({});
+  const [verifyingRecordId, setVerifyingRecordId] = useState<string | null>(null);
   const { data, isLoading: loading, error } = useAuditLogs(0, 100, eventTypeFilter || undefined);
   const verification = useAuditIntegrityVerification();
   
@@ -66,6 +76,21 @@ export default function AuditPage() {
       link.parentNode?.removeChild(link);
     } catch (e) {
       console.error("Export failed", e);
+    }
+  };
+
+  const verifyRecord = async (eventId: string) => {
+    setVerifyingRecordId(eventId);
+    try {
+      const response = await apiClient.get(`/audit/logs/${eventId}/verify`);
+      setRecordVerification((current) => ({ ...current, [eventId]: response.data as AuditRecordVerification }));
+    } catch {
+      setRecordVerification((current) => ({
+        ...current,
+        [eventId]: { status: 'error', record_verified: false, scanned_records: 0, missing_records: 0, tampered_records: 0, chain_breaks: 0 },
+      }));
+    } finally {
+      setVerifyingRecordId(null);
     }
   };
 
@@ -251,9 +276,22 @@ export default function AuditPage() {
                                       <p className="text-[10px] text-emerald-500/70 uppercase tracking-wider mb-1">Current Block Hash (t)</p>
                                       <p className="font-mono text-xs text-emerald-400 break-all font-semibold">{event.integrity_hash || 'not returned'}</p>
                                     </div>
-                                    <div className={`pt-2 flex items-center gap-2 text-xs ${chainIntact ? 'text-emerald-300' : 'text-amber-300'}`}>
-                                      {chainIntact ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
-                                      Backend verification: {verificationStatus}. Missing records {verification.data?.missing_records ?? 0}, tampered records {verification.data?.tampered_records ?? 0}, chain breaks {verification.data?.chain_breaks ?? 0}.
+                                    <div className={`pt-2 flex flex-col gap-2 text-xs ${chainIntact ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                      <div className="flex items-center gap-2">
+                                        {chainIntact ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                                        Backend verification: {verificationStatus}. Missing records {verification.data?.missing_records ?? 0}, tampered records {verification.data?.tampered_records ?? 0}, chain breaks {verification.data?.chain_breaks ?? 0}.
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <Button size="sm" variant="outline" onClick={() => verifyRecord(event.id)} disabled={verifyingRecordId === event.id}>
+                                          <ShieldCheck className="w-3.5 h-3.5 mr-1" />
+                                          {verifyingRecordId === event.id ? 'Verifying record...' : 'Verify selected record'}
+                                        </Button>
+                                        {recordVerification[event.id] && (
+                                          <span className={recordVerification[event.id].record_verified ? 'text-emerald-300' : 'text-amber-300'}>
+                                            {recordVerification[event.id].record_verified ? 'Selected record verified against hash chain' : `Selected record verification: ${recordVerification[event.id].status}`}
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
                                 </div>

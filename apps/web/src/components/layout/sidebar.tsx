@@ -73,8 +73,8 @@ export function Sidebar() {
         </div>
       </div>
     </div>
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-neutral-800 bg-sidebar/95 backdrop-blur overflow-x-auto">
-      <div className="flex min-w-max items-center gap-1 px-2 py-2">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 max-w-[100vw] border-t border-neutral-800 bg-sidebar/95 backdrop-blur overflow-hidden">
+      <div className="flex max-w-full items-center gap-1 overflow-x-auto px-2 py-2">
         {NAV_ITEMS.map((item) => {
           const isActive = pathname === item.href || (pathname?.startsWith(item.href) && item.href !== '/');
           return (

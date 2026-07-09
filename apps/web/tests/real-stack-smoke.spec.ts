@@ -260,6 +260,11 @@ test.describe.serial('real backend connected smoke', () => {
 
     await page.goto('/audit');
     await expect(page.getByRole('heading', { level: 2, name: 'Audit & Trust Center' })).toBeVisible();
+    for (const viewport of [{ width: 375, height: 900 }, { width: 768, height: 900 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(1);
+    }
     const auditTable = page.locator('tbody');
     await page.getByPlaceholder(/Search cryptographic ledger/i).fill(auditEventType);
     await expect(auditTable.getByText(auditEventType).first()).toBeVisible({ timeout: 20_000 });
@@ -271,6 +276,12 @@ test.describe.serial('real backend connected smoke', () => {
     await auditTable.getByText(auditEventType).first().click();
     await expect(page.getByText(/Hash Chain Explorer/i)).toBeVisible();
     await expect(page.getByText(/Backend verification:/i)).toBeVisible();
+    const recordVerifyResponse = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/audit/logs/') && response.url().endsWith('/verify'),
+    );
+    await page.getByRole('button', { name: /Verify selected record/i }).click();
+    expect((await recordVerifyResponse).ok()).toBeTruthy();
+    await expect(page.getByText(/Selected record verified against hash chain/i)).toBeVisible({ timeout: 20_000 });
     await page.reload();
     await expect(auditTable.getByText(auditEventType).first()).toBeVisible({ timeout: 20_000 });
     await page.getByPlaceholder(/Search cryptographic ledger/i).fill(`no-${auditEventType}`);
@@ -342,6 +353,40 @@ test.describe.serial('real backend connected smoke', () => {
     await expect(sharedPage.getByRole('heading', { name: /Shared Trust Center unavailable/i })).toBeVisible({ timeout: 20_000 });
     await expect(sharedPage.getByText(/invalid, expired, or revoked/i)).toBeVisible();
     await externalContext.close();
+  });
+
+  test('real browser validates Azure integration configuration through backend safely', async ({ page }) => {
+    await page.goto('/login');
+    await page.evaluate((token) => {
+      window.localStorage.setItem('authclaw_tokens', JSON.stringify({ accessToken: token }));
+    }, ownerA.token);
+    for (const viewport of [{ width: 375, height: 900 }, { width: 768, height: 900 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/integrations');
+      await expect(page.getByRole('heading', { name: /Cloud Integrations/i })).toBeVisible({ timeout: 20_000 });
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(1);
+    }
+
+    await page.getByRole('button', { name: /Add integration/i }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Provider').selectOption('azure');
+    await dialog.getByLabel('Display name').fill('Azure local validation smoke');
+    await dialog.getByLabel('Subscription ID').fill('00000000-0000-0000-0000-000000000001');
+    await dialog.getByLabel('Tenant ID').fill('00000000-0000-0000-0000-000000000002');
+    await dialog.getByLabel('Client ID').fill('00000000-0000-0000-0000-000000000003');
+    await expect(dialog.getByLabel('Client secret')).toHaveValue('');
+    const validateResponse = page.waitForResponse((response) => response.url().includes('/api/v1/integrations/validate'));
+    await dialog.getByRole('button', { name: /^Validate$/ }).click();
+    const response = await validateResponse;
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    expect(body.provider_type).toBe('azure');
+    expect(body.valid).toBe(false);
+    expect(JSON.stringify(body)).not.toContain('00000000-0000-0000-0000-000000000003');
+    await expect(dialog.getByText(/Validation failed/i)).toBeVisible({ timeout: 20_000 });
+    await expect(dialog.getByText(/missing required key/i)).toBeVisible();
+    await expect(dialog.getByLabel('Client secret')).toHaveValue('');
   });
 
   test('real browser validates policy YAML and creates a default gateway route with policy-blocked traffic evidence', async ({ page, request }) => {

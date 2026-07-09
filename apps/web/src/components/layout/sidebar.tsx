@@ -13,7 +13,7 @@ import {
 import { useAuth } from '@/hooks/use-auth';
 
 const NAV_ITEMS = [
-  { name: 'Overview', href: '/', icon: LayoutDashboard },
+  { name: 'Overview', href: '/overview', icon: LayoutDashboard },
   { name: 'Gateway', href: '/gateway', icon: Network },
   { name: 'Policies & Guardrails', href: '/policies', icon: ShieldCheck },
   { name: 'Agent & Remediation', href: '/agent-remediation', icon: Wrench },
@@ -29,7 +29,8 @@ export function Sidebar() {
   const { user } = useAuth();
 
   return (
-    <div className="w-64 border-r border-sidebar-border bg-sidebar flex flex-col h-screen fixed left-0 top-0">
+    <>
+    <div className="hidden md:flex w-64 border-r border-sidebar-border bg-sidebar flex-col h-screen fixed left-0 top-0">
       <div className="h-16 flex items-center px-6 border-b border-neutral-800">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">
@@ -72,5 +73,28 @@ export function Sidebar() {
         </div>
       </div>
     </div>
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-neutral-800 bg-sidebar/95 backdrop-blur overflow-x-auto">
+      <div className="flex min-w-max items-center gap-1 px-2 py-2">
+        {NAV_ITEMS.map((item) => {
+          const isActive = pathname === item.href || (pathname?.startsWith(item.href) && item.href !== '/');
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-label={item.name}
+              className={`flex min-w-16 flex-col items-center gap-1 rounded-md px-2 py-1.5 text-[10px] font-medium transition-colors ${
+                isActive
+                  ? 'bg-blue-600/10 text-blue-400'
+                  : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+              }`}
+            >
+              <item.icon className="w-4 h-4" />
+              <span className="max-w-16 truncate">{item.name}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+    </>
   );
 }

@@ -84,7 +84,7 @@ export function useAuth() {
       refreshToken: res.data.refresh_token,
     });
     await fetchUser();
-    router.push('/');
+    router.push('/overview');
     return { mfaRequired: false };
   };
 
@@ -98,7 +98,7 @@ export function useAuth() {
       refreshToken: res.data.refresh_token,
     });
     await fetchUser();
-    router.push('/');
+    router.push('/overview');
   };
 
   const signup = async (data: SignupPayload) => {

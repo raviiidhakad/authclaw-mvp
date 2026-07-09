@@ -130,6 +130,7 @@ class ConnectorWorker(KafkaConsumerBase):
             CloudProvider.aws: "app.services.connectors.aws",
             CloudProvider.github: "app.services.connectors.github",
             CloudProvider.gcp: "app.services.connectors.gcp",
+            CloudProvider.azure: "app.services.connectors.azure",
         }
         registered_connectors = getattr(self.registry, "_connectors", None)
         for provider, module_name in modules.items():
@@ -556,6 +557,7 @@ class ConnectorWorker(KafkaConsumerBase):
             "github_token",
             "private_key",
             "client_secret",
+            "azure_client_secret",
             "access_token",
         ):
             message = message.replace(secret_key, "[redacted]")

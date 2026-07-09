@@ -38,6 +38,9 @@ type FormState = {
   github_org: string;
   gcp_project_id: string;
   gcp_service_account_json: string;
+  azure_client_id: string;
+  azure_client_secret: string;
+  azure_tenant_id: string;
 };
 
 type RoleAwareUser = {
@@ -65,6 +68,9 @@ const initialForm: FormState = {
   github_org: '',
   gcp_project_id: '',
   gcp_service_account_json: '',
+  azure_client_id: '',
+  azure_client_secret: '',
+  azure_tenant_id: '',
 };
 
 function userCanWrite(user: unknown) {
@@ -93,6 +99,7 @@ function parseJsonObject(value: string): Record<string, unknown> {
 function providerIcon(provider: string) {
   if (provider === 'github') return GitBranch;
   if (provider === 'gcp') return Cloud;
+  if (provider === 'azure') return Cloud;
   return ShieldCheck;
 }
 
@@ -142,6 +149,11 @@ function buildPayload(form: FormState) {
       }
     }
   }
+  if (form.provider_type === 'azure') {
+    credentials.azure_client_id = form.azure_client_id;
+    credentials.azure_client_secret = form.azure_client_secret;
+    credentials.azure_tenant_id = form.azure_tenant_id;
+  }
   return {
     provider_type: form.provider_type,
     target_identifier: target,
@@ -158,6 +170,7 @@ function clearSecrets(form: FormState): FormState {
     aws_session_token: '',
     github_token: '',
     gcp_service_account_json: '',
+    azure_client_secret: '',
   };
 }
 
@@ -285,7 +298,7 @@ export default function IntegrationsPage() {
         {integrationsQuery.isLoading ? (
           <div className="p-4"><TableSkeleton columns={7} rows={6} /></div>
         ) : integrations.length === 0 ? (
-          <EmptyState title="No integrations yet" description="Add AWS, GitHub, or GCP to start ingesting persisted security findings." icon={Cloud} action={canWrite ? { label: 'Add integration', onClick: () => setShowCreate(true) } : undefined} />
+          <EmptyState title="No integrations yet" description="Add AWS, GitHub, GCP, or Azure to start ingesting persisted security findings." icon={Cloud} action={canWrite ? { label: 'Add integration', onClick: () => setShowCreate(true) } : undefined} />
         ) : (
           <div className="overflow-auto">
             <table className="w-full text-sm">
@@ -361,6 +374,7 @@ export default function IntegrationsPage() {
                 <option value="aws">AWS</option>
                 <option value="github">GitHub</option>
                 <option value="gcp">GCP</option>
+                <option value="azure">Azure</option>
               </select>
             </div>
             <div className="space-y-1.5">
@@ -388,6 +402,14 @@ export default function IntegrationsPage() {
               <>
                 <div className="space-y-1.5"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Project ID</label><Input aria-label="Project ID" value={form.gcp_project_id} onChange={(e) => setForm((f) => ({ ...f, gcp_project_id: e.target.value, target_identifier: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100 font-mono" /></div>
                 <div className="space-y-1.5 md:col-span-2"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Service account JSON</label><textarea aria-label="Service account JSON" value={form.gcp_service_account_json} onChange={(e) => setForm((f) => ({ ...f, gcp_service_account_json: e.target.value }))} rows={5} className="w-full rounded-md bg-black/40 border border-white/10 text-neutral-100 px-3 py-2 text-xs font-mono" /></div>
+              </>
+            )}
+            {form.provider_type === 'azure' && (
+              <>
+                <div className="space-y-1.5"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Subscription ID</label><Input aria-label="Subscription ID" value={form.target_identifier} onChange={(e) => setForm((f) => ({ ...f, target_identifier: e.target.value }))} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" className="bg-black/40 border-white/10 text-neutral-100 font-mono" /></div>
+                <div className="space-y-1.5"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Tenant ID</label><Input aria-label="Tenant ID" value={form.azure_tenant_id} onChange={(e) => setForm((f) => ({ ...f, azure_tenant_id: e.target.value }))} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" className="bg-black/40 border-white/10 text-neutral-100 font-mono" /></div>
+                <div className="space-y-1.5"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Client ID (App ID)</label><Input aria-label="Client ID" value={form.azure_client_id} onChange={(e) => setForm((f) => ({ ...f, azure_client_id: e.target.value }))} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" className="bg-black/40 border-white/10 text-neutral-100 font-mono" /></div>
+                <div className="space-y-1.5"><label className="text-[10px] uppercase tracking-wider text-neutral-500">Client secret</label><Input aria-label="Client secret" type="password" autoComplete="new-password" value={form.azure_client_secret} onChange={(e) => setForm((f) => ({ ...f, azure_client_secret: e.target.value }))} className="bg-black/40 border-white/10 text-neutral-100 font-mono" /></div>
               </>
             )}
             <div className="md:col-span-2"><ValidationPanel result={validation} /></div>

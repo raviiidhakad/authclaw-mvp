@@ -194,6 +194,41 @@ async def export_audit_logs_alias(
     """
     return await export_audit_logs(tenant=tenant, _=_, db=db)
 
+@router.get("/logs/{log_id}/verify")
+async def verify_audit_log_record(
+    log_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    _=Depends(require_roles(["owner", "admin", "auditor"])),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify a selected audit record against the tenant hash chain."""
+    result = await db.execute(select(AuditLog).where(AuditLog.id == log_id, AuditLog.tenant_id == tenant.id))
+    log = result.scalars().first()
+    if not log:
+        raise NotFoundException(detail="Audit log not found")
+
+    report = await HashVerificationService(PostgresAuditRepository(db)).verify_tenant_chain(tenant.id)
+    tampered = {str(record_id) for record_id in report.tampered_records}
+    broken = {str(record_id) for record_id in report.chain_breaks}
+    record_id = str(log.id)
+    record_status = "verified" if report.is_valid else "chain_unverified"
+    if record_id in tampered:
+        record_status = "tampered"
+    elif record_id in broken:
+        record_status = "chain_break"
+
+    return {
+        "id": record_id,
+        "status": record_status,
+        "chain_valid": report.is_valid,
+        "record_verified": record_status == "verified",
+        "previous_hash": log.previous_hash,
+        "integrity_hash": log.hash,
+        "scanned_records": report.scanned_records,
+        "missing_records": len(report.missing_records),
+        "tampered_records": len(report.tampered_records),
+        "chain_breaks": len(report.chain_breaks),
+    }
 
 @router.get("/logs/{log_id}")
 async def get_audit_log(

@@ -43,7 +43,10 @@ class HashVerificationService:
             # If the underlying list() is descending, we would need to reverse it here.
             # But we assume the pagination fetches ascending to follow the chain.
             # Let's ensure ascending iteration if it's descending.
-            if len(records) > 1 and records[0].sequence_no > records[-1].sequence_no:
+            if len(records) > 1 and (
+                records[0].sequence_no > records[-1].sequence_no
+                or (records[0].sequence_no == records[-1].sequence_no == 0 and records[0].created_at > records[-1].created_at)
+            ):
                 records.reverse()
             
             for record in records:

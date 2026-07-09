@@ -585,7 +585,7 @@ export function useRunAgentScan() {
 }
 
 // -- Sprint 2 Phase 10: Cloud integrations and findings --
-export type CloudProvider = 'aws' | 'github' | 'gcp';
+export type CloudProvider = 'aws' | 'github' | 'gcp' | 'azure';
 export type IntegrationStatus = 'pending' | 'active' | 'error' | 'syncing' | 'disabled';
 export type FindingSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type FindingStatus = 'new' | 'active' | 'remediating' | 'resolved' | 'suppressed';

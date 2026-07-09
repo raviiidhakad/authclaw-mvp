@@ -165,7 +165,7 @@ async function authenticateWithToken(page: Page, session: AuthSession) {
   await page.evaluate((token) => {
     window.localStorage.setItem('authclaw_tokens', JSON.stringify({ accessToken: token }));
   }, session.token);
-  await page.goto('/');
+  await page.goto('/overview');
   await expect(page.getByText(/System Overview/i)).toBeVisible({ timeout: 20_000 });
 }
 

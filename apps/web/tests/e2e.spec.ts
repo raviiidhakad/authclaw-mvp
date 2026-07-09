@@ -22,6 +22,38 @@ test('has title', async ({ page }) => {
   await expect(page).toHaveTitle(/AuthClaw/i);
 });
 
+test('public homepage renders before login with real navigation and responsive shell', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => consoleErrors.push(error.message));
+
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: /Stop sensitive data before it reaches the model/i })).toBeVisible();
+    await expect(page.getByText(/The runtime layer for AI compliance/i).first()).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
+    expect(await page.evaluate(() => document.querySelectorAll('a[href="#"]').length)).toBe(0);
+  }
+
+  await page.setViewportSize({ width: 375, height: 900 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /Menu/i }).click();
+  const mobileMenu = page.locator('#public-mobile-menu');
+  await expect(mobileMenu.getByRole('link', { name: /Product/i })).toBeVisible();
+  await mobileMenu.getByRole('link', { name: /Product/i }).click();
+  await expect(page).toHaveURL(/#modules$/);
+  await expect(page.locator('#public-mobile-menu')).toHaveCount(0);
+
+  await page.goto('/');
+  await page.getByRole('link', { name: /^Log in$/i }).first().click();
+  await expect(page).toHaveURL(/\/login$/);
+  expect(consoleErrors).toEqual([]);
+  await page.setViewportSize({ width: 1280, height: 720 });
+});
+
 test('login page loads and displays form', async ({ page }) => {
   await page.goto('/login');
 
@@ -30,7 +62,7 @@ test('login page loads and displays form', async ({ page }) => {
 });
 
 test('dashboard requires authentication', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/overview');
   // Next.js uses client-side routing, so it might redirect to /login
   // Since we don't have a token, it redirects us.
   await page.waitForURL('**/login');
@@ -267,7 +299,7 @@ test('pdf admin console navigation aligns with safe connected surfaces', async (
   });
   await page.route(/\/api\/v1\/api-keys\/api-key-1\/revoke$/, async (route) => fulfillJson(route, { id: 'api-key-1', name: 'Agent key', key_prefix: 'ac_testgate', is_active: false, created_at: '2026-06-24T10:00:00Z' }));
 
-  await page.goto('/');
+  await page.goto('/overview');
   for (const label of ['Overview', 'Gateway', 'Policies & Guardrails', 'Agent & Remediation', 'Frameworks', 'Audit & Trust Center', 'Risk & Red Teaming', 'Integrations', 'Settings']) {
     await expect(page.getByRole('link', { name: label })).toBeVisible();
   }
@@ -1656,8 +1688,8 @@ test('evidence package builder creates JSON package metadata only', async ({ pag
 
   await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Evidence package builder')).toBeVisible();
-  await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
-  await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  await page.getByRole('textbox', { name: /^Framework$/i }).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  await page.getByRole('textbox', { name: /^Controls$/i }).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
   await page.getByLabel(/include findings/i).check();
   await page.getByLabel(/include remediation/i).check();
   await page.getByRole('button', { name: /create evidence package/i }).click();
@@ -1750,8 +1782,8 @@ test('sprint 5 demo acceptance walks trust reporting UX with demo login safely',
   await expect(page.getByText('evidence-supported posture; needs review')).toBeVisible();
 
   await page.goto('/reports/evidence-packages', { waitUntil: 'domcontentloaded' });
-  await page.getByLabel(/framework/i).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
-  await page.getByLabel(/controls/i).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  await page.getByRole('textbox', { name: /^Framework$/i }).fill('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  await page.getByRole('textbox', { name: /^Controls$/i }).fill('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
   await page.getByLabel(/include findings/i).check();
   await page.getByLabel(/include remediation/i).check();
   await page.getByRole('button', { name: /create evidence package/i }).click();
